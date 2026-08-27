@@ -56,9 +56,10 @@ require qemu-img qemu-utils
 require xz       xz-utils
 
 # uki 引导 + ToolsTree + systemd-boot 形态需要较新 mkosi
-# （apt 发行版里的旧版缺 Bootloader=uki/systemd-boot 语义）
+# （apt 发行版里的旧版缺 Bootloader=/KernelInitrdModules= 语义）。
+# 上游自 v26 起未再打 release tag 且不发布 PyPI，安装走 GitHub tag 源码包
 mkosi_ver="$(mkosi --version | grep -oE '[0-9]+' | head -1)"
-[[ "${mkosi_ver}" -ge 27 ]] || die "需要 mkosi >= 27（当前 ${mkosi_ver}；pip 安装: python3 -m pip install --break-system-packages mkosi）"
+[[ "${mkosi_ver}" -ge 26 ]] || die "需要 mkosi >= 26（当前 ${mkosi_ver}；安装: python3 -m pip install --break-system-packages https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz）"
 
 WORK_DIR="${WORK_DIR:-${SCRIPT_DIR}/work}"
 OUTPUT_DIR="${OUTPUT_DIR:-$(pwd)/output}"

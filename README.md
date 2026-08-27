@@ -7,7 +7,8 @@ repart 分区与首启扩容、UKI 纯 UEFI 引导、A/B 双槽 + systemd-sysupd
 
 ## 本地构建
 
-宿主要求：Linux + `mkosi>=27`（pip：`python3 -m pip install --break-system-packages mkosi`）
+宿主要求：Linux + `mkosi>=26`（pip：`python3 -m pip install --break-system-packages
+https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz`，mkosi 不发布 PyPI）
 + `qemu-utils` + `xz-utils`。
 
 ```bash
@@ -93,7 +94,8 @@ Cmdline 追加"（mkosi 手册原文），直连固件只能启动基础 profile
 ## CI 接入要点（合入主 .github 时）
 
 - 构建入口 `./build.sh` 与本地完全一致；依赖安装改为
-  `mkosi>=27`（pip）+ `systemd-repart` + `qemu-utils` + `xz-utils`。
+  `mkosi>=26`（GitHub tag 源码包，不走 PyPI）+ `systemd-repart` +
+  `qemu-utils` + `xz-utils`。
 - 产物上传路径补 `output/*.efi` 与 `output/SHA256SUMS`（设备侧 sysupdate
   url-file 源依赖发布目录中的 SHA256SUMS 枚举版本）。
 - 设备侧 sysupdate 的 Source Path（`updates.example.com`）为占位 URL，

@@ -46,12 +46,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # mkosi>=27（Bootloader=systemd-boot / UKI 产物；apt noble 版过旧）
-          # + systemd-repart(255) + qemu/xz 转换压缩。erofs/btrfs mkfs 由
-          # mkosi ToolsTree 自带（分区测量改用 UKI 文件大小，无需 gdisk）
+          # mkosi 不在 PyPI（pip 会报 from versions: none），自 v26 起上游
+          # 也不再打 release tag：从 GitHub tag 源码包安装。erofs/btrfs mkfs
+          # 由 mkosi ToolsTree 自带
           sudo apt-get install -y systemd-repart qemu-utils xz-utils \
             python3-pip
-          sudo python3 -m pip install --break-system-packages --upgrade mkosi
+          sudo python3 -m pip install --break-system-packages \
+            https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
           mkosi --version
 
       - name: 构建镜像
