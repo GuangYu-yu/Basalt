@@ -190,9 +190,9 @@ esp_target=$(( (esp_target + 1048575) / 1048576 * 1048576 ))   # 上取整 MiB
 
 # 分区实测：sfdisk -J（util-linux 自带 JSON），按 DPS Type GUID 取
 # 第一块 root（min start = A 槽）与 var 的字节大小
-read -r root_bytes var_bytes < <(python3 - "${BUILT_RAW}" <<'PYEOF'
+read -r root_bytes var_bytes < <(sfdisk -J "${BUILT_RAW}" | python3 -c '
 import json, sys
-t = json.load(open(sys.argv[1]))["partitiontable"]
+t = json.load(sys.stdin)["partitiontable"]
 ss = int(t.get("sectorsize", 512))
 ps = t["partitions"]
 ROOT, VAR = ("4f68bce3-e8cd-4db1-96e7-fbcaf984b709",
@@ -201,8 +201,7 @@ root = min((p for p in ps if p.get("type", "").lower() == ROOT),
            key=lambda p: p["start"])
 var = next((p for p in ps if p.get("type", "").lower() == VAR), None)
 print(root["size"] * ss, (var["size"] * ss) if var else 0)
-PYEOF
-)
+')
 [[ -n "${root_bytes}" && "${root_bytes}" -gt 0 ]] || die "root 分区实测失败"
 
 b_target=$(( (root_bytes + 1048575) / 1048576 * 1048576 ))
