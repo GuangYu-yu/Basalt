@@ -1,0 +1,60 @@
+#!/bin/sh
+# =============================================================================
+# mkosi.postinst — chroot 内后置安装（网络可用）
+#
+# 只读根(EROFS)路径契约：
+#   运行期可写 = overlay 全根增量层(btrfs /var) + tmpfs(/run /tmp /sys/fs/bpf)
+#   landscape-webserver 的持久化状态（landscape_init.toml 等）必须位于 /var，
+#   静态资源(前端)留在只读根 —— 它们就是镜像内容的一部分。
+#   服务单元用 WorkingDirectory 指向 /var/lib/landscape 承接状态写。
+# =============================================================================
+set -eu
+
+LANDSCAPE_VERSION="${LANDSCAPE_VERSION:-latest}"
+LANDSCAPE_REPO="${LANDSCAPE_REPO:-https://github.com/ThisSeanZhang/landscape}"
+
+if [ "${LANDSCAPE_VERSION}" = "latest" ]; then
+    BASE="${LANDSCAPE_REPO}/releases/latest/download"
+else
+    BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
+fi
+
+# 二进制与静态资源 → 只读根（EROFS 内容）
+install -Dm755 /dev/null /root/landscape-webserver.tmp
+curl -fL --retry 3 -o /root/landscape-webserver.tmp "${BASE}/landscape-webserver-x86_64"
+chmod +x /root/landscape-webserver.tmp
+mv /root/landscape-webserver.tmp /root/landscape-webserver
+
+mkdir -p /usr/share/landscape/static
+curl -fL --retry 3 -o /tmp/static.zip "${BASE}/static.zip"
+unzip -oq /tmp/static.zip -d /usr/share/landscape/static/
+rm -f /tmp/static.zip
+
+# 状态目录 → btrfs /var（运行期可写）。兼容层：/root/.landscape-router
+# 是上游硬编码路径，做成指向 /var 的 symlink 承接运行时写入
+mkdir -p /var/lib/landscape
+mkdir -p /root
+ln -sfn /var/lib/landscape /root/.landscape-router
+
+# ld 用户（旧管线默认登录账号之一，README 契约：SSH root/ld + landscape）
+# 密码跟随 ROOT_PASSWORD（构建脚本注入）；已存在则幂等跳过
+if ! id ld >/dev/null 2>&1; then
+    useradd -m -s /bin/bash ld
+    echo "ld:${ROOT_PASSWORD:-landscape}" | chpasswd
+fi
+
+# runtime.env 由 mkosi.finalize 渲染（extra tree 合入后才能看到注入的配置）
+#
+# 服务契约：
+#   ssh/networking    — readiness 契约（SSH root@2222、Landscape 接管网卡；
+#     ifupdown 提供 networking.service，interfaces 为 loopback-only）
+#   chrony            — 时间同步（禁用 systemd-timesyncd 避免双 NTP 客户端）
+#   systemd-sysupdate.timer — 设备侧 A/B 更新定时检查（transfer 定义见
+#     /usr/lib/sysupdate.d/；sysupdate-reboot.timer 不启用，重启时机由部署方决定）
+#   systemd-resolved / NetworkManager — 未安装；显式 disable 幂等兜底，
+#     防止上游包变化引入第二网络栈（网络事实唯一来源 = /etc/network/interfaces）
+#   分区/文件系统扩容由 initrd 内 systemd-repart + x-systemd.growfs 完成，
+#   此处无需任何 grow 单元
+systemctl disable systemd-resolved NetworkManager systemd-timesyncd 2>/dev/null || true
+systemctl enable landscape-router ssh networking chrony \
+    systemd-sysupdate.timer 2>/dev/null || true

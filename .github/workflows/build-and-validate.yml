@@ -1,0 +1,151 @@
+# =============================================================================
+# 构建并校验镜像（mkosi 管线自包含版）
+# =============================================================================
+
+name: build-and-validate
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_docker:
+        description: "是否包含 Docker"
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      run_test:
+        description: "测试选择：none / readiness"
+        required: false
+        default: "readiness"
+      landscape_version:
+        description: "Landscape 版本（留空用 build.env 默认值）"
+        required: false
+        default: ""
+      root_password:
+        description: "Linux root 登录密码"
+        required: false
+        default: "landscape"
+
+env:
+  TEST_LOG_DIR: output/test-logs
+
+jobs:
+  build_image:
+    name: 构建镜像
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # mkosi>=27（Bootloader=systemd-boot / UKI 产物；apt noble 版过旧）
+          # + systemd-repart(255) + qemu/xz 转换压缩。erofs/btrfs mkfs 由
+          # mkosi ToolsTree 自带（分区测量改用 UKI 文件大小，无需 gdisk）
+          sudo apt-get install -y systemd-repart qemu-utils xz-utils \
+            python3-pip
+          sudo python3 -m pip install --break-system-packages --upgrade mkosi
+          mkosi --version
+
+      - name: 构建镜像
+        timeout-minutes: 60
+        env:
+          ROOT_PASSWORD: ${{ inputs.root_password }}
+          INCLUDE_DOCKER: ${{ inputs.include_docker }}
+          COMPRESS_OUTPUT: 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--output-format img)
+          [[ "${INCLUDE_DOCKER}" == "true" ]] && args+=(--include-docker true)
+          [[ -n "${{ inputs.landscape_version }}" ]] && args+=(--version "${{ inputs.landscape_version }}")
+          sudo -E ./build.sh "${args[@]}"
+
+      - name: 修复输出权限
+        run: sudo chown -R "$(id -u):$(id -g)" output/ work/
+
+      - name: 列出输出文件
+        run: ls -lh output/
+
+      - name: 上传镜像构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: basalt-${{ github.sha }}
+          path: |
+            output/*.img
+            output/*.img.xz
+            output/*.efi
+            output/SHA256SUMS
+            output/metadata/build-metadata.txt
+          retention-days: 30
+
+      - name: 上传构建日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.sha }}
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7
+
+  test_readiness:
+    name: 就绪性测试
+    needs: build_image
+    if: ${{ inputs.run_test == 'readiness' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载镜像构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: basalt-${{ github.sha }}
+          path: output/
+
+      - name: 解压镜像（readiness 需要 raw）
+        run: |
+          set -euo pipefail
+          cd output
+          for f in *.img.xz; do
+            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+            xz -T0 -d -k "$f"
+          done
+          ls -lh .
+
+      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+        run: |
+          set -euo pipefail
+          img="$(ls output/basalt*.img | head -n1)"
+          echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
+
+      - name: 安装测试依赖
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass socat curl jq \
+            qemu-system-x86 ovmf qemu-utils
+
+      - name: 运行就绪检查
+        env:
+          SSH_PASSWORD: ${{ inputs.root_password }}
+          LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ inputs.include_docker }}
+          LANDSCAPE_TEST_RUN_TEST: readiness
+        run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
+
+      - name: 上传就绪检查日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-logs-${{ github.sha }}
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7

@@ -1,0 +1,18 @@
+# 构建产物与缓存
+work/
+output/
+
+# 镜像与虚拟化产物
+*.img
+*.img.xz
+*.raw
+*.efi
+*.vmdk
+*.ova
+*.qcow2
+
+# mkosi 中间态
+.mkosi-*
+
+# 编辑器
+*.swp

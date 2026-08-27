@@ -1,0 +1,33 @@
+[Unit]
+Description=Assemble writable root overlay (EROFS lower + btrfs upper)
+DefaultDependencies=no
+# sysroot = root= cmdline 指向的 EROFS 根（initrd 语境由 cmdline 生成 sysroot.mount）
+After=sysroot.mount systemd-repart.service
+# 失败不阻塞 switch_root：退化为纯只读根继续启动
+OnFailure=initrd-switch-root.target
+OnFailureJobMode=replace-irreversibly
+
+# 为什么在 initrd 里做：
+#   systemd-fstab-generator 对 / 只生成 remount 语义，不会在真实根阶段把
+#   erofs 的 / 换成 overlay（fstab overlay / 条目永远不生效）；而 overlay
+#   涉及两个设备（EROFS 根 + btrfs /var），fstab-generator 无法表达多设备
+#   根（systemd-devel 2015 实证）。OpenWrt/Android/overlayroot 均在
+#   initramfs 阶段组装全根 overlay —— 本单元即该步骤的声明式最小实现。
+#
+# 挂载编排（顺序敏感）：
+#   1. var 分区先挂到 initrd 中性路径 /run/var（upper/work 必须与 lower
+#      不同文件系统，此处 upper/work 所在 btrfs 尚无其他挂载点）
+#   2. overlay 叠到 /sysroot 上（shadow 住 EROFS sysroot；lowerdir=/sysroot
+#      在挂载瞬间解析为 EROFS 内容，overlayfs 会 pin 住底层挂载）
+#   3. switch_root 后：/ = overlay；/var 由真实根 fstab 挂载同一 btrfs
+#      （重复挂载同一 btrfs 合法且视图一致），x-systemd.growfs 在该挂载上
+#      完成文件系统扩展 —— 因此这里刻意不做 move-mount
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -ec '
+mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var
+# upper/work 已由构建期 finalize 创建并经 CopyFiles=/var 落盘（构建期保证为空）
+mkdir -p /run/var/lib/etc/upper /run/var/lib/etc/work
+mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot
+'
+RemainAfterExit=yes

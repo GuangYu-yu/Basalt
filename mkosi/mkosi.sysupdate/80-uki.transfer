@@ -1,0 +1,18 @@
+# =============================================================================
+# mkosi.sysupdate/80-uki.transfer —— 构建侧定义（入口点资源，最后写）
+# 与设备侧 80-uki.transfer 同构；Source 为本机构建输出目录中的版本化 UKI
+# （basalt[_<版本>].efi，cmdline 绑同版本 PARTLABEL）。
+# =============================================================================
+
+[Transfer]
+Notify=stdout
+
+[Source]
+Type=file
+Path=.
+MatchPattern=basalt_@v.efi
+
+[Target]
+Type=directory
+Path=/efi/EFI/Linux
+MatchPattern=basalt_@v.efi

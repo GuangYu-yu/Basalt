@@ -1,0 +1,25 @@
+# =============================================================================
+# mkosi.sysupdate/70-root.transfer —— 构建侧定义
+# 供 `mkosi sysupdate` 动词使用：将本机构建出的 raw 安装到本机/测试机。
+# 本地实测路径：构建后以 file:// / 本地目录为 Source ——
+#   systemd-sysupdate --transfer-source=<发布目录> update
+# 生产 OTA 发布通道（更新服务器/CDN、签名分发）属部署方责任，不在本项目范围；
+# 设备侧（mkosi.extra/usr/lib/sysupdate.d/）Source 仍为占位 URL。
+# =============================================================================
+
+[Transfer]
+Notify=stdout
+
+[Source]
+Type=file
+Path=.
+MatchPattern=basalt_@v.raw \
+            basalt_@v.raw.xz
+
+[Target]
+Type=partition
+Path=auto
+MatchPattern=basalt_@v
+MatchPartitionType=root
+InstancesMax=2
+PartitionFlags=0

@@ -1,0 +1,25 @@
+# 设备侧 sysupdate transfer —— UKI（入口点资源）
+# transfer 文件名字母序决定写入顺序：入口点（UKI）必须最后写（80 > 70-root），
+# 异常中断不会留下入口就绪而 backing 未就绪的半状态（sysupdate.d(5)）。
+# 版本化 UKI 文件保留多份：旧 UKI 条目仍可启动 = 回滚路径。
+# ESP 挂载点由 fstab PARTLABEL=ESP 条目固定（/efi）。
+[Transfer]
+Notify=stdout
+
+[Source]
+Type=url-file
+Path=https://updates.example.com/basalt/
+MatchPattern=basalt_@v.efi
+
+[Target]
+Type=directory
+Path=/efi/EFI/Linux
+# tries 三段式 = 官方 root-verity.md 同范式：写入后重命名为 @v+3-0
+# （TriesLeft/TriesDone），systemd-boot 据此做启动尝试计数 —— 连续失败
+# 自动回落旧版本
+MatchPattern=basalt_@v+3-0.efi \
+             basalt_@v+3.efi \
+             basalt_@v.efi
+TriesLeft=3
+TriesDone=0
+InstancesMax=2

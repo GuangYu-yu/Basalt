@@ -1,0 +1,22 @@
+[Unit]
+Description=Landscape Router
+# 分区/文件系统扩容由 initrd 内 systemd-repart 完成（先于 switch_root），
+# 无需在应用单元上再挂顺序依赖
+After=local-fs.target
+
+[Service]
+Type=exec
+# 只读根契约：运行期写入只发生在 /var(btrfs) 与 tmpfs。
+# WorkingDirectory=/var/lib/landscape 承接进程的相对路径写入；
+# /root/.landscape-router 是构建期预留的 symlink → /var/lib/landscape。
+EnvironmentFile=-/etc/landscape/runtime.env
+WorkingDirectory=/var/lib/landscape
+ExecStart=/root/landscape-webserver ${LANDSCAPE_ARGS}
+Restart=always
+RestartSec=2
+LimitMEMLOCK=infinity
+# eBPF map pin（/sys/fs/bpf 为 tmpfs 语义，天然可写）
+ExecStartPre=/bin/sh -c 'mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf'
+
+[Install]
+WantedBy=multi-user.target

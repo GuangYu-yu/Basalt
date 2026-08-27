@@ -1,0 +1,126 @@
+#!/bin/bash
+# =============================================================================
+# mkosi.finalize — 镜像收尾（宿主侧执行，$1/BUILDROOT = 镜像根）
+#
+# 内核模块白名单：keep = 整目录(有线网卡全量) ∪ 声明式模块的 modprobe
+# 依赖闭包；其余删除 + depmod 重建。白名单之外默认删除，上游新增目录
+# 不会被误留。
+# =============================================================================
+set -euo pipefail
+
+ROOT="${1:-${BUILDROOT:?BUILDROOT not set}}"
+TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
+
+# ── 时区 ──
+ln -sf "/usr/share/zoneinfo/${TIMEZONE}" "${ROOT}/etc/localtime"
+
+# ── locale（mkosi ≥27：按 /etc/locale.gen 自动 locale-gen）──
+# LOCALE/EXTRA_LOCALES 承接旧管线契约；默认 C.UTF-8 保证串口/SSH 无乱码
+{
+    echo "${LOCALE} UTF-8"
+    for l in ${EXTRA_LOCALES}; do echo "${l} UTF-8"; done
+} | sort -u > "${ROOT}/etc/locale.gen"
+mkdir -p "${ROOT}/etc/default"
+echo "LANG=${LOCALE}" > "${ROOT}/etc/default/locale"
+
+# ── 机器身份（overlay 层持久化）──
+# PID1 生成 machine-id 早于 local-fs（overlay 挂载前 / 仍只读，首写必失败），
+# 走 /run 临时 ID；machine-id-commit 在 local-fs 后把临时 ID 提交进 overlay 层
+# （/etc/machine-id 写入落 btrfs 增量）→ 跨重启/跨更新稳定。
+: > "${ROOT}/etc/machine-id"
+rm -f "${ROOT}/var/lib/systemd/random-seed"
+ln -sfn /usr/lib/systemd/system/systemd-machine-id-commit.service \
+    "${ROOT}/etc/systemd/system/multi-user.target.wants/systemd-machine-id-commit.service"
+
+# ── overlay 全根增量层目录（fstab 条目见 mkosi.extra/etc/fstab）──
+# CopyFiles=/var 会带上它们；upper/work 必须同文件系统且 work 为空目录
+mkdir -p "${ROOT}/var/lib/etc/upper" "${ROOT}/var/lib/etc/work"
+# ESP 挂载点（fstab PARTLABEL=ESP 条目）
+mkdir -p "${ROOT}/efi"
+
+# host key 不烘焙（同 key 分发到所有设备 = 安全事故）：
+# 首启由 ssh.service drop-in 的 ssh-keygen -A 生成，写入 overlay 层持久化
+rm -f "${ROOT}"/etc/ssh/ssh_host_*
+
+# journald 日志持久化到 btrfs /var（只读根上 /var/log 不可写）
+mkdir -p "${ROOT}/etc/systemd/journald.conf.d"
+cat > "${ROOT}/etc/systemd/journald.conf.d/persistent.conf" <<EOF
+[Journal]
+Storage=persistent
+EOF
+
+# ── 内核模块白名单剔除 ──
+moddir=$(ls -d "${ROOT}"/usr/lib/modules/*/ 2>/dev/null | head -1 || true)
+if [[ -n "${moddir}" ]]; then
+    kver=$(basename "${moddir}")
+
+    # 整目录保留：有线网卡兼容是路由器硬性前提
+    keep_dirs="drivers/net/ethernet drivers/net/phy drivers/net/mdio"
+    # 声明式最小集（含依赖闭包）：数据面/存储/虚拟化
+    #   overlay  → 全根增量层（fstab）
+    #   vfat+nls → 运行期挂 ESP（systemd-gpt-auto 自动挂 /efi）
+    keep_modules="e1000 e1000e igb igc r8169 virtio_net virtio_blk virtio_pci virtio_scsi
+                  nvme nvme_core ahci sd_mod erofs btrfs overlay vfat fat nls_cp437 nls_ascii
+                  crc32c_generic nf_conntrack nf_nat nf_tables nfnetlink ip_tables
+                  bpf tun tap veth bridge"
+
+    depmod -b "${ROOT}" "${kver}"
+
+    declare -A keep_files=()
+    for m in ${keep_modules}; do
+        deps=$(modprobe -d "${ROOT}" -S "${kver}" --show-depends "${m}" 2>/dev/null \
+            | awk '/^insmod/ {print $2}') || continue
+        for f in ${deps}; do keep_files["${f}"]=1; done
+    done
+
+    kept=0 removed=0
+    while IFS= read -r ko; do
+        rel="${ko#"${moddir%/}"}"; dir="${rel%/*}"
+        case " ${keep_dirs} " in
+            *" ${dir} "*|*" ${dir%/*} "*) kept=$((kept+1)); continue ;;
+        esac
+        if [[ -n "${keep_files[${ko}]:-}" ]]; then
+            kept=$((kept+1))
+        else
+            rm -f "${ko}"; removed=$((removed+1))
+        fi
+    done < <(find "${moddir}" -name '*.ko*' | sort)
+
+    find "${moddir}" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    depmod -b "${ROOT}" "${kver}"
+    echo "[finalize] modules: kept=${kept} removed=${removed}"
+fi
+
+# ── strip 用户态二进制 ──
+find "${ROOT}/usr/bin" "${ROOT}/usr/sbin" "${ROOT}/usr/lib" \
+    -type f \( -name '*.so*' -o -perm /111 \) \
+    -exec strip --strip-unneeded {} + 2>/dev/null || true
+
+# ── runtime.env 渲染 ──
+# 智能初始化配置（EFFECTIVE_CONFIG_PATH 经 build.sh 暂存进 extra tree，
+# 此处已合入：/var/lib/landscape/landscape_init.toml）存在则交给配置驱动，
+# 否则 --auto（Web 引导）。原逻辑放在 postinst 时 extra tree 未合入，恒走 --auto。
+mkdir -p "${ROOT}/etc/landscape"
+if [ -f "${ROOT}/var/lib/landscape/landscape_init.toml" ]; then
+    : > "${ROOT}/etc/landscape/runtime.env"
+else
+    echo 'LANDSCAPE_ARGS=--auto' > "${ROOT}/etc/landscape/runtime.env"
+fi
+
+# ── 禁焙扫描：命中即构建失败 ──
+# 注意 find 的 -o 不改变起点，每个独立起点单独一条 find
+forbidden="$(find "${ROOT}/etc/ssh" -name 'ssh_host_*' 2>/dev/null; \
+             find "${ROOT}/root" \( -name '.bash_history' -o -name '.lesshst' \) 2>/dev/null; \
+             find "${ROOT}/var/lib/etc/upper" "${ROOT}/var/lib/etc/work" -type f 2>/dev/null; \
+             find "${ROOT}/var/cache/apt" "${ROOT}/var/log/apt" -type f 2>/dev/null; \
+             find "${ROOT}/var/log" -name 'dpkg.log*' 2>/dev/null)"
+if [[ -n "${forbidden}" ]]; then
+    echo "[finalize] 禁焙违例（禁焙清单命中）：" >&2
+    echo "${forbidden}" >&2
+    exit 1
+fi
+[[ -s "${ROOT}/etc/machine-id" ]] && { echo "[finalize] 禁焙违例：machine-id 非空" >&2; exit 1; }
+[[ -e "${ROOT}/var/lib/systemd/random-seed" ]] && { echo "[finalize] 禁焙违例：random-seed 存在" >&2; exit 1; }
+echo "[finalize] forbidden scan: clean"
+
+exit 0
