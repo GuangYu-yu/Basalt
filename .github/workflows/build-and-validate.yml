@@ -61,7 +61,7 @@ jobs:
             https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
           mkosi --version
 
-      - name: 配置预检（秒级失败，避免整趟构建后才发现配置/语法错误）
+      - name: 配置预检
         run: |
           set -euo pipefail
           mkosi -C mkosi summary > /dev/null

@@ -93,8 +93,10 @@ STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
 cleanup_staged() {
     [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
     [[ -n "${STAGED_ASSETS_SET:-}" ]] && rm -f "${STAGED_WEBAPP}" "${STAGED_STATIC}"
-    [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]] && \
+    if [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]]; then
         mv -f "${WORK_DIR}/91-root-b.conf.orig" "${STAGED_B_DEF}"
+    fi
+    return 0
 }
 trap cleanup_staged EXIT
 if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
