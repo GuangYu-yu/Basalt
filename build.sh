@@ -82,7 +82,7 @@ source "${SCRIPT_DIR}/lib/export.sh"
 # finalize 据此渲染 runtime.env。构建后恢复 extra tree 原状。
 STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/var/lib/landscape/landscape_init.toml"
 STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
-STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/tmp/static.zip"
+STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
 # 统一清理：暂存的注入配置 + 上游发布物 + 自适应渲染的 B 槽定义（均构建期暂存）
 cleanup_staged() {
     [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
