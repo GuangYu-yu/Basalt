@@ -81,9 +81,12 @@ source "${SCRIPT_DIR}/lib/export.sh"
 # 暂存进 extra tree；mkosi 合入后经 repart CopyFiles=/var 落进 btrfs 分区，
 # finalize 据此渲染 runtime.env。构建后恢复 extra tree 原状。
 STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/var/lib/landscape/landscape_init.toml"
-# 统一清理：暂存的注入配置 + 自适应渲染的 B 槽定义（后者仅在定稿后才存在）
+STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
+STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/tmp/static.zip"
+# 统一清理：暂存的注入配置 + 上游发布物 + 自适应渲染的 B 槽定义（均构建期暂存）
 cleanup_staged() {
     [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
+    [[ -n "${STAGED_ASSETS_SET:-}" ]] && rm -f "${STAGED_WEBAPP}" "${STAGED_STATIC}"
     [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]] && \
         mv -f "${WORK_DIR}/91-root-b.conf.orig" "${STAGED_B_DEF}"
 }
@@ -143,10 +146,10 @@ echo "============================================================"
 export LANDSCAPE_VERSION="${LANDSCAPE_VERSION:-latest}"
 export LANDSCAPE_REPO TIMEZONE
 
-# 上游发布物在宿主侧下载，经 --extra-tree 注入镜像（chroot 内零网络）；
+# 上游发布物在宿主侧下载，暂存进 mkosi.extra 注入镜像（chroot 内零网络）；
 # postinst 只做落位与解压
-ASSETS_DIR="${WORK_DIR}/assets"
-mkdir -p "${ASSETS_DIR}/root"
+STAGED_WEBAPP="${STAGED_WEBAPP:-${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver}"
+STAGED_STATIC="${STAGED_STATIC:-${SCRIPT_DIR}/mkosi/mkosi.extra/tmp/static.zip}"
 if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
     ASSET_BASE="${LANDSCAPE_REPO}/releases/latest/download"
 else
@@ -154,14 +157,11 @@ else
 fi
 require curl curl
 info "下载 Landscape 发布物（${LANDSCAPE_VERSION}）..."
-curl -fL --retry 3 -o "${ASSETS_DIR}/root/landscape-webserver" \
-    "${ASSET_BASE}/landscape-webserver-x86_64"
-chmod +x "${ASSETS_DIR}/root/landscape-webserver"
-curl -fL --retry 3 -o "${ASSETS_DIR}/static.zip" "${ASSET_BASE}/static.zip"
-MKOSI_ARGS+=(
-    "--extra-tree=${ASSETS_DIR}/root/landscape-webserver:/root/landscape-webserver"
-    "--extra-tree=${ASSETS_DIR}/static.zip:/tmp/static.zip"
-)
+mkdir -p "${STAGED_WEBAPP%/*}" "${STAGED_STATIC%/*}"
+curl -fL --retry 3 -o "${STAGED_WEBAPP}" "${ASSET_BASE}/landscape-webserver-x86_64"
+chmod +x "${STAGED_WEBAPP}"
+curl -fL --retry 3 -o "${STAGED_STATIC}" "${ASSET_BASE}/static.zip"
+STAGED_ASSETS_SET=1
 
 info "mkosi build ..."
 mkosi "${MKOSI_ARGS[@]}" build
