@@ -9,19 +9,9 @@
 set -euo pipefail
 
 ROOT="${1:-${BUILDROOT:?BUILDROOT not set}}"
-TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 
-# ── 时区 ──
-ln -sf "/usr/share/zoneinfo/${TIMEZONE}" "${ROOT}/etc/localtime"
-
-# ── locale（mkosi ≥27：按 /etc/locale.gen 自动 locale-gen）──
-# LOCALE/EXTRA_LOCALES 承接旧管线契约；默认 C.UTF-8 保证串口/SSH 无乱码
-{
-    echo "${LOCALE} UTF-8"
-    for l in ${EXTRA_LOCALES}; do echo "${l} UTF-8"; done
-} | sort -u > "${ROOT}/etc/locale.gen"
-mkdir -p "${ROOT}/etc/default"
-echo "LANG=${LOCALE}" > "${ROOT}/etc/default/locale"
+# 时区/locale 由 mkosi 原生 Timezone=/Locale= 设置写入（build.sh 注入），
+# 此处不再手工渲染 /etc/localtime 与 /etc/locale.gen
 
 # ── 机器身份（overlay 层持久化）──
 # PID1 生成 machine-id 早于 local-fs（overlay 挂载前 / 仍只读，首写必失败），

@@ -25,7 +25,6 @@ COMPRESS_OUTPUT="${COMPRESS_OUTPUT:-yes}"
 ROOT_PASSWORD="${ROOT_PASSWORD:-landscape}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 LOCALE="${LOCALE:-C.UTF-8}"
-EXTRA_LOCALES="${EXTRA_LOCALES:-}"
 APT_MIRROR="${APT_MIRROR:-}"
 IMAGE_SIZE_MB="${IMAGE_SIZE_MB-}"          # 空 = 自适应（见自适应定稿段）
 IMAGE_HEADROOM="${IMAGE_HEADROOM-2}"       # 名义盘中 var 余量倍数
@@ -104,6 +103,10 @@ MKOSI_ARGS=(
     --package-cache-dir "${WORK_DIR}/aptcache"
     --root-password    "${ROOT_PASSWORD}"
     --image-id         "${IMAGE_ID}"
+    --timezone         "${TIMEZONE}"
+    --locale           "${LOCALE}"
+    # v26 脚本 sandbox 清洗宿主环境，需显式注入（postinst 的 ld 用户密码用）
+    --environment      "ROOT_PASSWORD=${ROOT_PASSWORD}"
 )
 # UKI 自描述根：cmdline 绑 sysupdate 版本标签
 # （mkosi CLI 的 KernelCommandLine 为追加语义，base 见 mkosi.conf）。
@@ -118,8 +121,6 @@ MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER}
 # APT 镜像直通（旧管线 APT_MIRROR 契约；mkosi 原生 --mirror，无 failover
 # 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")
-# 供 finalize（locale）与 postinst（ld 用户密码）消费
-export ROOT_PASSWORD LOCALE EXTRA_LOCALES
 # ESP 构建期自适应：首次构建按内容实际大小产出，构建后提取 ×ESP_SLOTS 二次
 # repart 定稿（见下方 build 段）。repart 定义用 work/repart 的拷贝，不改仓库源文件。
 # build.env 缺失时的运行时兜底（与上方各 knob 同一惯用法：文件提供默认值，此处保底）
@@ -144,12 +145,9 @@ echo "============================================================"
 
 # ── 构建 ──
 export LANDSCAPE_VERSION="${LANDSCAPE_VERSION:-latest}"
-export LANDSCAPE_REPO TIMEZONE
 
 # 上游发布物在宿主侧下载，暂存进 mkosi.extra 注入镜像（chroot 内零网络）；
 # postinst 只做落位与解压
-STAGED_WEBAPP="${STAGED_WEBAPP:-${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver}"
-STAGED_STATIC="${STAGED_STATIC:-${SCRIPT_DIR}/mkosi/mkosi.extra/tmp/static.zip}"
 if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
     ASSET_BASE="${LANDSCAPE_REPO}/releases/latest/download"
 else
