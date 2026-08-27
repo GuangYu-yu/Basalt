@@ -143,6 +143,26 @@ echo "============================================================"
 export LANDSCAPE_VERSION="${LANDSCAPE_VERSION:-latest}"
 export LANDSCAPE_REPO TIMEZONE
 
+# 上游发布物在宿主侧下载，经 --extra-tree 注入镜像（chroot 内零网络）；
+# postinst 只做落位与解压
+ASSETS_DIR="${WORK_DIR}/assets"
+mkdir -p "${ASSETS_DIR}/root"
+if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
+    ASSET_BASE="${LANDSCAPE_REPO}/releases/latest/download"
+else
+    ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
+fi
+require curl curl
+info "下载 Landscape 发布物（${LANDSCAPE_VERSION}）..."
+curl -fL --retry 3 -o "${ASSETS_DIR}/root/landscape-webserver" \
+    "${ASSET_BASE}/landscape-webserver-x86_64"
+chmod +x "${ASSETS_DIR}/root/landscape-webserver"
+curl -fL --retry 3 -o "${ASSETS_DIR}/static.zip" "${ASSET_BASE}/static.zip"
+MKOSI_ARGS+=(
+    "--extra-tree=${ASSETS_DIR}/root/landscape-webserver:/root/landscape-webserver"
+    "--extra-tree=${ASSETS_DIR}/static.zip:/tmp/static.zip"
+)
+
 info "mkosi build ..."
 mkosi "${MKOSI_ARGS[@]}" build
 
