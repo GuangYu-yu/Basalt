@@ -244,7 +244,8 @@ for uki in "${WORK_DIR}"/${IMAGE_ID}*.efi; do
     BUILD_ARTIFACTS+=("${OUTPUT_DIR}/${uki##*/}")
 done
 
-mv -f "${BUILT_RAW}" "${RAW_FILE}"
+# latest 构建无版本后缀时 BUILT_RAW 即 RAW_FILE，避免 mv 同文件报错
+[[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
 # 名义尺寸：显式 IMAGE_SIZE_MB 优先（旧契约），否则用自适应计算值。
 # 稀疏扩展给首启 repart 增长留可测余量（与 dd 大盘场景对齐）
 IMAGE_SIZE_MB="${IMAGE_SIZE_MB:-${nominal_mb}}"
