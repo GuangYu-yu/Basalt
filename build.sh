@@ -126,7 +126,8 @@ ROOT_LABEL_VER="1"
 if [[ -n "${LANDSCAPE_VERSION:-}" && "${LANDSCAPE_VERSION}" != "latest" ]]; then
     ROOT_LABEL_VER="${LANDSCAPE_VERSION#v}"
 fi
-MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER}")
+# 诊断期：loglevel=7 暴露内核枚举与 udev 事件（定位 by-partlabel 超时）；定位后回调 quiet loglevel=3
+MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER} console=tty0 console=ttyS0,115200n8 loglevel=7 udev.log_level=debug")
 # APT 镜像直通（旧管线 APT_MIRROR 契约；mkosi 原生 --mirror，无 failover
 # 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")

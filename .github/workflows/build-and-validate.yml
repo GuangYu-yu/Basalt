@@ -153,6 +153,7 @@ jobs:
       - name: 运行就绪检查
         env:
           SSH_PASSWORD: ${{ inputs.root_password }}
+          SSH_TIMEOUT: '300'
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ inputs.include_docker }}
           LANDSCAPE_TEST_RUN_TEST: readiness
         run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
