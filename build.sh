@@ -37,9 +37,16 @@ while [[ $# -gt 0 ]]; do
             [[ "$2" == "debian" ]] || die "mkosi 管线仅支持 debian，收到 '$2'"
             shift 2 ;;
         --include-docker) INCLUDE_DOCKER="$2"; shift 2 ;;
-        # CI 以重复 flag 传入多格式（--output-format img --output-format vmdk），
-        # 累积语义：img 恒最后处理（压缩会移除源文件）
-        --output-format)  OUTPUT_FORMATS="${2}${OUTPUT_FORMATS:+,${OUTPUT_FORMATS}}"; shift 2 ;;
+        # 首个 CLI flag 取代 build.env 默认（否则与默认 img 累积重复，导致二次压缩）；
+        # CI 重复 flag 依序累积，img 需排在最后（压缩会移除源文件）
+        --output-format)
+            if [[ -z "${OUTPUT_FORMAT_FROM_CLI:-}" ]]; then
+                OUTPUT_FORMATS="$2"
+            else
+                OUTPUT_FORMATS="${OUTPUT_FORMATS:+${OUTPUT_FORMATS},}$2"
+            fi
+            OUTPUT_FORMAT_FROM_CLI=1
+            shift 2 ;;
         --version)        LANDSCAPE_VERSION="$2"; shift 2 ;;
         --no-compress)    COMPRESS_OUTPUT="no"; shift ;;
         --run-test)       RUN_TEST="$2"; shift 2 ;;

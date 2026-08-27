@@ -40,6 +40,12 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 缓存 APT 包下载
+        uses: actions/cache@v4
+        with:
+          path: work/aptcache
+          key: basalt-aptcache-v1
+
       - name: 安装构建依赖
         timeout-minutes: 15
         shell: bash
@@ -54,6 +60,14 @@ jobs:
           sudo python3 -m pip install --break-system-packages \
             https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
           mkosi --version
+
+      - name: 配置预检（秒级失败，避免整趟构建后才发现配置/语法错误）
+        run: |
+          set -euo pipefail
+          mkosi -C mkosi summary > /dev/null
+          bash -n build.sh lib/export.sh mkosi/mkosi.finalize \
+            mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
+            tests/test-readiness.sh tests/test-dataplane.sh
 
       - name: 构建镜像
         timeout-minutes: 60
