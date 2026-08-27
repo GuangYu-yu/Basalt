@@ -10,8 +10,7 @@ set -euo pipefail
 
 ROOT="${1:-${BUILDROOT:?BUILDROOT not set}}"
 
-# 时区/locale 由 mkosi 原生 Timezone=/Locale= 设置写入（build.sh 注入），
-# 此处不再手工渲染 /etc/localtime 与 /etc/locale.gen
+# 时区/locale 由 build.sh 经 mkosi 原生 Timezone=/Locale= 设置写入
 
 # ── 机器身份（overlay 层持久化）──
 # PID1 生成 machine-id 早于 local-fs（overlay 挂载前 / 仍只读，首写必失败），
@@ -39,47 +38,8 @@ cat > "${ROOT}/etc/systemd/journald.conf.d/persistent.conf" <<EOF
 Storage=persistent
 EOF
 
-# ── 内核模块白名单剔除 ──
-moddir=$(ls -d "${ROOT}"/usr/lib/modules/*/ 2>/dev/null | head -1 || true)
-if [[ -n "${moddir}" ]]; then
-    kver=$(basename "${moddir}")
-
-    # 整目录保留：有线网卡兼容是路由器硬性前提
-    keep_dirs="drivers/net/ethernet drivers/net/phy drivers/net/mdio"
-    # 声明式最小集（含依赖闭包）：数据面/存储/虚拟化
-    #   overlay  → 全根增量层（fstab）
-    #   vfat+nls → 运行期挂 ESP（systemd-gpt-auto 自动挂 /efi）
-    keep_modules="e1000 e1000e igb igc r8169 virtio_net virtio_blk virtio_pci virtio_scsi
-                  nvme nvme_core ahci sd_mod erofs btrfs overlay vfat fat nls_cp437 nls_ascii
-                  crc32c_generic nf_conntrack nf_nat nf_tables nfnetlink ip_tables
-                  bpf tun tap veth bridge"
-
-    depmod -b "${ROOT}" "${kver}"
-
-    declare -A keep_files=()
-    for m in ${keep_modules}; do
-        deps=$(modprobe -d "${ROOT}" -S "${kver}" --show-depends "${m}" 2>/dev/null \
-            | awk '/^insmod/ {print $2}') || continue
-        for f in ${deps}; do keep_files["${f}"]=1; done
-    done
-
-    kept=0 removed=0
-    while IFS= read -r ko; do
-        rel="${ko#"${moddir%/}"}"; dir="${rel%/*}"
-        case " ${keep_dirs} " in
-            *" ${dir} "*|*" ${dir%/*} "*) kept=$((kept+1)); continue ;;
-        esac
-        if [[ -n "${keep_files[${ko}]:-}" ]]; then
-            kept=$((kept+1))
-        else
-            rm -f "${ko}"; removed=$((removed+1))
-        fi
-    done < <(find "${moddir}" -name '*.ko*' | sort)
-
-    find "${moddir}" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-    depmod -b "${ROOT}" "${kver}"
-    echo "[finalize] modules: kept=${kept} removed=${removed}"
-fi
+# ── 内核模块裁剪 ──
+# 由 mkosi 原生 KernelModules=（mkosi.conf）完成：modinfo 依赖闭包 + depmod 重建
 
 # ── strip 用户态二进制 ──
 find "${ROOT}/usr/bin" "${ROOT}/usr/sbin" "${ROOT}/usr/lib" \

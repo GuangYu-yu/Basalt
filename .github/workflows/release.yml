@@ -1,0 +1,106 @@
+# =============================================================================
+# 发布：tag 推送 → 双变体构建+测试 → 元数据校验 → GitHub Release
+# 发布物：basalt_<v>.img.xz + 版本化 UKI (*.efi) + SHA256SUMS
+# （设备侧 sysupdate url-file 源依赖发布目录中的 SHA256SUMS 枚举版本）
+# =============================================================================
+
+name: 发布
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: 准备发布元数据
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      target_sha: ${{ steps.meta.outputs.target_sha }}
+    steps:
+      - name: 解析发布元数据
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "release_tag=${GITHUB_REF_NAME}"
+            echo "target_sha=${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+  build_no_docker:
+    name: 构建（不含 Docker）
+    needs: prepare
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/_build-and-validate.yml
+    with:
+      include_docker: false
+      run_test: readiness,dataplane
+      landscape_version: ${{ needs.prepare.outputs.release_tag }}
+
+  build_docker:
+    name: 构建（含 Docker）
+    needs: prepare
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/_build-and-validate.yml
+    with:
+      include_docker: true
+      run_test: readiness
+      landscape_version: ${{ needs.prepare.outputs.release_tag }}
+
+  release:
+    name: 发布版本
+    needs: [prepare, build_no_docker, build_docker]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: 下载产物（不含 Docker）
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_no_docker.outputs.image_artifact }}
+          path: artifacts/no-docker/
+
+      - name: 下载产物（含 Docker）
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_docker.outputs.image_artifact }}
+          path: artifacts/docker/
+
+      - name: 校验发布产物
+        shell: bash
+        env:
+          TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          for dir in artifacts/no-docker artifacts/docker; do
+            [[ -f "${dir}/metadata/build-metadata.txt" ]] || { echo "缺少构建元数据: ${dir}" >&2; exit 1; }
+            compgen -G "${dir}/*.img.xz" > /dev/null || { echo "缺少 img.xz: ${dir}" >&2; exit 1; }
+            compgen -G "${dir}/*.efi" > /dev/null || { echo "缺少 UKI: ${dir}" >&2; exit 1; }
+            [[ -f "${dir}/SHA256SUMS" ]] || { echo "缺少 SHA256SUMS: ${dir}" >&2; exit 1; }
+
+            git_sha="$(awk -F'=' '/^git_sha=/{print $2; exit}' "${dir}/metadata/build-metadata.txt")"
+            [[ "${git_sha}" == "${TARGET_SHA}" ]] \
+              || { echo "${dir} 的 git_sha=${git_sha}，期望 ${TARGET_SHA}" >&2; exit 1; }
+          done
+
+      - name: 创建 GitHub 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/no-docker/*.img.xz
+            artifacts/no-docker/*.efi
+            artifacts/no-docker/SHA256SUMS
+            artifacts/docker/*.img.xz
+            artifacts/docker/*.efi
+            artifacts/docker/SHA256SUMS
+          generate_release_notes: true

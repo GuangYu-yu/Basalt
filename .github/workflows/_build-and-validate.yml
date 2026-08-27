@@ -1,0 +1,325 @@
+# =============================================================================
+# 构建并校验镜像（可复用子工作流，入口见 ci.yml）
+# 流水线：构建 → 模块门禁 → readiness → dataplane → 日志合并
+# =============================================================================
+
+name: 构建并校验镜像
+
+on:
+  workflow_call:
+    inputs:
+      include_docker:
+        description: "镜像是否附带 docker.io"
+        required: false
+        type: boolean
+        default: false
+      run_test:
+        description: "测试选择，可选值：none / readiness / readiness,dataplane"
+        required: false
+        type: string
+        default: "readiness"
+      output_formats:
+        description: "产物格式：img / img,vmdk / img,ova 等（img 恒最后处理）"
+        required: false
+        type: string
+        default: "img"
+      landscape_version:
+        description: "Landscape 版本：latest 或 vX.Y.Z，留空用 build.env 默认值"
+        required: false
+        type: string
+        default: ""
+      root_password:
+        description: "镜像 root/ld 初始密码"
+        required: false
+        type: string
+        default: "landscape"
+    outputs:
+      image_artifact:
+        description: "镜像产物 artifact 名"
+        value: ${{ jobs.build_image.outputs.image_artifact }}
+      log_artifact:
+        description: "日志 artifact 名"
+        value: ${{ jobs.build_image.outputs.log_artifact }}
+      run_readiness:
+        value: ${{ jobs.build_image.outputs.run_readiness }}
+      run_dataplane:
+        value: ${{ jobs.build_image.outputs.run_dataplane }}
+
+env:
+  TEST_LOG_DIR: output/test-logs
+  ROOT_PASSWORD: ${{ inputs.root_password }}
+  INCLUDE_DOCKER: ${{ inputs.include_docker }}
+
+jobs:
+  build_image:
+    name: 构建镜像
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      image_artifact: ${{ steps.meta.outputs.image_artifact }}
+      log_artifact: ${{ steps.meta.outputs.log_artifact }}
+      run_readiness: ${{ steps.tests.outputs.run_readiness }}
+      run_dataplane: ${{ steps.tests.outputs.run_dataplane }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 归一化产物命名与测试选择
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 产物名带变体后缀：同一次运行内多变体并行构建（release 双矩阵）不冲突
+          variant=""
+          [[ "${INCLUDE_DOCKER}" == "true" ]] && variant="-docker"
+          {
+            echo "image_artifact=basalt${variant}-${GITHUB_RUN_ID}-${GITHUB_SHA::12}"
+            echo "log_artifact=test-logs${variant}-${GITHUB_RUN_ID}-${GITHUB_SHA::12}"
+          } >> "$GITHUB_OUTPUT"
+
+          requested="${{ inputs.run_test }}"
+          normalized="${requested,,}"; normalized="${normalized//[[:space:]]/}"
+          case "$normalized" in
+            none)      run_readiness=false; run_dataplane=false ;;
+            readiness) run_readiness=true;  run_dataplane=false ;;
+            readiness,dataplane)
+              run_readiness=true
+              # dataplane 使用 default 变体（无 docker）；docker 变体跳过
+              if [[ "${INCLUDE_DOCKER}" == "true" ]]; then run_dataplane=false; else run_dataplane=true; fi ;;
+            *) echo "不支持的 run_test 值: $requested" >&2; exit 1 ;;
+          esac
+          {
+            echo "run_test=$normalized"
+            echo "run_readiness=$run_readiness"
+            echo "run_dataplane=$run_dataplane"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 缓存 APT 包下载
+        uses: actions/cache@v4
+        with:
+          path: work/aptcache
+          key: basalt-aptcache-v1
+
+      - name: 安装构建依赖
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # mkosi 不发布 PyPI 包，从 GitHub tag 源码包安装；
+          # erofs/btrfs mkfs 由 mkosi ToolsTree 自带
+          sudo apt-get install -y systemd-repart qemu-utils xz-utils \
+            python3-pip debian-archive-keyring
+          sudo python3 -m pip install --break-system-packages \
+            https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
+          mkosi --version
+
+      - name: 配置预检
+        run: |
+          set -euo pipefail
+          mkosi -C mkosi summary > /dev/null
+          bash -n build.sh lib/export.sh mkosi/mkosi.finalize \
+            mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
+            tests/test-readiness.sh tests/test-dataplane.sh
+
+      - name: 构建镜像（失败重试一次，重置 work/）
+        timeout-minutes: 60
+        env:
+          COMPRESS_OUTPUT: 'yes'
+          RUN_TEST: 'none'
+          OUTPUT_FORMATS: ${{ inputs.output_formats }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_once() {
+            local args=(--output-format "${OUTPUT_FORMATS:-img}")
+            [[ "${INCLUDE_DOCKER}" == "true" ]] && args+=(--include-docker true)
+            [[ -n "${{ inputs.landscape_version }}" ]] && args+=(--version "${{ inputs.landscape_version }}")
+            sudo -E ./build.sh "${args[@]}"
+          }
+          if ! build_once; then
+            echo "首次构建失败，重置 work/ 后重试..." >&2
+            sudo rm -rf work
+            sudo mkdir -p work output
+            sudo chown -R "$(id -u):$(id -g)" work output
+            build_once
+          fi
+
+      - name: 修复输出权限
+        run: sudo chown -R "$(id -u):$(id -g)" output/ work/
+
+      - name: 汇总构建元数据
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/metadata "${TEST_LOG_DIR}"
+          # build.sh 已写基础键；此处补 CI 身份键（对齐 tests/common.sh 身份契约）
+          {
+            echo "git_sha=${GITHUB_SHA}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> output/metadata/build-metadata.txt
+          cp output/metadata/build-metadata.txt "${TEST_LOG_DIR}/"
+
+      - name: 模块门禁（抽取 UKI .initrd 断言引导契约，秒级失败）
+        run: |
+          set -euo pipefail
+          uki="$(ls output/basalt*.efi | head -n1)"
+          python3 tests/check-initrd-modules.py "${uki}"
+
+      - name: 列出输出文件
+        run: ls -lh output/
+
+      - name: 上传镜像构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.image_artifact }}
+          path: |
+            output/*.img
+            output/*.img.xz
+            output/*.efi
+            output/SHA256SUMS
+            output/metadata/build-metadata.txt
+          retention-days: 30
+
+      - name: 上传构建日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.log_artifact }}-build
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7
+
+  test_readiness:
+    name: 就绪性测试
+    needs: build_image
+    if: ${{ needs.build_image.outputs.run_readiness == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载镜像构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.image_artifact }}
+          path: output/
+
+      - name: 解压镜像（readiness 需要 raw）
+        run: |
+          set -euo pipefail
+          cd output
+          for f in *.img.xz; do
+            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+            xz -T0 -d -k "$f"
+          done
+
+      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+        run: |
+          set -euo pipefail
+          img="$(ls output/basalt*.img | head -n1)"
+          echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
+
+      - name: 安装测试依赖
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass socat curl jq \
+            qemu-system-x86 ovmf qemu-utils
+
+      - name: 运行就绪检查
+        env:
+          SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
+          SSH_TIMEOUT: '120'
+          LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ env.INCLUDE_DOCKER }}
+          LANDSCAPE_TEST_RUN_TEST: readiness
+        run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
+
+      - name: 上传就绪检查日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.log_artifact }}-readiness
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7
+
+  test_dataplane:
+    name: 数据平面测试
+    needs: build_image
+    if: ${{ needs.build_image.outputs.run_dataplane == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载镜像构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.image_artifact }}
+          path: output/
+
+      - name: 解压镜像（dataplane 需要 raw）
+        run: |
+          set -euo pipefail
+          cd output
+          for f in *.img.xz; do
+            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+            xz -T0 -d -k "$f"
+          done
+
+      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+        run: |
+          set -euo pipefail
+          img="$(ls output/basalt*.img | head -n1)"
+          echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
+
+      - name: 安装测试依赖
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass socat curl jq \
+            qemu-system-x86 ovmf qemu-utils
+
+      - name: 运行数据平面测试
+        env:
+          SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
+          SSH_TIMEOUT: '120'
+          LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ env.INCLUDE_DOCKER }}
+          LANDSCAPE_TEST_RUN_TEST: readiness,dataplane
+        run: timeout --foreground 30m ./tests/test-dataplane.sh "${IMAGE_PATH}"
+
+      - name: 上传数据平面测试日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.log_artifact }}-dataplane
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7
+
+  merge_validation_logs:
+    name: 合并校验日志
+    needs: [build_image, test_readiness, test_dataplane]
+    if: ${{ always() && needs.build_image.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 下载各阶段日志
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ needs.build_image.outputs.log_artifact }}-*
+          merge-multiple: true
+          path: output/final-test-logs/
+
+      - name: 上传合并日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.log_artifact }}
+          path: output/final-test-logs/
+          retention-days: 7

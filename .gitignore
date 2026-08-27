@@ -14,5 +14,9 @@ output/
 # mkosi 中间态
 .mkosi-*
 
+# Python
+__pycache__/
+*.pyc
+
 # 编辑器
 *.swp

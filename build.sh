@@ -29,6 +29,7 @@ APT_MIRROR="${APT_MIRROR:-}"
 IMAGE_SIZE_MB="${IMAGE_SIZE_MB-}"          # 空 = 自适应（见自适应定稿段）
 IMAGE_HEADROOM="${IMAGE_HEADROOM-2}"       # 名义盘中 var 余量倍数
 RUN_TEST="${RUN_TEST:-none}"
+IMAGE_ID="${IMAGE_ID:-basalt}"     # 产物名/PARTLABEL/sysupdate 的同源前缀（build.env 单一声明，此处保底）
 SMOKE=false
 
 while [[ $# -gt 0 ]]; do
@@ -61,9 +62,9 @@ require mkosi   mkosi
 require qemu-img qemu-utils
 require xz       xz-utils
 
-# uki 引导 + ToolsTree + systemd-boot 形态需要较新 mkosi
-# （apt 发行版里的旧版缺 Bootloader=/KernelInitrdModules= 语义）。
-# 上游自 v26 起未再打 release tag 且不发布 PyPI，安装走 GitHub tag 源码包
+# uki 引导 + ToolsTree + systemd-boot 形态需要 mkosi >= 26
+# （apt 发行版里的旧版缺 Bootloader=/KernelInitrdModules= 语义）；
+# mkosi 不发布 PyPI 包，经 GitHub tag 源码包安装
 mkosi_ver="$(mkosi --version | grep -oE '[0-9]+' | head -1)"
 [[ "${mkosi_ver}" -ge 26 ]] || die "需要 mkosi >= 26（当前 ${mkosi_ver}；安装: python3 -m pip install --break-system-packages https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz）"
 
@@ -89,15 +90,7 @@ source "${SCRIPT_DIR}/lib/export.sh"
 STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/var/lib/landscape/landscape_init.toml"
 STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
 STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
-# 统一清理：暂存的注入配置 + 上游发布物 + 自适应渲染的 B 槽定义（均构建期暂存）
-cleanup_staged() {
-    [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
-    [[ -n "${STAGED_ASSETS_SET:-}" ]] && rm -f "${STAGED_WEBAPP}" "${STAGED_STATIC}"
-    if [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]]; then
-        mv -f "${WORK_DIR}/91-root-b.conf.orig" "${STAGED_B_DEF}"
-    fi
-    return 0
-}
+# 统一清理（函数体在 IMAGE_ID 渲染段定义：彼时 STAGED_SYSUPDATE_D 等才就绪）
 trap cleanup_staged EXIT
 if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
     [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
@@ -126,20 +119,50 @@ ROOT_LABEL_VER="1"
 if [[ -n "${LANDSCAPE_VERSION:-}" && "${LANDSCAPE_VERSION}" != "latest" ]]; then
     ROOT_LABEL_VER="${LANDSCAPE_VERSION#v}"
 fi
-# 诊断期：loglevel=7 暴露内核枚举与 udev 事件（定位 by-partlabel 超时）；定位后回调 quiet loglevel=3
-MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER} console=tty0 console=ttyS0,115200n8 loglevel=7 udev.log_level=debug")
-# APT 镜像直通（旧管线 APT_MIRROR 契约；mkosi 原生 --mirror，无 failover
+MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER}")
+# APT 镜像直通（兼容旧版 APT_MIRROR 变量名；mkosi 原生 --mirror，无 failover
 # 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")
 # ESP 构建期自适应：首次构建按内容实际大小产出，构建后提取 ×ESP_SLOTS 二次
 # repart 定稿（见下方 build 段）。repart 定义用 work/repart 的拷贝，不改仓库源文件。
-# build.env 缺失时的运行时兜底（与上方各 knob 同一惯用法：文件提供默认值，此处保底）
-IMAGE_ID="${IMAGE_ID:-basalt}"
 ESP_SLOTS="${ESP_SLOTS:-3}"
 REPART_DIR="${WORK_DIR}/repart"
 rm -rf "${REPART_DIR}"
 cp -a "${SCRIPT_DIR}/mkosi/mkosi.repart" "${REPART_DIR}"
+sed -i -e "s/basalt_/${IMAGE_ID}_/g" -e "s#/basalt/#/${IMAGE_ID}/#g" \
+    "${REPART_DIR}"/*.conf
 MKOSI_ARGS+=(--repart-dir "${REPART_DIR}")
+
+# ── IMAGE_ID 渲染 ──
+# 仓库源文件以默认 ID "basalt" 为模板；构建期把消费方（repart Label /
+# sysupdate MatchPattern / URL 路径）统一渲染为实际 IMAGE_ID。
+# 设备侧 sysupdate.d 属"暂存-恢复"惯用法（EXIT trap 还原 git 原状）。
+STAGED_SYSUPDATE_D=(
+    "${SCRIPT_DIR}/mkosi/mkosi.extra/usr/lib/sysupdate.d/70-root.transfer"
+    "${SCRIPT_DIR}/mkosi/mkosi.extra/usr/lib/sysupdate.d/80-uki.transfer"
+)
+for f in "${STAGED_SYSUPDATE_D[@]}"; do
+    cp -f "$f" "${WORK_DIR}/$(basename "$f").orig"
+done
+sed -i -e "s/basalt_/${IMAGE_ID}_/g" -e "s#/basalt/#/${IMAGE_ID}/#g" \
+    "${STAGED_SYSUPDATE_D[@]}"
+cleanup_staged() {
+    [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
+    [[ -n "${STAGED_ASSETS_SET:-}" ]] && rm -f "${STAGED_WEBAPP}" "${STAGED_STATIC}"
+    if [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]]; then
+        mv -f "${WORK_DIR}/91-root-b.conf.orig" "${STAGED_B_DEF}"
+    fi
+    for f in "${STAGED_SYSUPDATE_D[@]:-}"; do
+        [[ -n "$f" && -f "${WORK_DIR}/$(basename "$f").orig" ]] \
+            && mv -f "${WORK_DIR}/$(basename "$f").orig" "$f"
+    done
+    return 0
+}
+if [[ "${IMAGE_ID}" != "basalt" ]] && \
+   grep -rqE 'basalt_' "${REPART_DIR}" "${STAGED_SYSUPDATE_D[@]}"; then
+    die "IMAGE_ID 渲染不完整：渲染后的定义文件仍残留 basalt_"
+fi
+trap cleanup_staged EXIT
 [[ "${LANDSCAPE_VERSION:-latest}" != "latest" ]] \
     && MKOSI_ARGS+=(--image-version "${LANDSCAPE_VERSION#v}")
 
@@ -183,7 +206,7 @@ BUILT_RAW="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.raw 2>/dev/null | head -1)"
 #   ESP 目标  = max(单 UKI 实测大小) × ESP_SLOTS（A/B + 更新中临时）
 #   B 槽目标  = A 槽分区实测大小（两槽同角色，首启 repart 按此扩容）
 #   名义盘    = A + B + ESP + var 构建期分区 × IMAGE_HEADROOM
-#   （IMAGE_SIZE_MB 显式设置时优先 —— 旧契约兼容）
+#   （IMAGE_SIZE_MB 显式设置时优先于计算值）
 require python3 python3
 ukis=("${WORK_DIR}"/${IMAGE_ID}*.efi)
 [[ -e "${ukis[0]}" ]] || die "未找到 UKI 产物，自适应定稿失败（构建输出异常）"
@@ -256,7 +279,7 @@ done
 
 # latest 构建无版本后缀时 BUILT_RAW 即 RAW_FILE，避免 mv 同文件报错
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
-# 名义尺寸：显式 IMAGE_SIZE_MB 优先（旧契约），否则用自适应计算值；
+# 名义尺寸：显式 IMAGE_SIZE_MB 优先，否则用自适应计算值；
 # 不得小于 mkosi 实际产出（否则 truncate 切掉 var 尾部与 GPT 备份头）
 raw_mb=$(( ($(stat -c %s "${RAW_FILE}") + 1048575) / 1048576 ))
 (( nominal_mb < raw_mb )) && nominal_mb=${raw_mb}

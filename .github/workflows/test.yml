@@ -1,0 +1,128 @@
+# =============================================================================
+# 镜像复测：对历史 CI 构建的产物重新跑测试（不重新构建）
+# 留空 run_id 时自动选取 main 分支最近一次成功的 CI 构建
+# =============================================================================
+
+name: 镜像复测
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "构建 workflow 的 run ID（留空 = main 最近一次成功 CI）"
+        required: false
+        default: ""
+      include_docker:
+        description: "复测哪个变体"
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      run_test:
+        description: "测试选择：readiness / readiness,dataplane"
+        required: false
+        default: "readiness"
+      root_password:
+        description: "复测用 SSH 密码（默认与构建时一致）"
+        required: false
+        default: "landscape"
+
+jobs:
+  resolve:
+    name: 解析历史产物
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.meta.outputs.run_id }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - name: 定位构建产物
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.run_id }}
+          INCLUDE_DOCKER: ${{ inputs.include_docker }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          if [[ -z "${REQUESTED_RUN_ID}" ]]; then
+            run_id="$(gh api "repos/${repo}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
+              --jq '.workflow_runs[0].id')"
+            [[ -n "${run_id}" ]] || { echo "main 上没有成功的 CI 构建" >&2; exit 1; }
+          else
+            run_id="${REQUESTED_RUN_ID}"
+          fi
+
+          variant=""
+          [[ "${INCLUDE_DOCKER}" == "true" ]] && variant="-docker"
+          artifact_name="$(gh api "repos/${repo}/actions/runs/${run_id}/artifacts" \
+            --jq "[.artifacts[].name | select(startswith(\"basalt${variant}-\"))][0]")"
+          [[ -n "${artifact_name}" ]] \
+            || { echo "run ${run_id} 中找不到 basalt${variant}-* 产物" >&2; exit 1; }
+
+          { echo "run_id=${run_id}"; echo "artifact_name=${artifact_name}"; } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: 运行测试
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载历史构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact_name }}
+          path: output/
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 解压镜像（测试需要 raw）
+        run: |
+          set -euo pipefail
+          cd output
+          for f in *.img.xz; do
+            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+            xz -T0 -d -k "$f"
+          done
+
+      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+        run: |
+          set -euo pipefail
+          img="$(ls output/basalt*.img | head -n1)"
+          echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
+
+      - name: 安装测试依赖
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass socat curl jq \
+            qemu-system-x86 ovmf qemu-utils
+
+      - name: 运行就绪检查
+        env:
+          SSH_PASSWORD: ${{ inputs.root_password }}
+          SSH_TIMEOUT: '120'
+          LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ inputs.include_docker }}
+          LANDSCAPE_TEST_RUN_TEST: readiness
+        run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
+
+      - name: 运行数据平面测试
+        if: ${{ contains(inputs.run_test, 'dataplane') && inputs.include_docker == 'false' }}
+        env:
+          SSH_PASSWORD: ${{ inputs.root_password }}
+          SSH_TIMEOUT: '120'
+          LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ inputs.include_docker }}
+          LANDSCAPE_TEST_RUN_TEST: readiness,dataplane
+        run: timeout --foreground 30m ./tests/test-dataplane.sh "${IMAGE_PATH}"
+
+      - name: 上传复测日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retest-logs-${{ needs.resolve.outputs.run_id }}
+          path: output/test-logs/
+          retention-days: 7

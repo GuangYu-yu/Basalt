@@ -1,0 +1,43 @@
+# =============================================================================
+# 自定义构建：手动按参数构建专属镜像，产物留存 30 天供下载
+# （需自定义 LAN 网段等配置时：本地以 EFFECTIVE_CONFIG_PATH 指向渲染好的
+#   landscape_init.toml 运行 build.sh，或提 PR 修改 configs 内默认配置）
+# =============================================================================
+
+name: 自定义构建
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_docker:
+        description: "是否包含 Docker"
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      output_formats:
+        description: "产物格式：img / img,vmdk / img,ova 等（img 恒最后处理）"
+        required: false
+        default: "img"
+      landscape_version:
+        description: "Landscape 版本：latest 或 vX.Y.Z（留空用 build.env 默认值）"
+        required: false
+        default: ""
+      root_password:
+        description: "Linux root 登录密码"
+        required: false
+        default: "landscape"
+      run_test:
+        description: "测试选择：none / readiness / readiness,dataplane"
+        required: false
+        default: "none"
+
+jobs:
+  build_and_validate:
+    uses: ./.github/workflows/_build-and-validate.yml
+    with:
+      include_docker: ${{ inputs.include_docker == 'true' }}
+      run_test: ${{ inputs.run_test || 'none' }}
+      output_formats: ${{ inputs.output_formats || 'img' }}
+      landscape_version: ${{ inputs.landscape_version || '' }}
+      root_password: ${{ inputs.root_password || 'landscape' }}

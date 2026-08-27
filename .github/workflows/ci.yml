@@ -1,0 +1,59 @@
+# =============================================================================
+# 持续集成入口：push / PR / 手动触发 → 复用 _build-and-validate.yml
+# =============================================================================
+
+name: 持续集成
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_docker:
+        description: "是否包含 Docker"
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      run_test:
+        description: "测试选择：none / readiness / readiness,dataplane"
+        required: false
+        default: "readiness"
+      landscape_version:
+        description: "Landscape 版本（留空用 build.env 默认值）"
+        required: false
+        default: ""
+      root_password:
+        description: "Linux root 登录密码"
+        required: false
+        default: "landscape"
+  push:
+    branches: [main]
+    paths:
+      - build.sh
+      - build.env
+      - lib/**
+      - mkosi/**
+      - tests/**
+      - .github/workflows/*.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - build.sh
+      - build.env
+      - lib/**
+      - mkosi/**
+      - tests/**
+      - .github/workflows/*.yml
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_and_validate:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.repository.fork }}
+    uses: ./.github/workflows/_build-and-validate.yml
+    with:
+      include_docker: ${{ inputs.include_docker == 'true' }}
+      run_test: ${{ inputs.run_test || 'readiness' }}
+      landscape_version: ${{ inputs.landscape_version || '' }}
+      root_password: ${{ inputs.root_password || 'landscape' }}
