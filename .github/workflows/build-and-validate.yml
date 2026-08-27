@@ -50,7 +50,7 @@ jobs:
           # 也不再打 release tag：从 GitHub tag 源码包安装。erofs/btrfs mkfs
           # 由 mkosi ToolsTree 自带
           sudo apt-get install -y systemd-repart qemu-utils xz-utils \
-            python3-pip
+            python3-pip debian-archive-keyring
           sudo python3 -m pip install --break-system-packages \
             https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
           mkosi --version
