@@ -134,15 +134,21 @@ fi
 # APT 镜像直通（兼容旧版 APT_MIRROR 变量名；mkosi 原生 --mirror，无 failover
 # 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")
-# ESP 构建期自适应：首次构建按内容实际大小产出，构建后提取 ×ESP_SLOTS 二次
-# repart 定稿（见下方 build 段）。repart 定义用 work/repart 的拷贝，不改仓库源文件。
+# repart 构建侧定义：与设备侧 sysupdate.d 相同的"暂存-恢复"惯用法。
+# 不可用 --repart-dir 指向 work 拷贝：mkosi 自动发现的 mkosi.repart/ 先于
+# CLI 目录注册，而 systemd-repart 对跨目录同名定义先到先得
+# （conf-files.c files_add() 的 hashmap 去重），work 渲染会被静默跳过，
+# ESP/B 自适应曾因此整体失效。.orig 备份仅供 cleanup_staged 恢复，
+# repart 只消费 *.conf。
 ESP_SLOTS="${ESP_SLOTS:-3}"
-REPART_DIR="${WORK_DIR}/repart"
-rm -rf "${REPART_DIR}"
-cp -a "${SCRIPT_DIR}/mkosi/mkosi.repart" "${REPART_DIR}"
+REPART_DIR="${SCRIPT_DIR}/mkosi/mkosi.repart"
+STAGED_REPART_CONFS=()
+for conf in "${REPART_DIR}"/*.conf; do
+    cp -f "$conf" "$conf.orig"
+    STAGED_REPART_CONFS+=("$conf")
+done
 sed -i -e "s/basalt_/${IMAGE_ID}_/g" -e "s#/basalt/#/${IMAGE_ID}/#g" \
     "${REPART_DIR}"/*.conf
-MKOSI_ARGS+=(--repart-dir "${REPART_DIR}")
 
 # ── IMAGE_ID 渲染 ──
 # 仓库源文件以默认 ID "basalt" 为模板；构建期把消费方（repart Label /
@@ -160,6 +166,9 @@ sed -i -e "s/basalt_/${IMAGE_ID}_/g" -e "s#/basalt/#/${IMAGE_ID}/#g" \
 cleanup_staged() {
     [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
     [[ -n "${STAGED_ASSETS_SET:-}" ]] && rm -f "${STAGED_WEBAPP}" "${STAGED_STATIC}"
+    for conf in "${STAGED_REPART_CONFS[@]:-}"; do
+        [[ -n "$conf" && -f "$conf.orig" ]] && mv -f "$conf.orig" "$conf"
+    done
     if [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]]; then
         mv -f "${WORK_DIR}/91-root-b.conf.orig" "${STAGED_B_DEF}"
     fi
@@ -170,7 +179,7 @@ cleanup_staged() {
     return 0
 }
 if [[ "${IMAGE_ID}" != "basalt" ]] && \
-   grep -rqE 'basalt_' "${REPART_DIR}" "${STAGED_SYSUPDATE_D[@]}"; then
+   grep -qE 'basalt_' "${REPART_DIR}"/*.conf "${STAGED_SYSUPDATE_D[@]}"; then
     die "IMAGE_ID 渲染不完整：渲染后的定义文件仍残留 basalt_"
 fi
 trap cleanup_staged EXIT
@@ -263,6 +272,8 @@ cat > "${REPART_DIR}/10-esp.conf" <<EOF
 Type=esp
 Label=ESP
 Format=vfat
+CopyFiles=/boot:/
+CopyFiles=/efi:/
 SizeMinBytes=${esp_target}
 SizeMaxBytes=${esp_target}
 EOF
@@ -279,7 +290,7 @@ SizeMinBytes=${b_target}
 GrowFileSystem=no
 EOF
 
-# 渲染 3/3：构建侧 B 槽同步全尺寸。分区起点不可移动，若 B 构建期最小化
+# 渲染 2/2：构建侧 B 槽同步全尺寸。分区起点不可移动，若 B 构建期最小化
 # 占位，首启 repart 想扩 B 时尾部空闲隔着 var 物理不可达
 # （Can't fit ... refusing，连带 var 不扩）
 cat > "${REPART_DIR}/21-root-b.conf" <<EOF
