@@ -150,5 +150,11 @@ def check(blob: bytes) -> int:
     return 0
 
 
+def main() -> int:
+    initrd = Path(sys.argv[1])
+    blob = decode_initrd(initrd.read_bytes())
+    return check(blob)
+
+
 if __name__ == "__main__":
     sys.exit(main())
