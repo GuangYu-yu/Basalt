@@ -31,8 +31,6 @@ if ! id ld >/dev/null 2>&1; then
     echo "ld:${ROOT_PASSWORD:-landscape}" | chpasswd
 fi
 
-# runtime.env 由 mkosi.finalize 渲染（extra tree 合入后才能看到注入的配置）
-#
 # 服务契约：
 #   ssh/networking    — readiness 契约（SSH root@2222、Landscape 接管网卡；
 #     ifupdown 提供 networking.service，interfaces 为 loopback-only）

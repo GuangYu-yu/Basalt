@@ -89,8 +89,8 @@ source "${SCRIPT_DIR}/lib/export.sh"
 # 暂存进 extra tree；mkosi 合入后经 root 分区 CopyFiles=/ 烘焙为
 # /usr/share/landscape/landscape_init.toml（工厂默认配置），
 # landscape-router.service ExecStartPre 首启有条件拷贝到 /var/lib/landscape。
-# 不直接放 var：CopyFiles=/var 链路实测丢文件（root 链路可靠），且
-# /usr/share 属于镜像 = 随版本原子更新，与旧版"toml 烘进镜像"语义一致。
+# 不放 var：CopyFiles=/var 链路实测丢文件（root 链路可靠），且 /usr/share
+# 属于镜像 = 随版本原子更新，工厂重置（清 /var）即恢复出厂拓扑。
 STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/usr/share/landscape/landscape_init.toml"
 STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
 STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
