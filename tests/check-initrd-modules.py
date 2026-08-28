@@ -44,6 +44,11 @@ def decode_initrd(data: bytes) -> bytes:
     out = bytearray()
     rest = data
     while rest:
+        # mkosi join_initrds 在每段后补零到 4 字节对齐（mkosi qemu.py:619），
+        # zstd 帧与 newc 头均不以零开头，剥掉前导零即跳过段间填充
+        rest = rest.lstrip(b"\x00")
+        if not rest:
+            break
         if rest[:4] == ZSTD_MAGIC:
             dctx = zstandard.ZstdDecompressor().decompressobj()
             try:
