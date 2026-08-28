@@ -1,5 +1,5 @@
 # =============================================================================
-# 持续集成入口：push / PR / 手动触发 → 复用 _build-and-validate.yml
+# 持续集成入口：PR / 手动触发 → 复用 _build-and-validate.yml（push 不触发）
 # =============================================================================
 
 name: 持续集成
@@ -31,15 +31,6 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
-  push:
-    branches: [main]
-    paths:
-      - build.sh
-      - build.env
-      - lib/**
-      - mkosi/**
-      - tests/**
-      - .github/workflows/*.yml
   pull_request:
     branches: [main]
     paths:
