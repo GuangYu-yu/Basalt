@@ -27,8 +27,6 @@ NEWC_MAGIC = b"070701"
 
 
 def extract_initrd(uki: Path) -> bytes:
-    # 直接解析 PE 节表取 .initrd：objcopy 在 PE 上抽节可能截断，
-    # 导致下游 zstd 报 unexpected end of file
     blob = uki.read_bytes()
     pe_off = struct.unpack_from("<I", blob, 0x3C)[0]
     if blob[pe_off:pe_off + 4] != b"PE\x00\x00":
@@ -48,10 +46,15 @@ def extract_initrd(uki: Path) -> bytes:
     sys.exit(f"{uki}: 未找到 .initrd 节")
 
 
-def decode_zstd(data: bytes) -> bytes:
-    # .initrd = 各 cpio 独立 zstd 压缩后拼接；zstd CLI 原生支持连续帧
-    return subprocess.run(["zstd", "-dc"], input=data, check=True,
-                          stdout=subprocess.PIPE).stdout
+def decode_initrd(data: bytes) -> bytes:
+    # 格式按魔数自适配：mkosi 拼接的 cpio 可能整段 zstd，也可能未压缩
+    if data[:4] == b"\x28\xb5\x2f\xfd":
+        return subprocess.run(["zstd", "-dc"], input=data, check=True,
+                              stdout=subprocess.PIPE).stdout
+    if data[:6] == NEWC_MAGIC:
+        print("[module-gate] .initrd 为未压缩 cpio，直接解析")
+        return data
+    sys.exit(f".initrd 格式无法识别，头 16 字节：{data[:16].hex()}")
 
 
 def cpio_names(blob: bytes) -> list[str]:
@@ -85,7 +88,7 @@ def modname(path: str) -> str:
 
 def main() -> int:
     uki = Path(sys.argv[1])
-    blob = decode_zstd(extract_initrd(uki))
+    blob = decode_initrd(extract_initrd(uki))
     names = cpio_names(blob)
 
     kos = {modname(n): n for n in names
