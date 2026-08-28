@@ -120,6 +120,16 @@ if [[ -n "${LANDSCAPE_VERSION:-}" && "${LANDSCAPE_VERSION}" != "latest" ]]; then
     ROOT_LABEL_VER="${LANDSCAPE_VERSION#v}"
 fi
 MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER}")
+# 排障专用：DIAG_CMDLINE=1 时叠加诊断参数（转发 journal 到串口）。
+# 默认关闭；排障结束勿保留在常规构建中
+if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
+    MKOSI_ARGS+=(
+        --kernel-command-line "loglevel=7"
+        --kernel-command-line "systemd.log_level=debug"
+        --kernel-command-line "systemd.log_target=console"
+        --kernel-command-line "udev.log_level=debug"
+    )
+fi
 # APT 镜像直通（兼容旧版 APT_MIRROR 变量名；mkosi 原生 --mirror，无 failover
 # 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")

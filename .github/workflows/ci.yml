@@ -25,6 +25,12 @@ on:
         description: "Linux root 登录密码"
         required: false
         default: "landscape"
+      diag_cmdline:
+        description: "叠加诊断内核参数（仅排障用）"
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
   push:
     branches: [main]
     paths:
@@ -57,3 +63,4 @@ jobs:
       run_test: ${{ inputs.run_test || 'readiness' }}
       landscape_version: ${{ inputs.landscape_version || '' }}
       root_password: ${{ inputs.root_password || 'landscape' }}
+      diag_cmdline: ${{ inputs.diag_cmdline == 'true' }}

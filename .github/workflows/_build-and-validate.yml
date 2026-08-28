@@ -33,6 +33,11 @@ on:
         required: false
         type: string
         default: "landscape"
+      diag_cmdline:
+        description: "叠加诊断内核参数（loglevel=7 + systemd/udev debug 转发串口），仅排障用"
+        required: false
+        type: boolean
+        default: false
     outputs:
       image_artifact:
         description: "镜像产物 artifact 名"
@@ -128,6 +133,7 @@ jobs:
           COMPRESS_OUTPUT: 'yes'
           RUN_TEST: 'none'
           OUTPUT_FORMATS: ${{ inputs.output_formats }}
+          DIAG_CMDLINE: ${{ inputs.diag_cmdline == true && '1' || '0' }}
         shell: bash
         run: |
           set -euo pipefail
