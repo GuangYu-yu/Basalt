@@ -165,6 +165,7 @@ jobs:
       - name: 模块门禁
         run: |
           set -euo pipefail
+          python3 -m pip install --quiet --break-system-packages zstandard
           initrd="$(ls output/basalt*.initrd | head -n1)"
           python3 tests/check-initrd-modules.py "${initrd}"
 

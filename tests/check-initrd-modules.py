@@ -13,9 +13,10 @@ min(VirtualSize, SizeOfRawData)）从 UKI 拆出的合并 initrd
 遗漏 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+import zstandard
 
 REQUIRED = {
     "virtio_blk", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs",
@@ -32,21 +33,32 @@ ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def decode_initrd(data: bytes) -> bytes:
-    # 格式按魔数自适配：合并 initrd 为 zstd 帧流（可能多帧拼接）或未压缩 cpio。
-    # 解码失败时把证据落盘 output/test-logs/（失败也会随 artifact 上传），供离线分析
+    """按内核 initramfs 解析语义处理混拼流：zstd 帧解压、裸 cpio 段原样保留。
+
+    mkosi 的合并 initrd = initrd.cpio.zst（zstd 帧）+ kernel-modules initrd
+    （未压缩 cpio），内核 initramfs 解析器逐段自识别，故系统能正常启动；
+    此处必须同样逐段处理，整体 zstd -dc 会在裸 cpio 段报错。
+    解码失败时把证据落盘 output/test-logs/（失败也会随 artifact 上传）。
+    """
     probe_dir = Path("output/test-logs/module-gate")
-    if data[:4] == ZSTD_MAGIC:
-        r = subprocess.run(["zstd", "-dc"], input=data,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if r.returncode != 0:
-            dump_probe(probe_dir, data, r.stderr.decode(errors="replace").strip())
-            sys.exit(f"zstd 解压失败：{r.stderr.decode(errors='replace').strip()}\n"
-                     f"证据已写入 {probe_dir}")
-        return r.stdout
-    if data[:6] == NEWC_MAGIC:
-        return data
-    dump_probe(probe_dir, data, "魔数无法识别")
-    sys.exit(f"initrd 格式无法识别（大小 {len(data)}），证据已写入 {probe_dir}")
+    out = bytearray()
+    rest = data
+    while rest:
+        if rest[:4] == ZSTD_MAGIC:
+            dctx = zstandard.ZstdDecompressor().decompressobj()
+            try:
+                out += dctx.decompress(rest)
+            except zstandard.ZstdError as e:
+                dump_probe(probe_dir, data, f"zstd: {e}")
+                sys.exit(f"zstd 解压失败：{e}\n证据已写入 {probe_dir}")
+            rest = dctx.unused_data
+        elif rest[:6] == NEWC_MAGIC:
+            out += rest
+            rest = b""
+        else:
+            dump_probe(probe_dir, data, f"偏移 {len(data) - len(rest)} 处出现无法识别的段")
+            sys.exit(f"initrd 段无法识别（大小 {len(data)}），证据已写入 {probe_dir}")
+    return bytes(out)
 
 
 def dump_probe(probe_dir: Path, data: bytes, reason: str) -> None:
