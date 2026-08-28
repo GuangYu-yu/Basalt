@@ -128,6 +128,7 @@ if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
         --kernel-command-line "systemd.log_level=debug"
         --kernel-command-line "systemd.log_target=console"
         --kernel-command-line "udev.log_level=debug"
+        --kernel-command-line "systemd.journald.forward_to_console=1"
     )
 fi
 # APT 镜像直通（兼容旧版 APT_MIRROR 变量名；mkosi 原生 --mirror，无 failover
