@@ -7,7 +7,7 @@ min(VirtualSize, SizeOfRawData)）从 UKI 拆出的合并 initrd
 此处零抽取逻辑，只做解码与断言。
 
 需求契约（与 mkosi.conf 的 KernelModules= 对应；此处是验证端，二者需同步修改）：
-  启动链   virtio_blk virtio_pci virtio_net ahci sd_mod nvme autofs
+  启动链   virtio_blk virtio_pci virtio_net ahci sd_mod nvme autofs4
   根/引导  erofs overlay btrfs vfat
   数据面   nf_conntrack tun veth bridge e1000 r8169
 遗漏 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
@@ -19,7 +19,7 @@ from pathlib import Path
 import zstandard
 
 REQUIRED = {
-    "virtio_blk", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs",
+    "virtio_blk", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
     "erofs", "overlay", "btrfs", "vfat",
     # 旧版延续的部署场景：PVE IDE / ESXi / Hyper-V / Xen
     "ata_piix", "vmw_pvscsi", "mptspi", "mpt3sas",
@@ -143,18 +143,11 @@ def check(blob: bytes) -> int:
             if line.strip():
                 builtin.add(modname(line.strip()))
 
-    aliases = blob.count(b"autofs4")
-
-    missing = sorted(REQUIRED - set(kos) - builtin
-                     - ({"autofs"} if aliases else set()))
+    missing = sorted(REQUIRED - set(kos) - builtin)
     total = len(kos)
     print(f"[module-gate] initrd 内模块文件：{total} 个，built-in：{len(builtin)} 个")
     for req in sorted(REQUIRED):
         hit = kos.get(req) or ("built-in" if req in builtin else None)
-        # Debian 6.12 模块文件名为 autofs4.ko，modname 归一后对不上 autofs，
-        # 由 aliases（autofs4 别名计数）豁免 —— 显示为 alias 命中而非 MISS
-        if not hit and req == "autofs" and aliases:
-            hit = "alias:autofs4"
         print(f"  {'OK ' if hit else 'MISS'} {req}" + (f" -> {hit}" if hit else ""))
 
     name_set = set(names)
