@@ -105,7 +105,9 @@ def cpio_names(blob: bytes) -> list[str]:
 
 def modname(path: str) -> str:
     base = path.rsplit("/", 1)[-1]
-    return re.sub(r"\.ko(\.(gz|xz|zst))?$", "", base)
+    base = re.sub(r"\.ko(\.(gz|xz|zst))?$", "", base)
+    # 内核模块名把文件名中的连字符归一为下划线（如 xen-blkfront -> xen_blkfront）
+    return base.replace("-", "_")
 
 
 def check(blob: bytes) -> int:
