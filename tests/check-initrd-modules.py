@@ -108,21 +108,39 @@ def modname(path: str) -> str:
     return re.sub(r"\.ko(\.(gz|xz|zst))?$", "", base)
 
 
-def main() -> int:
-    initrd = Path(sys.argv[1])
-    blob = decode_initrd(initrd.read_bytes())
+def check(blob: bytes) -> int:
     names = cpio_names(blob)
 
     kos = {modname(n): n for n in names
            if re.search(r"usr/lib/modules/[^/]+/.*\.ko(\.(gz|xz|zst))?$", n)}
+
+    # built-in（CONFIG_...=y）模块无 .ko 文件，由 modules.builtin 清单承载，
+    # 与 .ko 同为契约满足。从 cpio 数据流中定位该文件并逐行解析
+    builtin = set()
+    for path in names:
+        if not path.endswith("modules.builtin"):
+            continue
+        hdr_off = blob.find(path.encode())
+        if hdr_off < 0:
+            continue
+        # 回退到该条目头起始（文件名紧跟 110 字节头），沿头读 filesize
+        start = blob.rfind(NEWC_MAGIC, 0, hdr_off)
+        hdr = blob[start:start + 110]
+        filesize = int(hdr[54:62], 16)
+        namesize = int(hdr[94:102], 16)
+        data_start = (start + 110 + namesize + 3) & ~3
+        for line in blob[data_start:data_start + filesize].decode("utf-8", "replace").splitlines():
+            if line.strip():
+                builtin.add(modname(line.strip()))
+
     aliases = blob.count(b"autofs4")
 
-    missing = sorted(REQUIRED - set(kos)
+    missing = sorted(REQUIRED - set(kos) - builtin
                      - ({"autofs"} if aliases else set()))
     total = len(kos)
-    print(f"[module-gate] initrd 内模块文件：{total} 个")
+    print(f"[module-gate] initrd 内模块文件：{total} 个，built-in：{len(builtin)} 个")
     for req in sorted(REQUIRED):
-        hit = kos.get(req)
+        hit = kos.get(req) or ("built-in" if req in builtin else None)
         print(f"  {'OK ' if hit else 'MISS'} {req}" + (f" -> {hit}" if hit else ""))
 
     if missing:
