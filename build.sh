@@ -279,6 +279,18 @@ SizeMinBytes=${b_target}
 GrowFileSystem=no
 EOF
 
+# 渲染 3/3：构建侧 B 槽同步全尺寸。分区起点不可移动，若 B 构建期最小化
+# 占位，首启 repart 想扩 B 时尾部空闲隔着 var 物理不可达
+# （Can't fit ... refusing，连带 var 不扩）
+cat > "${REPART_DIR}/21-root-b.conf" <<EOF
+[Partition]
+Type=root
+Label=_empty
+Format=erofs
+SizeMinBytes=${b_target}
+SizeMaxBytes=${b_target}
+EOF
+
 info "mkosi -f build（自适应定稿重建；包缓存/增量缓存仍生效）..."
 mkosi -f "${MKOSI_ARGS[@]}" build
 BUILT_RAW="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.raw 2>/dev/null | head -1)"
