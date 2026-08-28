@@ -56,7 +56,8 @@ done
 if [[ ${#CLI_FORMATS[@]} -gt 0 ]]; then
     OUTPUT_FORMATS="$(IFS=,; echo "${CLI_FORMATS[*]}")"
 fi
-rest="$(tr , '\n' <<<"${OUTPUT_FORMATS}" | awk '!seen[$0]++' | grep -vx img | paste -sd, -)"
+# grep 无匹配返回 1（仅 img 时必现），须屏蔽退出码防 set -e 终止
+rest="$(tr , '\n' <<<"${OUTPUT_FORMATS}" | awk '!seen[$0]++' | { grep -vx img || true; } | paste -sd, -)"
 OUTPUT_FORMATS="${rest:+${rest},}img"
 
 require() { command -v "$1" >/dev/null || die "缺少 '$1'（安装: apt install $2）"; }
