@@ -1,0 +1,13 @@
+[Unit]
+Description=Dump runtime evidence to serial console (DIAG builds only)
+# 仅 DIAG_CMDLINE=1 构建启用（内核参数 diag）；journal 只收 systemd 单元流，
+# webserver 自管日志与网络状态在普通排障串口里不可见，此服务补盲区
+ConditionKernelCommandLine=diag
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -ec 'sleep 30; { echo "===== diag-dump ====="; date -u; echo "--- ip addr ---"; ip addr; echo "--- ip route ---"; ip route; echo "--- listening ---"; ss -tlnp; echo "--- webserver log tail ---"; find /root/.landscape-router -name "*.log" -exec tail -n 50 {} \; 2>/dev/null; } > /dev/console'
+
+[Install]
+WantedBy=multi-user.target
