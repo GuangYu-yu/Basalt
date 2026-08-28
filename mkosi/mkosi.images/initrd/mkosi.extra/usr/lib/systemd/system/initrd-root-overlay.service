@@ -24,10 +24,7 @@ OnFailureJobMode=replace-irreversibly
 #      完成文件系统扩展 —— 因此这里刻意不做 move-mount
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -ec '
-mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var
-# upper/work 已由构建期 finalize 创建并经 CopyFiles=/var 落盘（构建期保证为空）
-mkdir -p /run/var/lib/etc/upper /run/var/lib/etc/work
-mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot
-'
+# 单行命令：unit 语法引号不可跨行（多行引号会被判 Unbalanced quoting，
+# 整个 unit 拒载 —— 曾因此 overlay 从未组装、根恒只读）
+ExecStart=/bin/sh -ec 'mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; mkdir -p /run/var/lib/etc/upper /run/var/lib/etc/work; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
 RemainAfterExit=yes

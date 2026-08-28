@@ -151,6 +151,10 @@ def check(blob: bytes) -> int:
     print(f"[module-gate] initrd 内模块文件：{total} 个，built-in：{len(builtin)} 个")
     for req in sorted(REQUIRED):
         hit = kos.get(req) or ("built-in" if req in builtin else None)
+        # Debian 6.12 模块文件名为 autofs4.ko，modname 归一后对不上 autofs，
+        # 由 aliases（autofs4 别名计数）豁免 —— 显示为 alias 命中而非 MISS
+        if not hit and req == "autofs" and aliases:
+            hit = "alias:autofs4"
         print(f"  {'OK ' if hit else 'MISS'} {req}" + (f" -> {hit}" if hit else ""))
 
     name_set = set(names)
