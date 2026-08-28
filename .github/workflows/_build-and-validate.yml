@@ -56,8 +56,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
-      image_artifact: ${{ steps.meta.outputs.image_artifact }}
-      log_artifact: ${{ steps.meta.outputs.log_artifact }}
+      image_artifact: ${{ steps.tests.outputs.image_artifact }}
+      log_artifact: ${{ steps.tests.outputs.log_artifact }}
       run_readiness: ${{ steps.tests.outputs.run_readiness }}
       run_dataplane: ${{ steps.tests.outputs.run_dataplane }}
     steps:

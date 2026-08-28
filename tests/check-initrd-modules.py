@@ -32,13 +32,34 @@ ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def decode_initrd(data: bytes) -> bytes:
-    # 格式按魔数自适配：合并 initrd 为 zstd 帧流或未压缩 cpio
+    # 格式按魔数自适配：合并 initrd 为 zstd 帧流（可能多帧拼接）或未压缩 cpio。
+    # 解码失败时把证据落盘 output/test-logs/（失败也会随 artifact 上传），供离线分析
+    probe_dir = Path("output/test-logs/module-gate")
     if data[:4] == ZSTD_MAGIC:
-        return subprocess.run(["zstd", "-dc"], input=data, check=True,
-                              stdout=subprocess.PIPE).stdout
+        r = subprocess.run(["zstd", "-dc"], input=data,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if r.returncode != 0:
+            dump_probe(probe_dir, data, r.stderr.decode(errors="replace").strip())
+            sys.exit(f"zstd 解压失败：{r.stderr.decode(errors='replace').strip()}\n"
+                     f"证据已写入 {probe_dir}")
+        return r.stdout
     if data[:6] == NEWC_MAGIC:
         return data
-    sys.exit(f"initrd 格式无法识别（大小 {len(data)}），头 16 字节：{data[:16].hex()}")
+    dump_probe(probe_dir, data, "魔数无法识别")
+    sys.exit(f"initrd 格式无法识别（大小 {len(data)}），证据已写入 {probe_dir}")
+
+
+def dump_probe(probe_dir: Path, data: bytes, reason: str) -> None:
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    (probe_dir / "head-1m.bin").write_bytes(data[:1 << 20])
+    (probe_dir / "tail-1m.bin").write_bytes(data[-(1 << 20):])
+    (probe_dir / "info.txt").write_text(
+        f"size={len(data)}\n"
+        f"head64={data[:64].hex()}\n"
+        f"tail64={data[-64:].hex()}\n"
+        f"zstd_magic_at={data.find(ZSTD_MAGIC)}\n"
+        f"reason={reason}\n",
+        encoding="utf-8")
 
 
 def cpio_names(blob: bytes) -> list[str]:
