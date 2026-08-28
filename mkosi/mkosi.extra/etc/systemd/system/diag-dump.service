@@ -7,7 +7,7 @@ After=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -ec 'sleep 30; { echo "===== diag-dump ====="; date -u; echo "--- ip addr ---"; ip addr; echo "--- ip route ---"; ip route; echo "--- listening ---"; ss -tlnp; echo "--- home ls ---"; ls -la /root/.landscape-router/ 2>&1; echo "--- init toml ---"; head -n 8 /root/.landscape-router/landscape_init.toml 2>&1; echo "--- logs ---"; find /root/.landscape-router/logs -type f -exec tail -n 40 {} \; 2>&1; } > /dev/console'
+ExecStart=/bin/sh -ec 'sleep 30; { echo "===== diag-dump ====="; date -u; echo "--- cmdline ---"; cat /proc/cmdline; echo "--- findmnt ---"; findmnt; echo "--- blkid ---"; blkid; echo "--- ip addr ---"; ip addr; echo "--- ip route ---"; ip route; echo "--- listening ---"; ss -tlnp; echo "--- home ls ---"; ls -la /root/.landscape-router/ 2>&1; echo "--- init toml ---"; head -n 8 /root/.landscape-router/landscape_init.toml 2>&1; echo "--- logs ---"; find /root/.landscape-router/logs -type f -exec tail -n 40 {} \; 2>&1; echo "--- root-part inspect ---"; mkdir -p /mnt/rootpart; for p in /dev/disk/by-partlabel/basalt*; do echo "mount $p"; mount -o ro "$p" /mnt/rootpart 2>&1 && { ls -la /mnt/rootpart/var/lib/landscape/ 2>&1; umount /mnt/rootpart; }; done; } > /dev/console'
 
 [Install]
 WantedBy=multi-user.target
