@@ -174,8 +174,9 @@ jobs:
       - name: 模块门禁
         run: |
           set -euo pipefail
+          source build.env
           python3 -m pip install --quiet --break-system-packages zstandard
-          initrd="$(ls output/basalt*.initrd | head -n1)"
+          initrd="$(ls "output/${IMAGE_ID}"*.initrd | head -n1)"
           python3 tests/check-initrd-modules.py "${initrd}"
 
       - name: 列出输出文件
@@ -221,15 +222,21 @@ jobs:
         run: |
           set -euo pipefail
           cd output
-          for f in *.img.xz; do
-            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+          shopt -s nullglob
+          xz_images=(*.img.xz)
+          if [[ ${#xz_images[@]} -eq 0 ]]; then
+            echo "output 中未找到 *.img.xz 镜像产物" >&2
+            exit 1
+          fi
+          for f in "${xz_images[@]}"; do
             xz -T0 -d -k "$f"
           done
 
       - name: 选择测试镜像
         run: |
           set -euo pipefail
-          img="$(ls output/basalt*.img | head -n1)"
+          source build.env
+          img="$(ls "output/${IMAGE_ID}"*.img | head -n1)"
           echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
 
       - name: 安装测试依赖
@@ -277,15 +284,21 @@ jobs:
         run: |
           set -euo pipefail
           cd output
-          for f in *.img.xz; do
-            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+          shopt -s nullglob
+          xz_images=(*.img.xz)
+          if [[ ${#xz_images[@]} -eq 0 ]]; then
+            echo "output 中未找到 *.img.xz 镜像产物" >&2
+            exit 1
+          fi
+          for f in "${xz_images[@]}"; do
             xz -T0 -d -k "$f"
           done
 
       - name: 选择测试镜像
         run: |
           set -euo pipefail
-          img="$(ls output/basalt*.img | head -n1)"
+          source build.env
+          img="$(ls "output/${IMAGE_ID}"*.img | head -n1)"
           echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
 
       - name: 安装测试依赖

@@ -35,6 +35,9 @@ jobs:
       run_id: ${{ steps.meta.outputs.run_id }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
       - name: 定位构建产物
         id: meta
         env:
@@ -43,6 +46,7 @@ jobs:
           INCLUDE_DOCKER: ${{ inputs.include_docker }}
         run: |
           set -euo pipefail
+          source build.env
           repo="${{ github.repository }}"
           if [[ -z "${REQUESTED_RUN_ID}" ]]; then
             run_id="$(gh api "repos/${repo}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
@@ -55,9 +59,9 @@ jobs:
           variant=""
           [[ "${INCLUDE_DOCKER}" == "true" ]] && variant="-docker"
           artifact_name="$(gh api "repos/${repo}/actions/runs/${run_id}/artifacts" \
-            --jq "[.artifacts[].name | select(startswith(\"basalt${variant}-\"))][0]")"
+            --jq "[.artifacts[].name | select(startswith(\"${IMAGE_ID}${variant}-\"))][0]")"
           [[ -n "${artifact_name}" ]] \
-            || { echo "run ${run_id} 中找不到 basalt${variant}-* 产物" >&2; exit 1; }
+            || { echo "run ${run_id} 中找不到 ${IMAGE_ID}${variant}-* 产物" >&2; exit 1; }
 
           { echo "run_id=${run_id}"; echo "artifact_name=${artifact_name}"; } >> "$GITHUB_OUTPUT"
 
@@ -82,15 +86,21 @@ jobs:
         run: |
           set -euo pipefail
           cd output
-          for f in *.img.xz; do
-            [[ -e "$f" ]] || { echo "raw 与 xz 均缺失"; exit 1; }
+          shopt -s nullglob
+          xz_images=(*.img.xz)
+          if [[ ${#xz_images[@]} -eq 0 ]]; then
+            echo "output 中未找到 *.img.xz 镜像产物" >&2
+            exit 1
+          fi
+          for f in "${xz_images[@]}"; do
             xz -T0 -d -k "$f"
           done
 
       - name: 选择测试镜像
         run: |
           set -euo pipefail
-          img="$(ls output/basalt*.img | head -n1)"
+          source build.env
+          img="$(ls "output/${IMAGE_ID}"*.img | head -n1)"
           echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
 
       - name: 安装测试依赖

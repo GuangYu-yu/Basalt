@@ -1,0 +1,12 @@
+# 服务启用策略 —— mkosi 构建末尾原生执行 `systemctl preset-all` 应用本文件
+# （mkosi.1 构建序：sysusers → tmpfiles → preset-all）。/etc/system-preset 优先
+# 于发行版 /usr/lib/system-preset，是镜像内服务启用的唯一事实来源
+enable landscape-router.service
+enable ssh.service
+enable networking.service
+enable chrony.service
+enable systemd-sysupdate.timer
+# 双网络栈/双 NTP 防护：即使上游包默认启用也强制关闭
+disable systemd-resolved.service
+disable NetworkManager.service
+disable systemd-timesyncd.service

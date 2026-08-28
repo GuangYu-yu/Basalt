@@ -32,10 +32,14 @@ LANDSCAPE_TEST_HTTP_TIMEOUT="${LANDSCAPE_TEST_HTTP_TIMEOUT:-10}"
 LANDSCAPE_API_READY_TIMEOUT="${LANDSCAPE_API_READY_TIMEOUT:-45}"
 LANDSCAPE_API_READY_INTERVAL="${LANDSCAPE_API_READY_INTERVAL:-3}"
 LANDSCAPE_ROUTER_READY_TIMEOUT="${LANDSCAPE_ROUTER_READY_TIMEOUT:-90}"
+# 本地测试端口默认值：端口缺省判定与自动分配递增的统一基准
+LANDSCAPE_DEFAULT_SSH_PORT=2222
+LANDSCAPE_DEFAULT_WEB_PORT=9800
+LANDSCAPE_DEFAULT_MCAST_PORT=1234
+LANDSCAPE_DEFAULT_CONTROL_PORT=6443
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR:-$(pwd)}/output}"
 WORK_DIR="${WORK_DIR:-${PROJECT_DIR:-$(pwd)}/work}"
 LANDSCAPE_TEST_LOG_DIR="${LANDSCAPE_TEST_LOG_DIR:-${OUTPUT_DIR}/test-logs}"
-LANDSCAPE_EFFECTIVE_INIT_CONFIG="${LANDSCAPE_EFFECTIVE_INIT_CONFIG:-${OUTPUT_DIR}/metadata/effective-landscape_init.toml}"
 LANDSCAPE_TEST_AUTO_ALLOCATED=0
 LANDSCAPE_TEST_OWN_LOG_DIR=0
 LANDSCAPE_TEST_TMP_LOG_DIR="${LANDSCAPE_TEST_TMP_LOG_DIR:-}"
@@ -50,11 +54,7 @@ export CIRROS_CACHE_DIR LANDSCAPE_TEST_AUTO_ALLOCATE LANDSCAPE_TEST_RESOURCE_LOC
 export LANDSCAPE_TEST_TMP_LOG_DIR LANDSCAPE_TEST_TMP_WORK_DIR LANDSCAPE_TEST_ALLOCATED_ID
 
 if [[ -z "${LANDSCAPE_INIT_CONFIG:-}" ]]; then
-    if [[ -f "${LANDSCAPE_EFFECTIVE_INIT_CONFIG}" ]]; then
-        LANDSCAPE_INIT_CONFIG="${LANDSCAPE_EFFECTIVE_INIT_CONFIG}"
-    else
-        LANDSCAPE_INIT_CONFIG="${PROJECT_DIR:-$(pwd)}/configs/landscape_init.toml"
-    fi
+    LANDSCAPE_INIT_CONFIG="${PROJECT_DIR:-$(pwd)}/configs/landscape_init.toml"
 fi
 
 declare -a LANDSCAPE_ROUTER_CORE_SERVICE_BINDINGS=()
@@ -100,12 +100,6 @@ run_skip() {
     ((SKIP_COUNT++))
 }
 
-contains_text() {
-    local haystack="$1"
-    local needle="$2"
-    [[ "$haystack" == *"$needle"* ]]
-}
-
 contains_all_text() {
     local haystack="$1"
     shift
@@ -113,18 +107,6 @@ contains_all_text() {
     for needle in "$@"; do
         [[ "$haystack" == *"$needle"* ]] || return 1
     done
-}
-
-matches_regex() {
-    local haystack="$1"
-    local regex="$2"
-    printf '%s\n' "$haystack" | grep -qE "$regex"
-}
-
-matches_regex_i() {
-    local haystack="$1"
-    local regex="$2"
-    printf '%s\n' "$haystack" | grep -qiE "$regex"
 }
 
 # ── Generic Test Helpers ──────────────────────────────────────────────────────
@@ -410,7 +392,6 @@ LANDSCAPE_TEST_BASE_SYSTEM="${LANDSCAPE_TEST_BASE_SYSTEM:-}"
 LANDSCAPE_TEST_INCLUDE_DOCKER="${LANDSCAPE_TEST_INCLUDE_DOCKER:-}"
 LANDSCAPE_TEST_OUTPUT_FORMATS="${LANDSCAPE_TEST_OUTPUT_FORMATS:-}"
 LANDSCAPE_TEST_RUN_TEST="${LANDSCAPE_TEST_RUN_TEST:-}"
-LANDSCAPE_TEST_RELEASE_CHANNEL="${LANDSCAPE_TEST_RELEASE_CHANNEL:-}"
 
 load_build_metadata_from_image() {
     local image_path="$1"
@@ -435,7 +416,7 @@ landscape_load_test_identity() {
     local image_path="${1:-${LANDSCAPE_IMAGE_PATH:-}}"
     local metadata_path key value
 
-    if [[ -n "${LANDSCAPE_TEST_BASE_SYSTEM}" && -n "${LANDSCAPE_TEST_INCLUDE_DOCKER}" && -n "${LANDSCAPE_TEST_OUTPUT_FORMATS}" && -n "${LANDSCAPE_TEST_RUN_TEST}" && -n "${LANDSCAPE_TEST_RELEASE_CHANNEL}" ]]; then
+    if [[ -n "${LANDSCAPE_TEST_BASE_SYSTEM}" && -n "${LANDSCAPE_TEST_INCLUDE_DOCKER}" && -n "${LANDSCAPE_TEST_OUTPUT_FORMATS}" && -n "${LANDSCAPE_TEST_RUN_TEST}" ]]; then
         return 0
     fi
 
@@ -458,9 +439,6 @@ landscape_load_test_identity() {
                 ;;
             run_test)
                 LANDSCAPE_TEST_RUN_TEST="${LANDSCAPE_TEST_RUN_TEST:-${value}}"
-                ;;
-            release_channel)
-                LANDSCAPE_TEST_RELEASE_CHANNEL="${LANDSCAPE_TEST_RELEASE_CHANNEL:-${value}}"
                 ;;
             artifact_id)
                 LANDSCAPE_TEST_ARTIFACT_ID="${LANDSCAPE_TEST_ARTIFACT_ID:-${value}}"
@@ -524,13 +502,13 @@ landscape_expand_raw_image() {
 landscape_test_artifact_suffix() {
     local suffix=""
 
-    if [[ "${SSH_PORT:-2222}" != "2222" ]]; then
+    if [[ "${SSH_PORT:-${LANDSCAPE_DEFAULT_SSH_PORT}}" != "${LANDSCAPE_DEFAULT_SSH_PORT}" ]]; then
         suffix+="-ssh${SSH_PORT}"
     fi
-    if [[ "${WEB_PORT:-9800}" != "9800" ]]; then
+    if [[ "${WEB_PORT:-${LANDSCAPE_DEFAULT_WEB_PORT}}" != "${LANDSCAPE_DEFAULT_WEB_PORT}" ]]; then
         suffix+="-web${WEB_PORT}"
     fi
-    if [[ -n "${MCAST_PORT:-}" && "${MCAST_PORT}" != "1234" ]]; then
+    if [[ -n "${MCAST_PORT:-}" && "${MCAST_PORT}" != "${LANDSCAPE_DEFAULT_MCAST_PORT}" ]]; then
         suffix+="-mcast${MCAST_PORT}"
     fi
 
@@ -583,7 +561,6 @@ base_system=${LANDSCAPE_TEST_BASE_SYSTEM:-unknown}
 include_docker=${LANDSCAPE_TEST_INCLUDE_DOCKER:-unknown}
 output_formats=${LANDSCAPE_TEST_OUTPUT_FORMATS:-unknown}
 run_test=${LANDSCAPE_TEST_RUN_TEST:-unknown}
-release_channel=${LANDSCAPE_TEST_RELEASE_CHANNEL:-unknown}
 artifact_id=${LANDSCAPE_TEST_ARTIFACT_ID}
 landscape_version=${LANDSCAPE_TEST_LANDSCAPE_VERSION}
 git_sha=${LANDSCAPE_TEST_GIT_SHA}
@@ -611,8 +588,9 @@ landscape_router_start_vm() {
 
     mkdir -p "${LANDSCAPE_TEST_LOG_DIR}"
 
-    # 副本放 TEST_LOG_DIR 之外：该目录是日志 artifact 上传路径，硬超时
-    # （SIGTERM 不触发 EXIT trap）时残留副本会以零填充形式被上传
+    # bash 收到 TERM/INT 默认不执行 EXIT trap（CI 硬超时发送 TERM），各测试脚本入口
+    # 将 TERM/INT 转发为 exit 触发清理；镜像副本放 TEST_LOG_DIR 之外：该目录是日志
+    # artifact 上传路径，超时未清理的残留副本会以零填充形式被上传
     LANDSCAPE_ROUTER_TEMP_DIR=$(mktemp -d \
         "$(dirname "${LANDSCAPE_TEST_LOG_DIR}")/${LANDSCAPE_TEST_NAME}-router-img-XXXXXX")
     LANDSCAPE_ROUTER_TEMP_IMAGE=$(mktemp \
@@ -702,14 +680,6 @@ landscape_router_cleanup() {
     [[ -n "${LANDSCAPE_ROUTER_MONITOR}" ]] && rm -f "${LANDSCAPE_ROUTER_MONITOR}"
 }
 
-detect_guest_init_system() {
-    if guest_run "command -v systemctl" &>/dev/null; then
-        echo "systemd"
-    else
-        echo "unknown"
-    fi
-}
-
 _landscape_json_or_empty() {
     local payload="$1"
     if printf '%s' "$payload" | jq -e . >/dev/null 2>&1; then
@@ -796,10 +766,11 @@ landscape_router_write_readiness_snapshot() {
 
 landscape_router_dump_diagnostics() {
     local token="${1:-}"
+    # 管线镜像固定使用 systemd 作为 init；SSH 未建立时无诊断可采集
     local init_system="unknown"
 
     if [[ ${#SSH_ARGS[@]} -gt 0 ]]; then
-        init_system=$(detect_guest_init_system 2>/dev/null || echo unknown)
+        init_system="systemd"
     fi
 
     {
@@ -968,7 +939,7 @@ API_LAYOUT="${API_LAYOUT:-}"
 API_AUTH_PATH="${API_AUTH_PATH:-/api/auth/login}"
 API_USERNAME="${API_USERNAME:-root}"
 API_PASSWORD="${API_PASSWORD:-root}"
-LANDSCAPE_CONTROL_PORT="${LANDSCAPE_CONTROL_PORT:-6443}"
+LANDSCAPE_CONTROL_PORT="${LANDSCAPE_CONTROL_PORT:-${LANDSCAPE_DEFAULT_CONTROL_PORT}}"
 
 _landscape_api_preferred_prefixes() {
     case "${API_LAYOUT:-}" in
@@ -986,7 +957,6 @@ _landscape_api_preferred_prefixes() {
 
 _landscape_api_candidate_paths() {
     local key="$1"
-    local arg="${2:-}"
     local prefix
 
     while IFS= read -r prefix; do
@@ -1029,32 +999,8 @@ _landscape_api_candidate_paths() {
                     printf '/api/src/services/route_lans/status\n'
                 fi
                 ;;
-            dhcp_config)
-                printf '/api/%s/services/dhcp_v4/%s\n' "$prefix" "$arg"
-                ;;
             assigned_ips)
                 printf '/api/%s/services/dhcp_v4/assigned_ips\n' "$prefix"
-                ;;
-            static_nat_mappings)
-                if [[ "$prefix" == 'v1' ]]; then
-                    printf '/api/v1/nat/static_mappings\n'
-                else
-                    printf '/api/src/config/static_nat_mappings\n'
-                fi
-                ;;
-            dns_upstreams)
-                if [[ "$prefix" == 'v1' ]]; then
-                    printf '/api/v1/dns/upstreams\n'
-                else
-                    printf '/api/src/config/dns_upstreams\n'
-                fi
-                ;;
-            config_export)
-                if [[ "$prefix" == 'v1' ]]; then
-                    printf '/api/v1/system/config/export\n'
-                else
-                    printf '/api/src/sys_service/config/export\n'
-                fi
                 ;;
             *)
                 return 1
@@ -1078,7 +1024,6 @@ landscape_api_get_path() {
 _landscape_api_get_operation() {
     local token="$1"
     local key="$2"
-    local arg="${3:-}"
     local path response
 
     while IFS= read -r path; do
@@ -1086,7 +1031,7 @@ _landscape_api_get_operation() {
             echo "$response"
             return 0
         }
-    done < <(_landscape_api_candidate_paths "$key" "$arg")
+    done < <(_landscape_api_candidate_paths "$key")
 
     return 1
 }
@@ -1218,12 +1163,6 @@ landscape_api_service_active() {
         | jq -r --arg key "$iface" '.data[$key].t // empty | select(. == "running") | "yes"'
 }
 
-landscape_api_dhcp_config() {
-    local token="$1"
-    local iface="$2"
-    _landscape_api_get_operation "$token" 'dhcp_config' "$iface"
-}
-
 landscape_api_dhcp_assigned() {
     local token="$1"
     _landscape_api_get_operation "$token" 'assigned_ips'
@@ -1238,16 +1177,6 @@ landscape_api_dhcp_assigned_ip() {
         | to_entries[]?.value.offered_ips[]?.ip
         | select(type == "string" and startswith($prefix))
     ' | head -n 1
-}
-
-landscape_api_static_nat_mappings() {
-    local token="$1"
-    _landscape_api_get_operation "$token" 'static_nat_mappings'
-}
-
-landscape_api_dns_upstreams() {
-    local token="$1"
-    _landscape_api_get_operation "$token" 'dns_upstreams'
 }
 
 wait_for_landscape_service_active() {
@@ -1266,9 +1195,4 @@ wait_for_landscape_service_active() {
     done
 
     return 1
-}
-
-landscape_api_config_export() {
-    local token="$1"
-    _landscape_api_get_operation "$token" 'config_export'
 }

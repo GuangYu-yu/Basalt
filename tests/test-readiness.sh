@@ -25,9 +25,9 @@ source "${SCRIPT_DIR}/common.sh"
 source "${SCRIPT_DIR}/local-runtime.sh"
 
 IMAGE_PATH="${1:-${PROJECT_DIR}/output/basalt.img}"
-SSH_PORT="${SSH_PORT:-2222}"
-WEB_PORT="${WEB_PORT:-9800}"
-LANDSCAPE_CONTROL_PORT="${LANDSCAPE_CONTROL_PORT:-6443}"
+SSH_PORT="${SSH_PORT:-${LANDSCAPE_DEFAULT_SSH_PORT}}"
+WEB_PORT="${WEB_PORT:-${LANDSCAPE_DEFAULT_WEB_PORT}}"
+LANDSCAPE_CONTROL_PORT="${LANDSCAPE_CONTROL_PORT:-${LANDSCAPE_DEFAULT_CONTROL_PORT}}"
 QEMU_MEM="${QEMU_MEM:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
@@ -45,7 +45,7 @@ cleanup() {
 }
 
 trap cleanup EXIT
-# bash 默认收到 TERM/INT 不执行 EXIT trap（timeout 超时即 TERM），转发使其必达
+# TERM/INT 转发为 exit 以触发 EXIT trap 清理（原理见 tests/common.sh）
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
