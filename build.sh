@@ -261,10 +261,13 @@ print(root["size"] * ss, (var["size"] * ss) if var else 0)
 ')
 [[ -n "${root_bytes}" && "${root_bytes}" -gt 0 ]] || die "root 分区实测失败"
 
-b_target=$(( (root_bytes + 1048575) / 1048576 * 1048576 ))
-nominal_mb=$(( (root_bytes * 2 + esp_target + var_bytes * IMAGE_HEADROOM + 1048575) / 1048576 ))
+# B 槽余量：B 槽物理上夹在 A/var 之间无法再扩，此值 = 构建后未来所有
+# 版本 root 镜像相对当前实测的累计增长预算（超过即更新失败）
+ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-128}"
+b_target=$(( (root_bytes + ROOT_MARGIN_MB * 1048576 + 1048575) / 1048576 * 1048576 ))
+nominal_mb=$(( (root_bytes * 2 + ROOT_MARGIN_MB * 1048576 + esp_target + var_bytes * IMAGE_HEADROOM + 1048575) / 1048576 ))
 
-info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；root=${root_bytes}B → B=${b_target}B；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
+info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；root=${root_bytes}B → B=${b_target}B（余量${ROOT_MARGIN_MB}MB）；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
 
 # 渲染 1/2：构建侧 ESP 精确尺寸
 cat > "${REPART_DIR}/10-esp.conf" <<EOF

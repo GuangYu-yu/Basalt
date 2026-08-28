@@ -10,6 +10,8 @@ Type=exec
 # WorkingDirectory=/var/lib/landscape 承接进程的相对路径写入；
 # /root/.landscape-router 是构建期预留的 symlink → /var/lib/landscape。
 EnvironmentFile=-/etc/landscape/runtime.env
+# StateDirectory 首启自动创建工作目录（/var 独立分区，构建期不保证存在）
+StateDirectory=landscape
 WorkingDirectory=/var/lib/landscape
 ExecStart=/root/landscape-webserver ${LANDSCAPE_ARGS}
 Restart=always
