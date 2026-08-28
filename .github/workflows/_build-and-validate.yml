@@ -175,7 +175,7 @@ jobs:
       - name: 上传镜像构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.image_artifact }}
+          name: ${{ steps.tests.outputs.image_artifact }}
           path: |
             output/*.img
             output/*.img.xz
@@ -188,7 +188,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.log_artifact }}-build
+          name: ${{ steps.tests.outputs.log_artifact }}-build
           path: ${{ env.TEST_LOG_DIR }}/
           retention-days: 7
 
