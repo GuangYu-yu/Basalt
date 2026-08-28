@@ -28,6 +28,7 @@ LOCALE="${LOCALE:-C.UTF-8}"
 APT_MIRROR="${APT_MIRROR:-}"
 IMAGE_SIZE_MB="${IMAGE_SIZE_MB-}"          # 空 = 自适应（见自适应定稿段）
 IMAGE_HEADROOM="${IMAGE_HEADROOM-2}"       # 名义盘中 var 余量倍数
+MB=$(( 1024 * 1024 ))                      # 字节算术统一单位，杜绝裸字面量
 RUN_TEST="${RUN_TEST:-none}"
 IMAGE_ID="${IMAGE_ID:-basalt}"     # 产物名/PARTLABEL/sysupdate 的同源前缀（build.env 单一声明，此处保底）
 SMOKE=false
@@ -240,10 +241,10 @@ for u in "${ukis[@]}"; do
     sz=$(stat -c %s "${u}")
     (( sz > uki_bytes )) && uki_bytes=${sz}
 done
-ESP_MIN_BYTES=$(( 64 * 1024 * 1024 ))   # vfat 实用下限（GPT 结构 + sd-boot）
+ESP_MIN_BYTES=$(( 64 * MB ))   # vfat 实用下限（GPT 结构 + sd-boot）
 esp_target=$(( uki_bytes * ESP_SLOTS ))
 (( esp_target < ESP_MIN_BYTES )) && esp_target=${ESP_MIN_BYTES}
-esp_target=$(( (esp_target + 1048575) / 1048576 * 1048576 ))   # 上取整 MiB
+esp_target=$(( (esp_target + MB - 1) / MB * MB ))   # 上取整 MiB
 
 # 分区实测：sfdisk -J（util-linux 自带 JSON），按 DPS Type GUID 取
 # 第一块 root（min start = A 槽）与 var 的字节大小
@@ -264,8 +265,8 @@ print(root["size"] * ss, (var["size"] * ss) if var else 0)
 # B 槽余量：B 槽物理上夹在 A/var 之间无法再扩，此值 = 构建后未来所有
 # 版本 root 镜像相对当前实测的累计增长预算（超过即更新失败）
 ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-128}"
-b_target=$(( (root_bytes + ROOT_MARGIN_MB * 1048576 + 1048575) / 1048576 * 1048576 ))
-nominal_mb=$(( (root_bytes * 2 + ROOT_MARGIN_MB * 1048576 + esp_target + var_bytes * IMAGE_HEADROOM + 1048575) / 1048576 ))
+b_target=$(( (root_bytes + ROOT_MARGIN_MB * MB + MB - 1) / MB * MB ))
+nominal_mb=$(( (root_bytes * 2 + ROOT_MARGIN_MB * MB + esp_target + var_bytes * IMAGE_HEADROOM + MB - 1) / MB ))
 
 info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；root=${root_bytes}B → B=${b_target}B（余量${ROOT_MARGIN_MB}MB）；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
 
@@ -329,7 +330,7 @@ done
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
 # 名义尺寸：显式 IMAGE_SIZE_MB 优先，否则用自适应计算值；
 # 不得小于 mkosi 实际产出（否则 truncate 切掉 var 尾部与 GPT 备份头）
-raw_mb=$(( ($(stat -c %s "${RAW_FILE}") + 1048575) / 1048576 ))
+raw_mb=$(( ($(stat -c %s "${RAW_FILE}") + MB - 1) / MB ))
 (( nominal_mb < raw_mb )) && nominal_mb=${raw_mb}
 IMAGE_SIZE_MB="${IMAGE_SIZE_MB:-${nominal_mb}}"
 truncate -s "${IMAGE_SIZE_MB}M" "${RAW_FILE}"
