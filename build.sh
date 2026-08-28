@@ -121,6 +121,10 @@ if [[ -n "${LANDSCAPE_VERSION:-}" && "${LANDSCAPE_VERSION}" != "latest" ]]; then
     ROOT_LABEL_VER="${LANDSCAPE_VERSION#v}"
 fi
 MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER}")
+# GPT 分区名上限 36 字符，超长被 sfdisk/repart 静默截断 → root=PARTLABEL 永远
+# 找不到分区、紧急模式。构建期显式失败优于静默产物
+partlabel="${IMAGE_ID}_${ROOT_LABEL_VER}"
+[[ ${#partlabel} -le 36 ]] || die "PARTLABEL '${partlabel}' 超过 GPT 36 字符上限（IMAGE_ID=${IMAGE_ID} version=${ROOT_LABEL_VER}），截断将导致 root= 无法匹配"
 # 排障专用：DIAG_CMDLINE=1 时叠加诊断参数（转发 journal 到串口）。
 # 默认关闭；排障结束勿保留在常规构建中
 if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
