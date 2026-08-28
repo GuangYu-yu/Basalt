@@ -277,7 +277,7 @@ for uki in "${WORK_DIR}"/${IMAGE_ID}*.efi; do
     BUILD_ARTIFACTS+=("${OUTPUT_DIR}/${uki##*/}")
 done
 
-# ── initrd 收集（mkosi SplitArtifacts 默认拆出的合并 initrd，模块门禁/调试用）──
+# ── initrd 收集（mkosi SplitArtifacts 拆出的合并 initrd，模块门禁/调试用）──
 # 不入 BUILD_ARTIFACTS 与 SHA256SUMS：sysupdate 契约只消费 img(.xz) 与 *.efi
 for initrd in "${WORK_DIR}"/${IMAGE_ID}*.initrd; do
     [[ -e "${initrd}" ]] || continue
