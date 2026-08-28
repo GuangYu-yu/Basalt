@@ -13,7 +13,9 @@ EnvironmentFile=-/etc/landscape/runtime.env
 # StateDirectory 首启自动创建工作目录（/var 独立分区，构建期不保证存在）
 StateDirectory=landscape
 WorkingDirectory=/var/lib/landscape
-ExecStart=/root/landscape-webserver ${LANDSCAPE_ARGS}
+# 经 shell 转发：systemd 对空变量仍会传一个空 argv（clap 报
+# unrecognized subcommand ''），sh 的 ${VAR:-} 空展开则整词消失
+ExecStart=/bin/sh -ec 'exec /root/landscape-webserver ${LANDSCAPE_ARGS:-}'
 Restart=always
 RestartSec=2
 LimitMEMLOCK=infinity
