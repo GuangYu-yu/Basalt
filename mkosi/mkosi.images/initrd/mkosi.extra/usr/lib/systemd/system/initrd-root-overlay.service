@@ -26,5 +26,5 @@ OnFailureJobMode=replace-irreversibly
 Type=oneshot
 # 单行命令：unit 语法引号不可跨行（多行引号会被判 Unbalanced quoting，
 # 整个 unit 拒载 —— 曾因此 overlay 从未组装、根恒只读）
-ExecStart=/bin/sh -ec 'mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; mkdir -p /run/var/lib/etc/upper /run/var/lib/etc/work; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
+ExecStart=/bin/sh -ec 'mkdir -p /run/var /run/var/lib/etc/upper /run/var/lib/etc/work; mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
 RemainAfterExit=yes
