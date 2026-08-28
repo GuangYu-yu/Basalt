@@ -165,8 +165,8 @@ jobs:
       - name: 模块门禁
         run: |
           set -euo pipefail
-          uki="$(ls output/basalt*.efi | head -n1)"
-          python3 tests/check-initrd-modules.py "${uki}"
+          initrd="$(ls output/basalt*.initrd | head -n1)"
+          python3 tests/check-initrd-modules.py "${initrd}"
 
       - name: 列出输出文件
         run: ls -lh output/

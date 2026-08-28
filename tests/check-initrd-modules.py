@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""模块门禁：从 UKI 抽取 .initrd，断言引导契约所需内核模块确实存在。
+"""模块门禁：校验 mkosi 拆分产物 basalt.initrd，断言引导契约所需内核模块存在。
+
+输入是 mkosi 构建时经其自身 extract_pe_section（pefile，取
+min(VirtualSize, SizeOfRawData)）从 UKI 拆出的合并 initrd
+（mkosi v26 SplitArtifacts 默认含 initrd；build.sh 收集到 output/），
+此处零抽取逻辑，只做解码与断言。
 
 需求契约（与 mkosi.conf 的 KernelModules= 对应；此处是验证端，二者需同步修改）：
   启动链   virtio_blk virtio_pci virtio_net ahci sd_mod nvme autofs
@@ -8,7 +13,6 @@
 遗漏 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
 import re
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -24,37 +28,17 @@ REQUIRED = {
 }
 
 NEWC_MAGIC = b"070701"
-
-
-def extract_initrd(uki: Path) -> bytes:
-    blob = uki.read_bytes()
-    pe_off = struct.unpack_from("<I", blob, 0x3C)[0]
-    if blob[pe_off:pe_off + 4] != b"PE\x00\x00":
-        sys.exit(f"{uki}: 不是 PE 文件")
-    nsec = struct.unpack_from("<H", blob, pe_off + 6)[0]
-    opt_size = struct.unpack_from("<H", blob, pe_off + 20)[0]
-    table = pe_off + 24 + opt_size
-    for i in range(nsec):
-        off = table + i * 40
-        name = blob[off:off + 8].rstrip(b"\x00").decode("ascii", "replace")
-        if name != ".initrd":
-            continue
-        vsize, _vaddr, rawsize, rawptr = struct.unpack_from("<IIII", blob, off + 8)
-        size = min(vsize, rawsize)
-        print(f"[module-gate] .initrd 节：virtual={vsize} raw={rawsize} 取 {size} 字节")
-        return blob[rawptr:rawptr + size]
-    sys.exit(f"{uki}: 未找到 .initrd 节")
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def decode_initrd(data: bytes) -> bytes:
-    # 格式按魔数自适配：mkosi 拼接的 cpio 可能整段 zstd，也可能未压缩
-    if data[:4] == b"\x28\xb5\x2f\xfd":
+    # 格式按魔数自适配：合并 initrd 为 zstd 帧流或未压缩 cpio
+    if data[:4] == ZSTD_MAGIC:
         return subprocess.run(["zstd", "-dc"], input=data, check=True,
                               stdout=subprocess.PIPE).stdout
     if data[:6] == NEWC_MAGIC:
-        print("[module-gate] .initrd 为未压缩 cpio，直接解析")
         return data
-    sys.exit(f".initrd 格式无法识别，头 16 字节：{data[:16].hex()}")
+    sys.exit(f"initrd 格式无法识别（大小 {len(data)}），头 16 字节：{data[:16].hex()}")
 
 
 def cpio_names(blob: bytes) -> list[str]:
@@ -87,8 +71,8 @@ def modname(path: str) -> str:
 
 
 def main() -> int:
-    uki = Path(sys.argv[1])
-    blob = decode_initrd(extract_initrd(uki))
+    initrd = Path(sys.argv[1])
+    blob = decode_initrd(initrd.read_bytes())
     names = cpio_names(blob)
 
     kos = {modname(n): n for n in names

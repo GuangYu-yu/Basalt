@@ -277,6 +277,13 @@ for uki in "${WORK_DIR}"/${IMAGE_ID}*.efi; do
     BUILD_ARTIFACTS+=("${OUTPUT_DIR}/${uki##*/}")
 done
 
+# ── initrd 收集（mkosi SplitArtifacts 默认拆出的合并 initrd，模块门禁/调试用）──
+# 不入 BUILD_ARTIFACTS 与 SHA256SUMS：sysupdate 契约只消费 img(.xz) 与 *.efi
+for initrd in "${WORK_DIR}"/${IMAGE_ID}*.initrd; do
+    [[ -e "${initrd}" ]] || continue
+    cp -f "${initrd}" "${OUTPUT_DIR}/"
+done
+
 # latest 构建无版本后缀时 BUILT_RAW 即 RAW_FILE，避免 mv 同文件报错
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
 # 名义尺寸：显式 IMAGE_SIZE_MB 优先，否则用自适应计算值；

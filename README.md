@@ -97,7 +97,7 @@ RUN_TEST=readiness,dataplane ./build.sh --no-compress # 附加 LAN 内客户端 
 |---|---|
 | `test-readiness.sh` | SSH 可达、API 登录、网口/服务就绪契约 |
 | `test-dataplane.sh` | 客户端 VM DHCP、租约入 API、LAN 互通 |
-| `check-initrd-modules.py` | 从 UKI 提取 initrd，断言关键模块在位 |
+| `check-initrd-modules.py` | 校验 mkosi 拆分的 initrd，断言关键模块在位 |
 
 ## CI
 
