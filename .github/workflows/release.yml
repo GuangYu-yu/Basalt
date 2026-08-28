@@ -33,7 +33,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build_no_docker:
-    name: 构建（不含 Docker）
+    name: 构建镜像
     needs: prepare
     permissions:
       actions: read
@@ -45,7 +45,7 @@ jobs:
       landscape_version: ${{ needs.prepare.outputs.release_tag }}
 
   build_docker:
-    name: 构建（含 Docker）
+    name: 构建 Docker 镜像
     needs: prepare
     permissions:
       actions: read
@@ -64,13 +64,13 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: 下载产物（不含 Docker）
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build_no_docker.outputs.image_artifact }}
           path: artifacts/no-docker/
 
-      - name: 下载产物（含 Docker）
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build_docker.outputs.image_artifact }}

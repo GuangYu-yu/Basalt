@@ -27,11 +27,25 @@ NEWC_MAGIC = b"070701"
 
 
 def extract_initrd(uki: Path) -> bytes:
-    sec = subprocess.run(
-        ["objcopy", "-O", "binary", "--only-section=.initrd", str(uki)],
-        check=True, stdout=subprocess.PIPE,
-    ).stdout
-    return sec
+    # 直接解析 PE 节表取 .initrd：objcopy 在 PE 上抽节可能截断，
+    # 导致下游 zstd 报 unexpected end of file
+    blob = uki.read_bytes()
+    pe_off = struct.unpack_from("<I", blob, 0x3C)[0]
+    if blob[pe_off:pe_off + 4] != b"PE\x00\x00":
+        sys.exit(f"{uki}: 不是 PE 文件")
+    nsec = struct.unpack_from("<H", blob, pe_off + 6)[0]
+    opt_size = struct.unpack_from("<H", blob, pe_off + 20)[0]
+    table = pe_off + 24 + opt_size
+    for i in range(nsec):
+        off = table + i * 40
+        name = blob[off:off + 8].rstrip(b"\x00").decode("ascii", "replace")
+        if name != ".initrd":
+            continue
+        vsize, _vaddr, rawsize, rawptr = struct.unpack_from("<IIII", blob, off + 8)
+        size = min(vsize, rawsize)
+        print(f"[module-gate] .initrd 节：virtual={vsize} raw={rawsize} 取 {size} 字节")
+        return blob[rawptr:rawptr + size]
+    sys.exit(f"{uki}: 未找到 .initrd 节")
 
 
 def decode_zstd(data: bytes) -> bytes:

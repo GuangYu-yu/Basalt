@@ -122,7 +122,7 @@ jobs:
             mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
             tests/test-readiness.sh tests/test-dataplane.sh
 
-      - name: 构建镜像（失败重试一次，重置 work/）
+      - name: 构建镜像
         timeout-minutes: 60
         env:
           COMPRESS_OUTPUT: 'yes'
@@ -162,7 +162,7 @@ jobs:
           } >> output/metadata/build-metadata.txt
           cp output/metadata/build-metadata.txt "${TEST_LOG_DIR}/"
 
-      - name: 模块门禁（抽取 UKI .initrd 断言引导契约，秒级失败）
+      - name: 模块门禁
         run: |
           set -euo pipefail
           uki="$(ls output/basalt*.efi | head -n1)"
@@ -207,7 +207,7 @@ jobs:
           name: ${{ needs.build_image.outputs.image_artifact }}
           path: output/
 
-      - name: 解压镜像（readiness 需要 raw）
+      - name: 解压镜像
         run: |
           set -euo pipefail
           cd output
@@ -216,7 +216,7 @@ jobs:
             xz -T0 -d -k "$f"
           done
 
-      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+      - name: 选择测试镜像
         run: |
           set -euo pipefail
           img="$(ls output/basalt*.img | head -n1)"
@@ -263,7 +263,7 @@ jobs:
           name: ${{ needs.build_image.outputs.image_artifact }}
           path: output/
 
-      - name: 解压镜像（dataplane 需要 raw）
+      - name: 解压镜像
         run: |
           set -euo pipefail
           cd output
@@ -272,7 +272,7 @@ jobs:
             xz -T0 -d -k "$f"
           done
 
-      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+      - name: 选择测试镜像
         run: |
           set -euo pipefail
           img="$(ls output/basalt*.img | head -n1)"

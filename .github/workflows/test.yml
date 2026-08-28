@@ -78,7 +78,7 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: 解压镜像（测试需要 raw）
+      - name: 解压镜像
         run: |
           set -euo pipefail
           cd output
@@ -87,7 +87,7 @@ jobs:
             xz -T0 -d -k "$f"
           done
 
-      - name: 选择测试镜像（docker 变体产物名带 -docker 后缀）
+      - name: 选择测试镜像
         run: |
           set -euo pipefail
           img="$(ls output/basalt*.img | head -n1)"
