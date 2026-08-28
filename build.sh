@@ -121,6 +121,9 @@ if [[ -n "${LANDSCAPE_VERSION:-}" && "${LANDSCAPE_VERSION}" != "latest" ]]; then
     ROOT_LABEL_VER="${LANDSCAPE_VERSION#v}"
 fi
 MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${IMAGE_ID}_${ROOT_LABEL_VER}")
+# 网卡命名对齐：configs/landscape_init.toml 拓扑声明 eth0/eth1，预测性命名
+# （ens3 等）随平台漂移；路由器 appliance 惯例固定 eth0/eth1
+MKOSI_ARGS+=(--kernel-command-line "net.ifnames=0")
 # GPT 分区名上限 36 字符，超长被 sfdisk/repart 静默截断 → root=PARTLABEL 永远
 # 找不到分区、紧急模式。构建期显式失败优于静默产物
 partlabel="${IMAGE_ID}_${ROOT_LABEL_VER}"
