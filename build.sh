@@ -262,15 +262,15 @@ print(root["size"] * ss, (var["size"] * ss) if var else 0)
 ')
 [[ -n "${root_bytes}" && "${root_bytes}" -gt 0 ]] || die "root 分区实测失败"
 
-# B 槽余量：B 槽物理上夹在 A/var 之间无法再扩，此值 = 构建后未来所有
-# 版本 root 镜像相对当前实测的累计增长预算（超过即更新失败）
+# B 槽余量：两槽物理上夹死无法再扩，此值 = 构建后未来所有版本 root 镜像
+# 相对当前实测的累计增长预算（超过即更新失败）；两槽对称各持有一份
 ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-128}"
 b_target=$(( (root_bytes + ROOT_MARGIN_MB * MB + MB - 1) / MB * MB ))
-nominal_mb=$(( (root_bytes * 2 + ROOT_MARGIN_MB * MB + esp_target + var_bytes * IMAGE_HEADROOM + MB - 1) / MB ))
+nominal_mb=$(( (root_bytes * 2 + ROOT_MARGIN_MB * 2 * MB + esp_target + var_bytes * IMAGE_HEADROOM + MB - 1) / MB ))
 
 info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；root=${root_bytes}B → B=${b_target}B（余量${ROOT_MARGIN_MB}MB）；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
 
-# 渲染 1/2：构建侧 ESP 精确尺寸
+# 渲染 1/3：构建侧 ESP 精确尺寸
 cat > "${REPART_DIR}/10-esp.conf" <<EOF
 [Partition]
 Type=esp
@@ -287,14 +287,14 @@ STAGED_B_DEF="${SCRIPT_DIR}/mkosi/mkosi.extra/usr/lib/repart.d/91-root-b.conf"
 cp -f "${STAGED_B_DEF}" "${WORK_DIR}/91-root-b.conf.orig"
 cat > "${STAGED_B_DEF}" <<EOF
 # 构建期自适应渲染（build.sh；勿手改 —— 源模板为 git 版本）
-# B 槽 = A 槽实测大小：两槽同角色，首次 sysupdate 写入完整 root 原始镜像不溢出
+# B 槽 = A 槽实测 + 余量：两槽对称，任意次 sysupdate 写入完整 root 原始镜像不溢出
 [Partition]
 Type=root
 SizeMinBytes=${b_target}
 GrowFileSystem=no
 EOF
 
-# 渲染 2/2：构建侧 B 槽同步全尺寸。分区起点不可移动，若 B 构建期最小化
+# 渲染 2/3：构建侧 B 槽同步全尺寸。分区起点不可移动，若 B 构建期最小化
 # 占位，首启 repart 想扩 B 时尾部空闲隔着 var 物理不可达
 # （Can't fit ... refusing，连带 var 不扩）
 cat > "${REPART_DIR}/21-root-b.conf" <<EOF
@@ -302,6 +302,19 @@ cat > "${REPART_DIR}/21-root-b.conf" <<EOF
 Type=root
 Label=_empty
 Format=erofs
+SizeMinBytes=${b_target}
+SizeMaxBytes=${b_target}
+EOF
+
+# 渲染 3/3：构建侧 A 槽同步 +余量。余量必须两槽对称：更新后角色互换，
+# 若 A 保持内容最小尺寸，第二次 sysupdate 写回 A 时余量即失效
+cat > "${REPART_DIR}/20-root-a.conf" <<EOF
+[Partition]
+Type=root
+Label=${IMAGE_ID}_1
+Format=erofs
+Compression=lz4hc
+CopyFiles=/
 SizeMinBytes=${b_target}
 SizeMaxBytes=${b_target}
 EOF
