@@ -491,6 +491,7 @@ LANDSCAPE_ROUTER_PID=""
 LANDSCAPE_ROUTER_PIDFILE=""
 LANDSCAPE_ROUTER_MONITOR=""
 LANDSCAPE_ROUTER_TEMP_IMAGE=""
+LANDSCAPE_ROUTER_TEMP_DIR=""
 LANDSCAPE_ROUTER_SERIAL_LOG=""
 LANDSCAPE_RESULTS_FILE=""
 LANDSCAPE_READINESS_SNAPSHOT_FILE=""
@@ -499,7 +500,10 @@ LANDSCAPE_ROUTER_DIAGNOSTICS_FILE=""
 LANDSCAPE_TEST_METADATA_FILE=""
 LANDSCAPE_ROUTER_API_TOKEN=""
 LANDSCAPE_TEST_NAME="${LANDSCAPE_TEST_NAME:-test}"
-LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-}"
+# 首启 repart 需真实空闲空间扩 B 槽（=A 槽实测尺寸）与 var（Weight=100），
+# 实测最小需约 195M（582M 镜像 → 777M），默认扩 1G 留足余量；
+# truncate 稀疏扩展 = 模拟更大的部署盘，GPT 备份头由 systemd-repart 迁移到新盘尾
+LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-1073741824}"
 
 landscape_expand_raw_image() {
     local image_path="$1"
@@ -607,7 +611,12 @@ landscape_router_start_vm() {
 
     mkdir -p "${LANDSCAPE_TEST_LOG_DIR}"
 
-    LANDSCAPE_ROUTER_TEMP_IMAGE=$(mktemp "${LANDSCAPE_TEST_LOG_DIR}/${LANDSCAPE_TEST_NAME}-router-XXXXXX.img")
+    # 副本放 TEST_LOG_DIR 之外：该目录是日志 artifact 上传路径，硬超时
+    # （SIGTERM 不触发 EXIT trap）时残留副本会以零填充形式被上传
+    LANDSCAPE_ROUTER_TEMP_DIR=$(mktemp -d \
+        "$(dirname "${LANDSCAPE_TEST_LOG_DIR}")/${LANDSCAPE_TEST_NAME}-router-img-XXXXXX")
+    LANDSCAPE_ROUTER_TEMP_IMAGE=$(mktemp \
+        "${LANDSCAPE_ROUTER_TEMP_DIR}/${LANDSCAPE_TEST_NAME}-router-XXXXXX.img")
     cp "${image_path}" "${LANDSCAPE_ROUTER_TEMP_IMAGE}"
     landscape_expand_raw_image "${LANDSCAPE_ROUTER_TEMP_IMAGE}" "${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES}"
 
@@ -688,7 +697,7 @@ landscape_router_cleanup() {
     set +e
     landscape_router_stop_vm
 
-    [[ -n "${LANDSCAPE_ROUTER_TEMP_IMAGE}" ]] && rm -f "${LANDSCAPE_ROUTER_TEMP_IMAGE}"
+    [[ -n "${LANDSCAPE_ROUTER_TEMP_DIR}" ]] && rm -rf "${LANDSCAPE_ROUTER_TEMP_DIR}"
     [[ -n "${LANDSCAPE_ROUTER_PIDFILE}" ]] && rm -f "${LANDSCAPE_ROUTER_PIDFILE}"
     [[ -n "${LANDSCAPE_ROUTER_MONITOR}" ]] && rm -f "${LANDSCAPE_ROUTER_MONITOR}"
 }

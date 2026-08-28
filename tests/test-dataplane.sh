@@ -86,6 +86,9 @@ cleanup() {
 }
 
 trap cleanup EXIT
+# bash 默认收到 TERM/INT 不执行 EXIT trap（timeout 超时即 TERM），转发使其必达
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 preflight() {
     landscape_prepare_test_environment

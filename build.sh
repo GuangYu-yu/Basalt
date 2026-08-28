@@ -174,6 +174,10 @@ if [[ "${IMAGE_ID}" != "basalt" ]] && \
     die "IMAGE_ID 渲染不完整：渲染后的定义文件仍残留 basalt_"
 fi
 trap cleanup_staged EXIT
+# bash 默认收到 TERM/INT 不执行 EXIT trap（CI timeout 即 TERM），
+# 转发避免 sed 过的暂存文件残留在仓库工作区
+trap 'exit 143' TERM
+trap 'exit 130' INT
 [[ "${LANDSCAPE_VERSION:-latest}" != "latest" ]] \
     && MKOSI_ARGS+=(--image-version "${LANDSCAPE_VERSION#v}")
 
