@@ -28,6 +28,14 @@ REQUIRED = {
     "nf_conntrack", "tun", "veth", "bridge", "e1000", "r8169",
 }
 
+# initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
+# Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）
+REQUIRED_UNITS = {
+    "usr/lib/systemd/system/initrd-root-overlay.service",
+    "usr/lib/systemd/system/systemd-repart.service.d/sysroot.conf",
+    "usr/lib/systemd/system/initrd-switch-root.service.d/10-overlay.conf",
+}
+
 NEWC_MAGIC = b"070701"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
@@ -144,6 +152,13 @@ def check(blob: bytes) -> int:
     for req in sorted(REQUIRED):
         hit = kos.get(req) or ("built-in" if req in builtin else None)
         print(f"  {'OK ' if hit else 'MISS'} {req}" + (f" -> {hit}" if hit else ""))
+
+    name_set = set(names)
+    for unit in sorted(REQUIRED_UNITS):
+        ok = unit in name_set
+        print(f"  {'OK ' if ok else 'MISS'} {unit}")
+        if not ok:
+            missing.append(unit)
 
     if missing:
         print(f"[module-gate] FAIL 缺失：{' '.join(missing)}", file=sys.stderr)
