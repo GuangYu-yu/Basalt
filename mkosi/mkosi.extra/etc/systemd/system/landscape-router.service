@@ -21,6 +21,9 @@ RestartSec=2
 LimitMEMLOCK=infinity
 # eBPF map pin（/sys/fs/bpf 为 tmpfs 语义，天然可写）
 ExecStartPre=/bin/sh -c 'mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf'
+# 工厂默认拓扑 → home（var 独立分区构建期不带业务文件，root 分区
+# /usr/share 由镜像原子更新；home 已有配置/已初始化则不动，工厂重置=清 /var）
+ExecStartPre=/bin/sh -c 'if [ ! -e /var/lib/landscape/landscape_init.toml ] && [ -e /usr/share/landscape/landscape_init.toml ]; then cp /usr/share/landscape/landscape_init.toml /var/lib/landscape/; fi'
 
 [Install]
 WantedBy=multi-user.target

@@ -48,10 +48,10 @@ find "${ROOT}/usr/bin" "${ROOT}/usr/sbin" "${ROOT}/usr/lib" \
 
 # ── runtime.env 渲染 ──
 # 智能初始化配置（EFFECTIVE_CONFIG_PATH 经 build.sh 暂存进 extra tree，
-# 此处已合入：/var/lib/landscape/landscape_init.toml）存在则交给配置驱动，
-# 否则 --auto（Web 引导）。原逻辑放在 postinst 时 extra tree 未合入，恒走 --auto。
+# 此处已合入：/usr/share/landscape/landscape_init.toml 工厂默认）存在则交给
+# 配置驱动（服务 ExecStartPre 拷贝到 home），否则 --auto（Web 引导）。
 mkdir -p "${ROOT}/etc/landscape"
-if [ -f "${ROOT}/var/lib/landscape/landscape_init.toml" ]; then
+if [ -f "${ROOT}/usr/share/landscape/landscape_init.toml" ]; then
     : > "${ROOT}/etc/landscape/runtime.env"
 else
     echo 'LANDSCAPE_ARGS=--auto' > "${ROOT}/etc/landscape/runtime.env"

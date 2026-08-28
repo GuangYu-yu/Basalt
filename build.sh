@@ -86,9 +86,12 @@ BUILD_ARTIFACTS=()
 source "${SCRIPT_DIR}/lib/export.sh"
 
 # ── 智能初始化配置注入（CI 的 EFFECTIVE_CONFIG_PATH 契约）──
-# 暂存进 extra tree；mkosi 合入后经 repart CopyFiles=/var 落进 btrfs 分区，
-# finalize 据此渲染 runtime.env。构建后恢复 extra tree 原状。
-STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/var/lib/landscape/landscape_init.toml"
+# 暂存进 extra tree；mkosi 合入后经 root 分区 CopyFiles=/ 烘焙为
+# /usr/share/landscape/landscape_init.toml（工厂默认配置），
+# landscape-router.service ExecStartPre 首启有条件拷贝到 /var/lib/landscape。
+# 不直接放 var：CopyFiles=/var 链路实测丢文件（root 链路可靠），且
+# /usr/share 属于镜像 = 随版本原子更新，与旧版"toml 烘进镜像"语义一致。
+STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/usr/share/landscape/landscape_init.toml"
 STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
 STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
 # 统一清理（函数体在 IMAGE_ID 渲染段定义：彼时 STAGED_SYSUPDATE_D 等才就绪）
