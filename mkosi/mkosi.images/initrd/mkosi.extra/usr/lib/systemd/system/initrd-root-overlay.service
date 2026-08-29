@@ -4,7 +4,6 @@ DefaultDependencies=no
 # sysroot = root= cmdline 指向的 EROFS 根（initrd 语境由 cmdline 生成 sysroot.mount）。
 # dev-disk-by-partlabel-var.device = udev 为 var 分区建好的 by-partlabel 符号链接的
 # 设备单元：repart/udev 异步，mount PARTLABEL=var 依赖该链接，必须显式排序
-# （实证：首启 mount 撞上链接未建窗口 status=32，OnFailure 重跑侥幸成功）
 After=sysroot.mount systemd-repart.service dev-disk-by\x2dpartlabel-var.device
 # 失败不阻塞 switch_root：退化为纯只读根继续启动
 OnFailure=initrd-switch-root.target
@@ -14,8 +13,8 @@ OnFailureJobMode=replace-irreversibly
 #   systemd-fstab-generator 对 / 只生成 remount 语义，不会在真实根阶段把
 #   erofs 的 / 换成 overlay（fstab overlay / 条目永远不生效）；而 overlay
 #   涉及两个设备（EROFS 根 + btrfs /var），fstab-generator 无法表达多设备
-#   根（systemd-devel 2015 实证）。OpenWrt/Android/overlayroot 均在
-#   initramfs 阶段组装全根 overlay —— 本单元即该步骤的声明式最小实现。
+#   根（systemd 上游不支持多设备根 fstab 表达）。OpenWrt/Android/overlayroot
+#   均在 initramfs 阶段组装全根 overlay —— 本单元即该步骤的声明式最小实现。
 #
 # 挂载编排（顺序敏感）：
 #   1. var 分区先挂到 initrd 中性路径 /run/var（upper/work 必须与 lower
@@ -28,6 +27,6 @@ OnFailureJobMode=replace-irreversibly
 [Service]
 Type=oneshot
 # 单行命令：unit 语法引号不可跨行（多行引号会被判 Unbalanced quoting，
-# 整个 unit 拒载 —— 曾因此 overlay 从未组装、根恒只读）
+# 整个 unit 拒载）
 ExecStart=/bin/sh -ec 'mkdir -p /run/var /run/var/lib/etc/upper /run/var/lib/etc/work; mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
 RemainAfterExit=yes

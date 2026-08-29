@@ -21,7 +21,7 @@ import zstandard
 REQUIRED = {
     "virtio_blk", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
     "erofs", "overlay", "btrfs", "vfat",
-    # 旧版延续的部署场景：PVE IDE / ESXi / Hyper-V / Xen
+    # 各平台存储控制器 / Hypervisor 半虚拟化：PVE IDE / ESXi / Hyper-V / Xen
     "ata_piix", "vmw_pvscsi", "mptspi", "mpt3sas",
     "hv_vmbus", "hv_storvsc", "hv_netvsc", "xen_blkfront",
     # 数据面
