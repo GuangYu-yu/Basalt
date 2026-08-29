@@ -31,5 +31,5 @@ Type=oneshot
 # var 挂载带重试：首启 systemd-repart 扩分区表触发 udev 重枚举，
 # 单发 mount 可能撞上设备暂不可解析的窗口（间歇性 ENOENT），
 # 30s 预算覆盖 repart + udev 稳定时间
-ExecStart=/bin/sh -ec 'mkdir -p /run/var /run/var/lib/etc/upper /run/var/lib/etc/work; i=0; until mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; do i=$((i+1)); [ $i -ge 15 ] && echo "var mount failed after $i attempts" && exit 1; sleep 2; done; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
+ExecStart=/bin/sh -ec 'exec >/dev/console 2>&1; mkdir -p /run/var /run/var/lib/etc/upper /run/var/lib/etc/work; i=0; until mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; do i=$((i+1)); [ $i -ge 15 ] && echo "var mount failed after $i attempts" && exit 1; sleep 2; done; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
 RemainAfterExit=yes
