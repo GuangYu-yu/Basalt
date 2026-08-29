@@ -207,9 +207,6 @@ LANDSCAPE_TEST_REMOTE_TIMEOUT="${LANDSCAPE_TEST_REMOTE_TIMEOUT:-15}"
 setup_ssh() {
     local user="${SSH_USER:-root}"
     local host="${SSH_HOST:-localhost}"
-    # ControlMaster 连接复用：测试全程高频新建 SSH 会话会触发 OpenSSH 9.8+
-    # PerSourcePenalties（同源重连惩罚），表现为 banner exchange 超时；
-    # 复用单条控制连接后认证仅发生一次
     SSH_ARGS=(
         timeout --foreground "${LANDSCAPE_TEST_REMOTE_TIMEOUT}"
         sshpass -p "${SSH_PASSWORD}" ssh
@@ -218,9 +215,6 @@ setup_ssh() {
         -o UserKnownHostsFile=/dev/null
         -o ConnectTimeout=10
         -o LogLevel=ERROR
-        -o ControlMaster=auto
-        -o "ControlPath=/tmp/landscape-test-ssh-${SSH_PORT}-%r@%h:%p"
-        -o ControlPersist=120
         -p "${SSH_PORT}"
         "${user}@${host}"
     )
