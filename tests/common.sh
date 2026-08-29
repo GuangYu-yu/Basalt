@@ -207,6 +207,9 @@ LANDSCAPE_TEST_REMOTE_TIMEOUT="${LANDSCAPE_TEST_REMOTE_TIMEOUT:-15}"
 setup_ssh() {
     local user="${SSH_USER:-root}"
     local host="${SSH_HOST:-localhost}"
+    # ControlMaster 连接复用：测试全程高频新建 SSH 会话会触发 OpenSSH 9.8+
+    # PerSourcePenalties（同源重连惩罚），表现为 banner exchange 超时；
+    # 复用单条控制连接后认证仅发生一次
     SSH_ARGS=(
         timeout --foreground "${LANDSCAPE_TEST_REMOTE_TIMEOUT}"
         sshpass -p "${SSH_PASSWORD}" ssh
@@ -215,6 +218,9 @@ setup_ssh() {
         -o UserKnownHostsFile=/dev/null
         -o ConnectTimeout=10
         -o LogLevel=ERROR
+        -o ControlMaster=auto
+        -o "ControlPath=/tmp/landscape-test-ssh-${SSH_PORT}-%r@%h:%p"
+        -o ControlPersist=120
         -p "${SSH_PORT}"
         "${user}@${host}"
     )
@@ -821,7 +827,7 @@ landscape_router_dump_diagnostics() {
 wait_for_landscape_interfaces_ready() {
     local token="$1"
     local ready_timeout="${2:-${LANDSCAPE_ROUTER_READY_TIMEOUT}}"
-    local start_ts now_ts payload names
+    local start_ts now_ts payload names last_payload="" last_names=""
 
     start_ts=$(date +%s)
     while :; do
@@ -838,6 +844,8 @@ wait_for_landscape_interfaces_ready() {
                 | unique
                 | .[]
             ' 2>/dev/null || true)
+            last_payload="${payload:0:800}"
+            last_names="${names}"
             if contains_all_text "$names" "$LANDSCAPE_EXPECTED_WAN_IFACE" "$LANDSCAPE_EXPECTED_LAN_IFACE"; then
                 return 0
             fi
@@ -845,6 +853,10 @@ wait_for_landscape_interfaces_ready() {
 
         now_ts=$(date +%s)
         if (( now_ts - start_ts >= ready_timeout )); then
+            # 失败取证：interfaces API 的实际响应（截断）与解析出的接口名，
+            # 区分「响应为空/非 JSON」与「接口名不匹配」
+            error "interfaces api evidence: payload=${last_payload:-<empty-or-non-json>}"
+            error "interfaces api names: ${last_names:-<none>}"
             return 1
         fi
         sleep "$LANDSCAPE_API_READY_INTERVAL"
