@@ -215,7 +215,9 @@ setup_ssh() {
         -n
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
-        -o ConnectTimeout=10
+        # TCG 单 vCPU 上 guest 重负载期（服务启动/eBPF/本地 TLS 并发）SSH KEX
+        # 可能超过 10s；按最慢路径校准
+        -o ConnectTimeout=30
         -o LogLevel=ERROR
         -p "${SSH_PORT}"
         "${user}@${host}"
