@@ -1,8 +1,11 @@
 [Unit]
 Description=Assemble writable root overlay (EROFS lower + btrfs upper)
 DefaultDependencies=no
-# sysroot = root= cmdline 指向的 EROFS 根（initrd 语境由 cmdline 生成 sysroot.mount）
-After=sysroot.mount systemd-repart.service
+# sysroot = root= cmdline 指向的 EROFS 根（initrd 语境由 cmdline 生成 sysroot.mount）。
+# dev-disk-by-partlabel-var.device = udev 为 var 分区建好的 by-partlabel 符号链接的
+# 设备单元：repart/udev 异步，mount PARTLABEL=var 依赖该链接，必须显式排序
+# （实证：首启 mount 撞上链接未建窗口 status=32，OnFailure 重跑侥幸成功）
+After=sysroot.mount systemd-repart.service dev-disk-by\x2dpartlabel-var.device
 # 失败不阻塞 switch_root：退化为纯只读根继续启动
 OnFailure=initrd-switch-root.target
 OnFailureJobMode=replace-irreversibly
