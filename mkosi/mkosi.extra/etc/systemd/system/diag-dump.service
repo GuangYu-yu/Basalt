@@ -9,8 +9,9 @@ After=multi-user.target
 Type=oneshot
 ExecStart=/bin/sh -ec 'sleep 30; { echo "===== diag-dump ====="; date -u; echo "--- findmnt ---"; findmnt; echo "--- ip addr ---"; ip addr; echo "--- home ls ---"; ls -la /root/.landscape-router/ 2>&1; echo "--- init toml ---"; head -n 8 /root/.landscape-router/landscape_init.toml 2>&1 || true; echo "--- root-part inspect ---"; mkdir -p /mnt/rootpart; for p in /dev/disk/by-partlabel/basalt*; do echo "== mount $p"; mount -o ro "$p" /mnt/rootpart 2>&1 || true; if mountpoint -q /mnt/rootpart; then ls -la /mnt/rootpart/var/lib/landscape/ /mnt/rootpart/usr/share/landscape/ 2>&1 || true; umount /mnt/rootpart; fi; done; } > /dev/console; exit 0'
 # 第二阶段：见 /usr/local/sbin/diag-dump2.sh（内联脚本嵌套引号会被
-# systemd unit 解析破坏，故独立成文件）
-ExecStart=/usr/local/sbin/diag-dump2.sh
+# systemd unit 解析破坏，故独立成文件；extra-tree 不保证执行位，
+# 用 /bin/sh 显式调用）
+ExecStart=/bin/sh /usr/local/sbin/diag-dump2.sh
 
 [Install]
 WantedBy=multi-user.target
