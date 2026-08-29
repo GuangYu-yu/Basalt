@@ -21,9 +21,9 @@ rm -f "${ROOT}/var/lib/systemd/random-seed"
 ln -sfn /usr/lib/systemd/system/systemd-machine-id-commit.service \
     "${ROOT}/etc/systemd/system/multi-user.target.wants/systemd-machine-id-commit.service"
 
-# ── overlay 全根增量层目录（fstab 条目见 mkosi.extra/etc/fstab）──
-# CopyFiles=/var 会带上它们；upper/work 必须同文件系统且 work 为空目录
-mkdir -p "${ROOT}/var/lib/etc/upper" "${ROOT}/var/lib/etc/work"
+# ── overlay 全根增量层目录 ──
+# upper/work 由 initrd-root-overlay.service 在 var 挂载后运行时创建；
+# 不在此烘焙（根树 mkdir 依赖 CopyFiles=/var 转移，该机制不可靠曾丢文件）
 # ESP 挂载点（fstab PARTLABEL=ESP 条目）
 mkdir -p "${ROOT}/efi"
 
@@ -50,7 +50,6 @@ find "${ROOT}/usr/bin" "${ROOT}/usr/sbin" "${ROOT}/usr/lib" \
 # 注意 find 的 -o 不改变起点，每个独立起点单独一条 find
 forbidden="$(find "${ROOT}/etc/ssh" -name 'ssh_host_*' 2>/dev/null; \
              find "${ROOT}/root" \( -name '.bash_history' -o -name '.lesshst' \) 2>/dev/null; \
-             find "${ROOT}/var/lib/etc/upper" "${ROOT}/var/lib/etc/work" -type f 2>/dev/null; \
              find "${ROOT}/var/cache/apt" "${ROOT}/var/log/apt" -type f 2>/dev/null; \
              find "${ROOT}/var/log" -name 'dpkg.log*' 2>/dev/null)"
 if [[ -n "${forbidden}" ]]; then
