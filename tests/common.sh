@@ -1116,6 +1116,16 @@ detect_landscape_api_layout() {
     done
 
     error 'Unable to detect supported API layout'
+    # 失败取证：两前缀探测端点的 HTTP 状态码（404=路径变更 / 401=token 作用域 /
+    # 5xx=服务未就绪），login 同源 curl 可用，据此可判定原因类别
+    local probe_prefix probe_code
+    for probe_prefix in v1 src; do
+        probe_code=$(guest_run "curl -sk --max-time ${LANDSCAPE_TEST_HTTP_TIMEOUT} \
+            -o /dev/null -w '%{http_code}' \
+            -H 'Authorization: Bearer ${token}' \
+            ${API_BASE}/api/${probe_prefix}/services/dhcp_v4/status" 2>/dev/null) || probe_code="curl_err"
+        error "layout probe evidence: prefix=${probe_prefix} http_code=${probe_code}"
+    done
     return 1
 }
 
