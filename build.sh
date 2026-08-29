@@ -133,8 +133,7 @@ MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${partlabel}")
 # 网卡命名对齐：configs/landscape_init.toml 拓扑声明 eth0/eth1，预测性命名
 # （ens3 等）随平台漂移；路由器 appliance 惯例固定 eth0/eth1
 MKOSI_ARGS+=(--kernel-command-line "net.ifnames=0")
-# 诊断参数仅 DIAG_CMDLINE=1 注入（转发 journal 到串口、触发 diag-dump.service），
-# 常规构建产物保持 quiet 语义
+# 诊断参数仅 DIAG_CMDLINE=1 注入（journal 转发到串口），常规构建产物保持 quiet 语义
 if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
     MKOSI_ARGS+=(
         --kernel-command-line "loglevel=7"
