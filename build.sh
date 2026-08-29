@@ -210,10 +210,14 @@ echo "============================================================"
 # ── 构建 ──
 export LANDSCAPE_VERSION="${LANDSCAPE_VERSION:-latest}"
 
-# 上游发布物在宿主侧下载，暂存进 mkosi.extra 注入镜像（chroot 内零网络）；
-# postinst 只做落位与解压
+# latest 仅用于选下载源；InitConfig 契约要求 toml 顶层 version 与二进制
+# 精确一致（Boot 阶段硬校验），故 latest 须先解析出真实 tag
 if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
-    ASSET_BASE="${LANDSCAPE_REPO}/releases/latest/download"
+    LANDSCAPE_VERSION="$(curl -fsSL "https://api.github.com/repos/${LANDSCAPE_REPO#https://github.com/}/releases/latest" \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')" \
+        || die "无法从 GitHub API 解析最新版本号"
+    [[ -n "${LANDSCAPE_VERSION}" ]] || die "GitHub API 返回中未找到 tag_name"
+    ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
 else
     ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
 fi
@@ -224,6 +228,12 @@ curl -fL --retry 3 -o "${STAGED_WEBAPP}" "${ASSET_BASE}/landscape-webserver-x86_
 chmod +x "${STAGED_WEBAPP}"
 curl -fL --retry 3 -o "${STAGED_STATIC}" "${ASSET_BASE}/static.zip"
 STAGED_ASSETS_SET=1
+
+# 渲染 InitConfig 版本契约：顶层 version 必须与 webserver 一致，缺失即
+# Boot("Init config version mismatch") 拒启 → 服务重启循环 → 无人配置网络
+if [[ "${STAGED_CONFIG_SET:-0}" == 1 ]]; then
+    sed -i "1i version = \"${LANDSCAPE_VERSION#v}\"" "${STAGED_CONFIG}"
+fi
 
 info "mkosi build ..."
 mkosi "${MKOSI_ARGS[@]}" build
