@@ -211,7 +211,12 @@ export LANDSCAPE_VERSION="${LANDSCAPE_VERSION:-latest}"
 # latest 仅用于选下载源；InitConfig 契约要求 toml 顶层 version 与二进制
 # 精确一致（Boot 阶段硬校验），故 latest 须先解析出真实 tag
 if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
-    LANDSCAPE_VERSION="$(curl -fsSL "https://api.github.com/repos/${LANDSCAPE_REPO#https://github.com/}/releases/latest" \
+    # 匿名 api.github.com 限额 60/hr 且按 runner 共享 IP 计，CI 偶发 403。
+    # 有 GITHUB_TOKEN 时带上（→5000/hr，与目标仓库无关）；本地无 token 则匿名
+    api_auth=()
+    [[ -n "${GITHUB_TOKEN:-}" ]] && api_auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    LANDSCAPE_VERSION="$(curl -fsSL --retry 3 --retry-delay 5 ${api_auth[@]+"${api_auth[@]}"} \
+        "https://api.github.com/repos/${LANDSCAPE_REPO#https://github.com/}/releases/latest" \
         | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')" \
         || die "无法从 GitHub API 解析最新版本号"
     [[ -n "${LANDSCAPE_VERSION}" ]] || die "GitHub API 返回中未找到 tag_name"

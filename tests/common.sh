@@ -582,15 +582,23 @@ timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 }
 
-# 管理段 netdev：独立 SLIRP 段直连 router 第三块网卡 eth2（镜像内静态
-# 192.168.99.1，见 mkosi.extra/etc/network/interfaces —— 两侧地址必须一致）。
-# eth2 不在 landscape TOML 内 → 数据面（eth0/eth1）的任何重建都不触碰管理
-# 通道，这是路由器 appliance 的专用 MGMT 口姿势。
-# 不共用 LAN 网段的原因：QEMU 8.2 的 user backend 无 dhcp= 开关（dhcp=off 是
-# passt backend 的参数，QEMU 10.1+），SLIRP 内建 DHCP 必然与 landscape 的
-# LAN DHCP 竞争租约，故管理段必须是自己独占的 L2。
+# 管理段 netdev：独立 SLIRP 段直连 router 第三块网卡 eth2。eth2 不在
+# landscape TOML 内 → 数据面（eth0/eth1）的任何重建都不触碰管理通道，这是
+# 路由器 appliance 的专用 MGMT 口姿势。guest 侧 eth2 的 IP 由测试在启动后经
+# WAN 引导注入（见 landscape_router_bootstrap_mgmt），出厂镜像保持纯净、
+# 不含任何测试地址。
+# 管理段必须是自己独占的 L2：QEMU 8.2 的 user backend 无 dhcp= 开关
+# （dhcp=off 是 passt backend 的参数，QEMU 10.1+），若与 landscape 的 LAN
+# DHCP 同挂一个 hub，SLIRP 内建 DHCP 必与之竞争租约。
 LANDSCAPE_MGMT_SUBNET="${LANDSCAPE_MGMT_SUBNET:-192.168.99.0/24}"
-LANDSCAPE_MGMT_GUEST_IP="${LANDSCAPE_MGMT_GUEST_IP:-192.168.99.1}"
+# .10 而非 .1/.2：SLIRP 保留 network+1（虚拟 DNS/网关别名）与 network+2
+# （host= 默认落点），guest 静态地址须避开这两个保留位
+LANDSCAPE_MGMT_GUEST_IP="${LANDSCAPE_MGMT_GUEST_IP:-192.168.99.10}"
+# 引导通道 host 端口：与 SSH_PORT 固定偏移 1000。测试套件的自动分配只在
+# SSH_PORT 上按小步长递增（2222、2223…），+1000 恒落在并发套件的端口区间之外
+landscape_bootstrap_ssh_port() {
+    echo $(( ${SSH_PORT:-${LANDSCAPE_DEFAULT_SSH_PORT}} + 1000 ))
+}
 
 landscape_mgmt_netdev() {
     printf 'user,id=mgmt,net=%s,hostfwd=tcp::%s-%s:22,hostfwd=tcp::%s-%s:%s' \
@@ -603,8 +611,10 @@ landscape_router_start_vm() {
     local image_path="$1"
     # 管理通道（SSH/API hostfwd）终止于专用 MGMT 口 eth2 而非 NAT 化的 WAN：
     # eth0/eth1 上数据面的任何重建都不影响测试的控制通道 —— 路由器
-    # appliance 的标准管理姿势。WAN 仅承载数据面（SLIRP 提供 DHCP 与出网）
-    local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan}"
+    # appliance 的标准管理姿势。WAN 仅承载数据面（SLIRP 提供 DHCP 与出网），
+    # 外加一条 bootstrap hostfwd（独立端口）用于首启后经 SSH 给 eth2 注入
+    # 管理 IP；注入完成后所有测试流量走 mgmt 口，WAN 稳定性不再影响控制通道
+    local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan,hostfwd=tcp::$(landscape_bootstrap_ssh_port)-:22}"
     local lan_netdev="${ROUTER_LAN_NETDEV:-user,id=lan}"
     local wan_device_opts="${ROUTER_WAN_DEVICE_OPTS:-}"
     local lan_device_opts="${ROUTER_LAN_DEVICE_OPTS:-}"
@@ -670,6 +680,50 @@ landscape_router_start_vm() {
 
     error "${qemu_label} VM exited immediately"
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "${qemu_label} serial log"
+    return 1
+}
+
+# 首启引导：出厂镜像的 eth2 无任何配置（保持纯净），测试经 WAN 的 bootstrap
+# hostfwd（唯一不依赖 eth2 的临时通道）登录 guest，给 eth2 注入管理 IP 并
+# UP。此后 SSH_PORT 的 hostfwd（落在 eth2）接通，全部测试流量走管理口，
+# WAN 数据面重建不再影响控制通道。
+# 幂等：重复执行仅覆盖同一地址。等待 SSH 只在 bootstrap 端口上进行，
+# 因为注入前 SSH_PORT（→eth2）必然不通。
+landscape_router_bootstrap_mgmt() {
+    local label="${1:-Router}"
+    local boot_port
+    boot_port="$(landscape_bootstrap_ssh_port)"
+    local boot_ssh=(
+        timeout --foreground "${LANDSCAPE_TEST_REMOTE_TIMEOUT}"
+        sshpass -p "${SSH_PASSWORD}" ssh
+        -n
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o ConnectTimeout=30
+        -o LogLevel=ERROR
+        -p "${boot_port}"
+        "${SSH_USER:-root}@${SSH_HOST:-localhost}"
+    )
+
+    info "Bootstrapping ${label} mgmt interface via WAN (port ${boot_port})..."
+    local t0=${SECONDS}
+    while [[ $(( SECONDS - t0 )) -lt ${SSH_TIMEOUT:-120} ]]; do
+        if ! kill -0 "${LANDSCAPE_ROUTER_PID}" 2>/dev/null; then
+            error "${label} VM died during bootstrap"
+            dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "${label} serial log"
+            return 1
+        fi
+        if "${boot_ssh[@]}" \
+            "ip addr replace ${LANDSCAPE_MGMT_GUEST_IP}/24 dev eth2 && ip link set eth2 up" \
+            &>/dev/null; then
+            ok "Mgmt interface eth2 = ${LANDSCAPE_MGMT_GUEST_IP} (bootstrap done)"
+            return 0
+        fi
+        sleep 3
+    done
+
+    error "Bootstrap SSH never became reachable on port ${boot_port}"
+    dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "${label} serial log"
     return 1
 }
 

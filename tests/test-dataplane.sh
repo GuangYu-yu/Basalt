@@ -105,7 +105,7 @@ preflight() {
         exit 2
     fi
 
-    if ! ensure_local_ports_free "${SSH_PORT}" "${WEB_PORT}"; then
+    if ! ensure_local_ports_free "${SSH_PORT}" "${WEB_PORT}" "$(landscape_bootstrap_ssh_port)"; then
         exit 2
     fi
 
@@ -325,6 +325,10 @@ main() {
     cirros_file="$(download_cirros)" || exit 2
 
     if ! landscape_router_start_vm "${IMAGE_PATH}"; then
+        exit 2
+    fi
+
+    if ! landscape_router_bootstrap_mgmt "Router"; then
         exit 2
     fi
 
