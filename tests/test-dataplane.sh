@@ -348,7 +348,8 @@ main() {
     preflight
 
     local cirros_file
-    read -r cirros_file CIRROS_KERNEL_FILE CIRROS_INITRD_FILE <<< "$(download_cirros)" || exit 2
+    # read 单次调用只消费一行 → 三行路径须三次 read（进程替换保证在父 shell 赋值）
+    { read -r cirros_file; read -r CIRROS_KERNEL_FILE; read -r CIRROS_INITRD_FILE; } < <(download_cirros) || exit 2
 
     if ! landscape_router_start_vm "${IMAGE_PATH}"; then
         exit 2
