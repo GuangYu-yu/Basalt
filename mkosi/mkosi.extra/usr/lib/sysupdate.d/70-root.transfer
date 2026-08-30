@@ -1,29 +1,33 @@
-# 设备侧 sysupdate transfer —— root A/B 分区
+# 设备侧 sysupdate transfer —— EROFS 根镜像（文件资源）
 # systemd-sysupdate.timer（postinst enable）定时消费；`systemd-sysupdate list/update`
 # 手动触发同用此定义。
 #
 # 语义（sysupdate.d(5)）：
-#   - 标签承载版本：Target MatchPattern 中的 @v 必选；写入完成后分区被重命名为
-#     basalt_<版本>。
-#   - 版本即槽位：sysupdate 重命名标签后，新版本 UKI（cmdline 绑
-#     root=PARTLABEL=basalt_<版本>，build.sh 按构建版本写入）
-#     自描述其根分区，与标签簿记同源；引导顺序由 systemd-boot 按版本排序
-#     决定。
+#   - Target Type=regular-file 范式与 openSUSE microos-sysext 生产实例一致
+#     （sysupdate.d/…/debug.transfer：Type=regular-file Path=/var/lib/extensions）。
+#   - ProtectVersion=%A：保护正在运行的版本不被 vacuum（v251 引入，v257 官方
+#     示例同款）。%A 取自 os-release 的 IMAGE_VERSION= —— 未设置时展开为空串，
+#     该保护被忽略（仅告警）→ build.sh --image-version 注入为强制契约。
 #   - 幂等：目标已是该版本时 update 为 no-op。
+#   - InstancesMax 与 80-uki.transfer 保持一致（sysupdate.d(5) 明示建议各
+#     transfer 一致，否则残留不完整组合；两资源同版本号成对安装、成对 vacuum）。
+#   - /var/lib/basalt 为固定路径（fstab @os 条目同源），非 IMAGE_ID 派生。
 # url-file 源要求发布目录提供 SHA256SUMS 清单（sysupdate.d(5) 的版本枚举
-# 与完整性校验机制）；清单由发布方生成，占位 URL 保持占位。
+# 与完整性校验机制）；清单由 build.sh 生成（erofs.xz + 版本化 UKI），
+# 占位 URL 保持占位。
 [Transfer]
-Notify=stdout
+ProtectVersion=%A
 
 [Source]
 Type=url-file
 Path=https://updates.example.com/basalt/
-MatchPattern=basalt_@v.raw.xz
+MatchPattern=basalt_@v.erofs.xz
 
 [Target]
-Type=partition
-Path=auto
-MatchPattern=basalt_@v
-MatchPartitionType=root
-InstancesMax=2
-PartitionFlags=0
+Type=regular-file
+Path=/var/lib/basalt/images
+MatchPattern=basalt_@v.erofs
+Mode=0444
+InstancesMax=3
+# 上行 InstancesMax=3 为模板默认：build.sh 暂存渲染按 build.env
+# INSTANCES_MAX 统一替换，勿手改数值

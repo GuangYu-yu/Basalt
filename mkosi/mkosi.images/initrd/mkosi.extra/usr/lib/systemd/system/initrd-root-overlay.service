@@ -1,38 +1,31 @@
 [Unit]
-Description=Assemble writable root overlay (EROFS lower + btrfs upper)
+Description=Assemble writable root overlay (EROFS file lower + btrfs @os upper)
 DefaultDependencies=no
-# sysroot = root= cmdline 指向的 EROFS 根（initrd 语境由 cmdline 生成 sysroot.mount）。
-# dev-disk-by-partlabel-var.device = udev 为 var 分区建好的 by-partlabel 符号链接的
-# 设备单元：repart/udev 异步，mount PARTLABEL=var 依赖该链接，必须显式排序
+# sysroot.mount = root=/rootflags= 生成的 btrfs @os 挂载（initrd 语境由 cmdline
+# 经 fstab-generator 生成）。dev-disk-by\x2dpartlabel-var.device = udev 为 var
+# 分区建好的 by-partlabel 符号链接的设备单元：repart/udev 异步，依赖该链接必须
+# 显式排序（repart 重枚举窗口由下方 mount 重试覆盖）。
+# 无 OnFailure 退化路径：sysroot=@os（非可启动根），组装失败必须进 initrd
+# emergency（systemd 默认行为），由 rescue UKI / 串口 console 承接排障。
 After=sysroot.mount systemd-repart.service dev-disk-by\x2dpartlabel-var.device
-# 失败不阻塞 switch_root：退化为纯只读根继续启动
-OnFailure=initrd-switch-root.target
-OnFailureJobMode=replace-irreversibly
 
-# 为什么在 initrd 里做：
-#   systemd-fstab-generator 对 / 只生成 remount 语义，不会在真实根阶段把
-#   erofs 的 / 换成 overlay（fstab overlay / 条目永远不生效）；而 overlay
-#   涉及两个设备（EROFS 根 + btrfs /var），fstab-generator 无法表达多设备
-#   根（systemd 上游不支持多设备根 fstab 表达）。OpenWrt/Android/overlayroot
-#   均在 initramfs 阶段组装全根 overlay —— 本单元即该步骤的声明式最小实现。
-#
 # 挂载编排（顺序敏感）：
-#   1. var 分区先挂到 initrd 中性路径 /run/var（upper/work 必须与 lower
-#      不同文件系统，此处 upper/work 所在 btrfs 尚无其他挂载点）
-#   2. overlay 叠到 /sysroot 上（shadow 住 EROFS sysroot；lowerdir=/sysroot
-#      在挂载瞬间解析为 EROFS 内容，overlayfs 会 pin 住底层挂载）
-#   3. switch_root 后：/ = overlay；/var 由真实根 fstab 挂载同一 btrfs
-#      （重复挂载同一 btrfs 合法且视图一致），x-systemd.growfs 在该挂载上
-#      完成文件系统扩展 —— 因此这里刻意不做 move-mount
+#   1. sysroot.mount（@os）由 root=/rootflags 生成——btrfs 上既有 images/ 又
+#      承接 overlay upper/work（跨版本共享：/etc 等系统状态是"当前状态"而非
+#      版本属性，回滚只切换 EROFS lower）
+#   2. loop 只读挂 /sysroot/images/basalt_<v>.erofs → /run/root-image
+#   3. overlay 叠到 /sysroot：lowerdir=loop 镜像，upper/work=@os/overlay/*
+#      （挂载瞬间解析，overlayfs pin 底层挂载）
+#   4. switch_root 后：/ = overlay；/var 由真实根 fstab 以 subvol=@data 挂
+#      同一 btrfs；/var/lib/basalt 再以 subvol=@os 挂载，供运行期 sysupdate
+#      写入与运维访问
+# basalt.ro=1（rescue UKI）：跳过 overlay，双 move 得纯只读 EROFS 根
 [Service]
 Type=oneshot
 # 单行命令：unit 语法引号不可跨行（多行引号会被判 Unbalanced quoting，
 # 整个 unit 拒载）
-# var 挂载带重试：首启 systemd-repart 扩分区表触发 udev 重枚举，
-# 单发 mount 可能撞上设备暂不可解析的窗口（间歇性 ENOENT），
-# 30s 预算覆盖 repart + udev 稳定时间
-# upper/work 必须创建在挂载后的 var 文件系统上：挂载前创建会落在 tmpfs 被
-# 遮蔽，构建期烘焙则依赖不可靠的 CopyFiles=/var（曾丢文件）；运行时创建
-# 是唯一可靠路径，CoW 层持久化
-ExecStart=/bin/sh -ec 'exec >/dev/console 2>&1; mkdir -p /run/var; i=0; until mount -t btrfs -o compress=zstd:1,noatime PARTLABEL=var /run/var; do i=$((i+1)); [ $i -ge 15 ] && echo "var mount failed after $i attempts" && exit 1; sleep 2; done; mkdir -p /run/var/lib/etc/upper /run/var/lib/etc/work; mount -t overlay -o lowerdir=/sysroot,upperdir=/run/var/lib/etc/upper,workdir=/run/var/lib/etc/work overlay /sysroot'
+# loop 挂载带重试：首启 systemd-repart 扩分区表触发 udev 重枚举，单发
+# mount 可能撞上设备暂不可解析的窗口（间歇性 ENOENT），30s 预算覆盖
+# repart + udev 稳定时间
+ExecStart=/bin/sh -ec 'exec >/dev/console 2>&1; img="$(sed -n "s/.*basalt.image=\([^ ]*\).*/\1/p" /proc/cmdline)"; [ -n "$img" ] || { echo "basalt.image= missing on cmdline"; exit 1; }; mkdir -p /run/root-image; i=0; until mount -o ro,loop /sysroot/images/"$img" /run/root-image; do i=$((i+1)); [ $i -ge 15 ] && echo "erofs loop mount failed after $i attempts: $img" && exit 1; sleep 2; done; if grep -q "basalt.ro=1" /proc/cmdline; then mkdir -p /run/osroot; mount --move /sysroot /run/osroot; mount --move /run/root-image /sysroot; else mkdir -p /sysroot/overlay/upper /sysroot/overlay/work; mount -t overlay -o lowerdir=/run/root-image,upperdir=/sysroot/overlay/upper,workdir=/sysroot/overlay/work overlay /sysroot; fi'
 RemainAfterExit=yes

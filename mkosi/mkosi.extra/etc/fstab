@@ -1,7 +1,11 @@
 # ESP：标签在 mkosi.repart/10-esp.conf 声明一次；固定挂载点是
 # /usr/lib/sysupdate.d/80-uki.transfer 的 Path= 前提（单一事实派生）。
 PARTLABEL=ESP /efi vfat umask=0077,noatime 0 0
-# /var 条目由 mkosi.repart/30-var.conf 的 MountPoint= 自动生成（勿在此重复）。
+# @os 运行期挂载点：sysupdate 目标目录（/var/lib/basalt/images）与
+# overlay upper/work 层的宿主（initrd 期同卷挂 /sysroot 组装 overlay）
+PARTLABEL=var /var/lib/basalt btrfs subvol=@os,compress=zstd:1,noatime 0 0
+# /var（@data）条目由 mkosi.repart/30-var.conf 的 MountPoint= 自动生成（勿在此重复）：
+#   /var:"subvol=@data,compress=zstd:1,noatime,x-systemd.growfs"
 # / 的 overlay 组装在 initrd 完成（见 mkosi.images/initrd/.../initrd-root-overlay.service）：
 #   fstab-generator 对 / 只做 remount 语义，真实根阶段无法换 fstype ——
 #   此处刻意无 / 条目（systemd-remount-fs 因此对 overlay 根零操作，干净）。

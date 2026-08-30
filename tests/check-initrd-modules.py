@@ -1,38 +1,57 @@
 #!/usr/bin/env python3
-"""模块门禁：校验 mkosi 拆分产物 basalt.initrd，断言引导契约所需内核模块存在。
+"""模块门禁：两套工件 × 三态契约，断言引导/数据面所需内核模块存在。
 
-输入是 mkosi 构建时经其自身 extract_pe_section（pefile，取
-min(VirtualSize, SizeOfRawData)）从 UKI 拆出的合并 initrd
-（mkosi v26 SplitArtifacts 默认含 initrd；build.sh 收集到 output/），
-此处零抽取逻辑，只做解码与断言。
+工件：
+  initrd  mkosi 拆分产物（经 extract_pe_section 从 UKI 拆出的合并 initrd，
+          build.sh 收集到 output/）；此处零抽取逻辑，只做解码与断言
+  root    pass1 SplitArtifacts=partitions 拆出的裸 EROFS 根镜像（可选参数，
+          缺省跳过 ROOT 断言；需要 root（loop 挂载）或 erofsfuse 读取）
 
-需求契约（与 mkosi.conf 的 KernelModules= 对应；此处是验证端，二者需同步修改）：
-  启动链   virtio_blk virtio_pci virtio_net ahci sd_mod nvme autofs4
-  根/引导  erofs overlay btrfs vfat
-  数据面   nf_conntrack tun veth bridge e1000 r8169
-遗漏 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
+三态契约（与 mkosi.conf 的 KernelInitrdModules=/KernelModules= 对应；此处是
+验证端，二者需同步修改；绝不比较完整模块集合，只做两种判断）：
+  required  子集判断：契约集合 ⊆ 工件内模块（.ko 文件或 modules.builtin）
+  forbidden 不相交判断：工件内模块 ∷ 禁用子系统 = ∅
+  其余      allowed：不在契约内的模块不构成失败（依赖闭包合法产物）
+
+契约内容：
+  initrd 启动链  virtio_blk virtio_pci virtio_net ahci sd_mod nvme autofs4
+                 erofs overlay btrfs vfat loop
+  initrd 平台    ata_piix vmw_pvscsi mptspi mpt3sas hv_vmbus hv_storvsc
+                 hv_netvsc xen_blkfront
+  root 数据面    nf_conntrack tun veth bridge e1000 r8169
+  forbidden      net/bluetooth/ net/wireless/ drivers/net/wireless/
+遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import zstandard
 
-REQUIRED = {
+REQUIRED_INITRD = {
     "virtio_blk", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
-    "erofs", "overlay", "btrfs", "vfat",
+    "erofs", "overlay", "btrfs", "vfat", "loop",
     # 各平台存储控制器 / Hypervisor 半虚拟化：PVE IDE / ESXi / Hyper-V / Xen
     "ata_piix", "vmw_pvscsi", "mptspi", "mpt3sas",
     "hv_vmbus", "hv_storvsc", "hv_netvsc", "xen_blkfront",
-    # 数据面
+}
+
+REQUIRED_ROOT = {
+    # 数据面：landscape NIC / TC-eBPF / 虚拟组网
     "nf_conntrack", "tun", "veth", "bridge", "e1000", "r8169",
 }
+
+# 禁用子系统（路径级判断，命中即违例）
+FORBIDDEN_PATHS = ("net/bluetooth/", "net/wireless/", "drivers/net/wireless/")
 
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
 # Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）
 REQUIRED_UNITS = {
     "usr/lib/systemd/system/initrd-root-overlay.service",
-    "usr/lib/systemd/system/systemd-repart.service.d/sysroot.conf",
     "usr/lib/systemd/system/initrd-switch-root.service.d/10-overlay.conf",
 }
 
@@ -118,14 +137,8 @@ def modname(path: str) -> str:
     return base.replace("-", "_")
 
 
-def check(blob: bytes) -> int:
-    names = cpio_names(blob)
-
-    kos = {modname(n): n for n in names
-           if re.search(r"usr/lib/modules/[^/]+/.*\.ko(\.(gz|xz|zst))?$", n)}
-
-    # built-in（CONFIG_...=y）模块无 .ko 文件，由 modules.builtin 清单承载，
-    # 与 .ko 同为契约满足。从 cpio 数据流中定位该文件并逐行解析
+def builtin_from_blob(blob: bytes, names: list[str]) -> set[str]:
+    """从 cpio 数据流解析 modules.builtin（CONFIG_...=y 模块无 .ko 文件）。"""
     builtin = set()
     for path in names:
         if not path.endswith("modules.builtin"):
@@ -142,13 +155,88 @@ def check(blob: bytes) -> int:
         for line in blob[data_start:data_start + filesize].decode("utf-8", "replace").splitlines():
             if line.strip():
                 builtin.add(modname(line.strip()))
+    return builtin
 
-    missing = sorted(REQUIRED - set(kos) - builtin)
-    total = len(kos)
-    print(f"[module-gate] initrd 内模块文件：{total} 个，built-in：{len(builtin)} 个")
-    for req in sorted(REQUIRED):
-        hit = kos.get(req) or ("built-in" if req in builtin else None)
-        print(f"  {'OK ' if hit else 'MISS'} {req}" + (f" -> {hit}" if hit else ""))
+
+def modules_from_paths(paths: set[str], builtin: set[str]) -> tuple[set[str], list[str]]:
+    """三态契约输入：模块名集合（.ko + builtin）与违例路径清单。"""
+    kos = {modname(n): n for n in paths
+           if re.search(r"usr/lib/modules/[^/]+/.*\.ko(\.(gz|xz|zst))?$", n)}
+    violations = sorted(
+        {n for n in paths if any(f in f"/{n}" for f in FORBIDDEN_PATHS)})
+    return set(kos) | builtin, violations
+
+
+def check_artifact(label: str, modules: set[str], forbidden: list[str],
+                   required: set[str]) -> list[str]:
+    """三态断言：required 子集 / forbidden 不相交；返回失败项清单。"""
+    print(f"[module-gate] {label} 内模块（含 built-in）：{len(modules)} 个")
+    missing = []
+    for req in sorted(required):
+        ok = req in modules
+        print(f"  {'OK ' if ok else 'MISS'} {req}")
+        if not ok:
+            missing.append(req)
+    for path in forbidden:
+        print(f"  FORBIDDEN {path}")
+    return missing + forbidden
+
+
+def walk_modules(root: str) -> tuple[set[str], set[str]]:
+    """遍历挂载点内的 usr/lib/modules，返回（.ko 路径集，builtin 模块名集）。"""
+    paths: set[str] = set()
+    builtin: set[str] = set()
+    for dirpath, _dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        for fn in filenames:
+            rel = os.path.normpath(os.path.join(rel_dir, fn))
+            if "usr/lib/modules/" in f"/{rel}":
+                paths.add(rel.lstrip("/"))
+                if fn == "modules.builtin":
+                    try:
+                        for line in Path(dirpath, fn).read_text(
+                                encoding="utf-8", errors="replace").splitlines():
+                            if line.strip():
+                                builtin.add(modname(line.strip()))
+                    except OSError:
+                        pass
+    return paths, builtin
+
+
+def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
+    """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
+
+    需要文件系统访问：root（loop 挂载）或 erofsfuse（非 root）。
+    """
+    tmp = tempfile.mkdtemp(prefix="basalt-gate-")
+    mnt = os.path.join(tmp, "root")
+    os.mkdir(mnt)
+    if os.geteuid() == 0:
+        subprocess.run(["mount", "-o", "ro,loop", str(erofs), mnt], check=True)
+        try:
+            paths, builtin = walk_modules(mnt)
+        finally:
+            subprocess.run(["umount", mnt], check=True)
+    elif shutil.which("erofsfuse"):
+        subprocess.run(["erofsfuse", str(erofs), mnt], check=True)
+        try:
+            paths, builtin = walk_modules(mnt)
+        finally:
+            unmount = shutil.which("fusermount3") or shutil.which("fusermount")
+            subprocess.run([unmount, "-u", mnt], check=True)
+    else:
+        sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return modules_from_paths(paths, builtin)
+
+
+def check(blob: bytes) -> int:
+    names = cpio_names(blob)
+    paths = set(names)
+    builtin = builtin_from_blob(blob, names)
+    modules, forbidden = modules_from_paths(paths, builtin)
+
+    missing = check_artifact("initrd", modules, forbidden, REQUIRED_INITRD)
 
     name_set = set(names)
     for unit in sorted(REQUIRED_UNITS):
@@ -158,16 +246,27 @@ def check(blob: bytes) -> int:
             missing.append(unit)
 
     if missing:
-        print(f"[module-gate] FAIL 缺失：{' '.join(missing)}", file=sys.stderr)
+        print(f"[module-gate] FAIL 缺失/违例：{' '.join(missing)}", file=sys.stderr)
         return 1
-    print("[module-gate] PASS")
+    print("[module-gate] initrd PASS")
     return 0
 
 
 def main() -> int:
     initrd = Path(sys.argv[1])
     blob = decode_initrd(initrd.read_bytes())
-    return check(blob)
+    rc = check(blob)
+
+    if len(sys.argv) > 2:
+        # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
+        root_modules, root_forbidden = root_erofs_modules(Path(sys.argv[2]))
+        missing = check_artifact("root(EROFS)", root_modules,
+                                 root_forbidden, REQUIRED_ROOT)
+        if missing:
+            print(f"[module-gate] FAIL ROOT 缺失/违例：{' '.join(missing)}", file=sys.stderr)
+            return 1
+        print("[module-gate] root PASS")
+    return rc
 
 
 if __name__ == "__main__":

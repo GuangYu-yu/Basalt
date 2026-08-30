@@ -1,11 +1,20 @@
 #!/bin/bash
 # =============================================================================
-# build.sh — Basalt 镜像构建入口（mkosi 管线）
+# build.sh — Basalt 镜像构建入口（mkosi 两遍管线）
 #
 # 用法：
 #   ./build.sh [--include-docker true] [--output-format img,vmdk,ova]
 #              [--version vX.Y.Z] [--no-compress] [--smoke]
 #   --smoke : 构建后 mkosi qemu 直接启动验证
+#
+# 更新模型（EROFS 文件轮转，无 A/B root 分区）：
+#   pass1  以临时 root 分区定义 + --split-artifacts partitions 拆出裸 EROFS
+#          根镜像工件（<主输出名>.root-x86-64.raw），同时产出 kernel/initrd/
+#          UKI（rescue UKI 的原料与 ESP 定稿实测）
+#   pass2  移除 root 分区定义，将 EROFS 种子进 var 分区 @os 子卷
+#          （CopyFiles=/@os-staging:/@os），终盘 = ESP + var(btrfs)
+#   运行期 systemd-sysupdate 按版本号成对更新 EROFS 文件 + UKI
+#   （mkosi.extra/usr/lib/sysupdate.d/），当前版本 ProtectVersion=%A 保护
 # =============================================================================
 set -euo pipefail
 
@@ -24,6 +33,8 @@ source "${SCRIPT_DIR}/build.env"
 # 全部可调参数的默认值均在 build.env 声明，此处不再重复
 MB=$(( 1024 * 1024 ))                      # 字节算术统一单位，杜绝裸字面量
 SMOKE=false
+INSTANCES_MAX="${INSTANCES_MAX:-3}"        # 兜底默认（正源在 build.env）
+ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-128}"    # overlay 增长 + btrfs 元数据余量
 
 CLI_FORMATS=()
 while [[ $# -gt 0 ]]; do
@@ -50,12 +61,25 @@ fi
 rest="$(tr , '\n' <<<"${OUTPUT_FORMATS}" | awk '!seen[$0]++' | { grep -vx img || true; } | paste -sd, -)"
 OUTPUT_FORMATS="${rest:+${rest},}img"
 
+# ── 镜像版本（单一事实 = 版本号）──
+# 工厂构建恒为 1；--version 显式指定时用该版本号。恒注入 --image-version 是
+# 硬契约：ProtectVersion=%A 取 os-release 的 IMAGE_VERSION=，缺失则 vacuum
+# 保护静默失效（见 70-root.transfer 头注）
+VER="1"
+[[ "${LANDSCAPE_VERSION:-latest}" != "latest" ]] && VER="${LANDSCAPE_VERSION#v}"
+[[ ${#VER} -le 16 ]] || echo "WARN: 镜像版本 '${VER}' 偏长（UKI/镜像文件名预算）" >&2
+
 require() { command -v "$1" >/dev/null || die "缺少 '$1'（安装: apt install $2）"; }
 require mkosi   mkosi
 require qemu-img qemu-utils
 require xz       xz-utils
 require curl     curl
 require python3  python3
+# pass1 UKI 的 .cmdline PE 段提取（rescue UKI cmdline 唯一事实源）
+require objcopy binutils
+# rescue UKI（basalt.ro=1 只读根入口）手工编排；ToolsTree 内 ukify 的宿主侧
+# 调用路径待实测（V6），宿主 ukify 为确定路径
+require ukify    systemd-ukify
 # uki 引导 + ToolsTree + systemd-boot 形态需要 mkosi >= 26
 # （apt 发行版里的旧版缺 Bootloader=/KernelInitrdModules= 语义）；
 # mkosi 不发布 PyPI 包，经 GitHub tag 源码包安装
@@ -79,10 +103,10 @@ BUILD_ARTIFACTS=()
 source "${SCRIPT_DIR}/lib/export.sh"
 
 # ── 智能初始化配置注入（CI 的 EFFECTIVE_CONFIG_PATH 契约）──
-# 暂存进 extra tree；mkosi 合入后经 root 分区 CopyFiles=/ 烘焙为
-# /usr/share/landscape/landscape_init.toml（工厂默认配置），
+# 暂存进 extra tree；mkosi 合入镜像树，经 pass1 的 root 分区 CopyFiles=/ 烘焙
+# 为 /usr/share/landscape/landscape_init.toml（工厂默认配置），
 # landscape-router.service 首启有条件拷贝到 /var/lib/landscape。
-# 不放 var 分区：该分区由 CopyFiles=/var 组装，业务文件统一走 root 分区
+# 不放 var 分区：该分区由 CopyFiles=/var:/@data 组装，业务文件统一走
 # /usr/share（随版本原子更新），工厂重置（清 /var）即恢复出厂拓扑。
 STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/usr/share/landscape/landscape_init.toml"
 STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
@@ -90,10 +114,6 @@ STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
 # 先清残留：上次构建中途退出（die/TERM）留在 extra tree 的文件若不在此清除，
 # 会被本次构建的 CopyFiles 静默烘焙进镜像
 rm -f "${STAGED_CONFIG}" "${STAGED_WEBAPP}" "${STAGED_STATIC}"
-if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
-    [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
-    install -Dm644 "${EFFECTIVE_CONFIG_PATH}" "${STAGED_CONFIG}"
-fi
 
 # ── mkosi 参数拼装 ──
 MKOSI_ARGS=(
@@ -102,24 +122,25 @@ MKOSI_ARGS=(
     --package-cache-dir "${WORK_DIR}/aptcache"
     --root-password    "${ROOT_PASSWORD}"
     --image-id         "${IMAGE_ID}"
+    --image-version    "${VER}"
     --timezone         "${TIMEZONE}"
     --locale           "${LOCALE}"
     # v26 脚本 sandbox 清洗宿主环境，需显式注入（postinst 的 ld 用户密码用）
     --environment      "ROOT_PASSWORD=${ROOT_PASSWORD}"
 )
-# UKI 自描述根：cmdline 绑出厂分区标签。
-# （mkosi CLI 的 KernelCommandLine 为追加语义，base 见 mkosi.conf）。
-# 出厂 img 由 dd/QEMU 直启，cmdline 必须等于其 repart 分区标签 basalt_1
-# （mkosi.repart/20-root-a.conf 的 Label，repart 无版本 specifier → 恒为 1）。
-# LANDSCAPE_VERSION 只决定下载哪个 landscape 二进制，不参与标签推导；
-# 版本化标签（basalt_<v>）由 sysupdate OTA 运行期重命名分区时施加，与
-# 对应版本 UKI 的 cmdline 同源，非构建期职责。
-ROOT_LABEL_VER="1"
-# GPT 分区名上限 36 字符，超长被 sfdisk/repart 静默截断 → root=PARTLABEL 永远
-# 找不到分区、紧急模式。构建期显式失败优于静默产物
-partlabel="${IMAGE_ID}_${ROOT_LABEL_VER}"
-[[ ${#partlabel} -le 36 ]] || die "PARTLABEL '${partlabel}' 超过 GPT 36 字符上限（IMAGE_ID=${IMAGE_ID} version=${ROOT_LABEL_VER}），截断将导致 root= 无法匹配"
-MKOSI_ARGS+=(--kernel-command-line "root=PARTLABEL=${partlabel}")
+# UKI 自描述根（文件轮转契约；mkosi CLI 的 KernelCommandLine 为追加语义，
+# 基础行见 mkosi.conf）：
+#   root=/dev/disk/by-partlabel/var + rootflags=subvol=@os → initrd 的
+#     fstab-generator 生成 sysroot.mount（btrfs @os：镜像与 overlay 层宿主；
+#     root= 采用 man 明示的设备节点路径形态）
+#   basalt.image=<文件名> → initrd-root-overlay.service 解析，相对
+#     /sysroot/images/；与 sysupdate 70-root.transfer 的 Target MatchPattern
+#     同版本同源（任意可启动 UKI 的镜像必然同版本存在）
+MKOSI_ARGS+=(
+    --kernel-command-line "root=/dev/disk/by-partlabel/var"
+    --kernel-command-line "rootflags=subvol=@os,compress=zstd:1,noatime"
+    --kernel-command-line "basalt.image=${IMAGE_ID}_${VER}.erofs"
+)
 # 网卡命名对齐：configs/landscape_init.toml 拓扑声明 eth0/eth1，预测性命名
 # （ens3 等）随平台漂移；路由器 appliance 惯例固定 eth0/eth1
 MKOSI_ARGS+=(--kernel-command-line "net.ifnames=0")
@@ -138,6 +159,7 @@ if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
 fi
 # APT 镜像直通（mkosi 原生 --mirror，单源无 failover 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")
+
 # ── 暂存-恢复：构建期渲染仓库模板文件，EXIT trap 统一还原 git 原状 ──
 # 不可用 --repart-dir 指向 work 拷贝：mkosi 自动发现的 mkosi.repart/ 先于
 # CLI 目录注册，而 systemd-repart 对跨目录同名定义先到先得
@@ -149,29 +171,50 @@ for conf in "${REPART_DIR}"/*.conf; do
     cp -f "$conf" "$conf.orig"
     STAGED_REPART_CONFS+=("$conf")
 done
-# 设备侧 sysupdate.d 同属暂存-恢复：渲染 IMAGE_ID 前缀（sed 即在此处生效）
+# 设备侧 sysupdate.d 同属暂存-恢复：渲染 IMAGE_ID 前缀（sed 即在此处生效）。
+# 只渲染 MatchPattern 与源 URL；/var/lib/basalt 为固定路径（fstab @os 条目
+# 同源），不参与渲染
 STAGED_SYSUPDATE_D=(
     "${SCRIPT_DIR}/mkosi/mkosi.extra/usr/lib/sysupdate.d/70-root.transfer"
     "${SCRIPT_DIR}/mkosi/mkosi.extra/usr/lib/sysupdate.d/80-uki.transfer"
+    "${SCRIPT_DIR}/mkosi/mkosi.sysupdate/70-root.transfer"
+    "${SCRIPT_DIR}/mkosi/mkosi.sysupdate/80-uki.transfer"
 )
+# 备份名带父目录消歧（设备侧/构建侧同名 transfer）
+STAGED_SYSUPDATE_BACKUP=()
 for f in "${STAGED_SYSUPDATE_D[@]}"; do
-    cp -f "$f" "${WORK_DIR}/$(basename "$f").orig"
+    b="${WORK_DIR}/$(basename "${f%/*}")_$(basename "$f").orig"
+    cp -f "$f" "${b}"
+    STAGED_SYSUPDATE_BACKUP+=("${b}")
 done
-sed -i -e "s/basalt_/${IMAGE_ID}_/g" -e "s#/basalt/#/${IMAGE_ID}/#g" \
+sed -i -e "s/basalt_/${IMAGE_ID}_/g" \
+    -e "s#updates.example.com/basalt/#updates.example.com/${IMAGE_ID}/#g" \
+    -e "s/InstancesMax=3/InstancesMax=${INSTANCES_MAX}/g" \
+    -e "s/TriesLeft=3/TriesLeft=${INSTANCES_MAX}/g" \
     "${STAGED_SYSUPDATE_D[@]}"
+# 文件轮转新增暂存路径：
+#   @os-staging/  —— pass1 EROFS 工件种子（pass2 CopyFiles=/@os-staging:/@os）
+#   rescue UKI    —— mkosi.extra/efi/EFI/Linux/，经 ESP CopyFiles=/efi:/ 带入
+#   20-root.conf  —— pass1 临时 root 分区定义（pass2 删除）
+STAGED_OS_DIR="${SCRIPT_DIR}/mkosi/mkosi.extra/@os-staging"
+STAGED_RESCUE_UKI="${SCRIPT_DIR}/mkosi/mkosi.extra/efi/EFI/Linux/${IMAGE_ID}-rescue.efi"
+PASS1_ROOT_CONF="${REPART_DIR}/20-root.conf"
+rm -rf "${STAGED_OS_DIR}"
+rm -f "${STAGED_RESCUE_UKI}"
 cleanup_staged() {
     # 无条件清理暂存产物：上次构建中途退出（die/TERM）的残留若不清除，
     # 会被本次构建的 CopyFiles 静默烘焙进镜像
     rm -f "${STAGED_CONFIG}" "${STAGED_WEBAPP}" "${STAGED_STATIC}"
+    rm -rf "${STAGED_OS_DIR}"
+    rm -f "${STAGED_RESCUE_UKI}" "${PASS1_ROOT_CONF}"
     for conf in "${STAGED_REPART_CONFS[@]:-}"; do
         [[ -n "$conf" && -f "$conf.orig" ]] && mv -f "$conf.orig" "$conf"
     done
-    if [[ -n "${STAGED_B_DEF:-}" && -f "${WORK_DIR}/91-root-b.conf.orig" ]]; then
-        mv -f "${WORK_DIR}/91-root-b.conf.orig" "${STAGED_B_DEF}"
-    fi
+    local i=0
     for f in "${STAGED_SYSUPDATE_D[@]:-}"; do
-        [[ -n "$f" && -f "${WORK_DIR}/$(basename "$f").orig" ]] \
-            && mv -f "${WORK_DIR}/$(basename "$f").orig" "$f"
+        local b="${STAGED_SYSUPDATE_BACKUP[$i]:-}"
+        [[ -n "$f" && -n "${b}" && -f "${b}" ]] && mv -f "${b}" "$f"
+        i=$((i+1))
     done
     return 0
 }
@@ -183,8 +226,6 @@ trap cleanup_staged EXIT
 # bash 默认收到 TERM/INT 不执行 EXIT trap（CI timeout 即 TERM），转发使其必达
 trap 'exit 143' TERM
 trap 'exit 130' INT
-[[ "${LANDSCAPE_VERSION:-latest}" != "latest" ]] \
-    && MKOSI_ARGS+=(--image-version "${LANDSCAPE_VERSION#v}")
 
 if [[ "${INCLUDE_DOCKER}" == "true" ]]; then
     # CLI 逐包注入，配置文件保持单一事实
@@ -192,8 +233,8 @@ if [[ "${INCLUDE_DOCKER}" == "true" ]]; then
 fi
 
 echo "============================================================"
-echo " Basalt (mkosi)"
-echo " docker=${INCLUDE_DOCKER} outputs=${OUTPUT_FORMATS} version=${LANDSCAPE_VERSION:-latest}"
+echo " Basalt (mkosi, 文件轮转)"
+echo " docker=${INCLUDE_DOCKER} outputs=${OUTPUT_FORMATS} version=${LANDSCAPE_VERSION:-latest} image=${VER}"
 echo "============================================================"
 
 # ── 构建 ──
@@ -211,10 +252,8 @@ if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
         | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')" \
         || die "无法从 GitHub API 解析最新版本号"
     [[ -n "${LANDSCAPE_VERSION}" ]] || die "GitHub API 返回中未找到 tag_name"
-    ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
-else
-    ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
 fi
+ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
 info "下载 Landscape 发布物（${LANDSCAPE_VERSION}）..."
 mkdir -p "${STAGED_WEBAPP%/*}" "${STAGED_STATIC%/*}"
 curl -fL --retry 3 -o "${STAGED_WEBAPP}" "${ASSET_BASE}/landscape-webserver-x86_64"
@@ -227,62 +266,75 @@ if [[ -f "${STAGED_CONFIG}" ]]; then
     sed -i "1i version = \"${LANDSCAPE_VERSION#v}\"" "${STAGED_CONFIG}"
 fi
 
-info "mkosi build ..."
-mkosi "${MKOSI_ARGS[@]}" build
+# ── Pass 1：拆出 EROFS 根镜像 + kernel/initrd/UKI 工件 ──
+# 临时 root 分区定义：repart SplitName 默认 %t（分区类型标识）→ 分区工件
+# <主输出名>.root-x86-64.raw = 裸 EROFS 根镜像（Label 不参与工件命名，
+# 扩展名恒为 .raw；全盘产物弃用）。partitions 由 CLI 追加（主配置
+# SplitArtifacts 保持 uki,initrd，终盘不拆分区工件）
+cat > "${PASS1_ROOT_CONF}" <<EOF
+[Partition]
+Type=root
+Label=${IMAGE_ID}_${VER}
+Format=erofs
+Compression=lz4hc
+CopyFiles=/
+EOF
+info "mkosi build（pass 1/2：拆分 EROFS/kernel/initrd/UKI 工件）..."
+mkosi "${MKOSI_ARGS[@]}" --split-artifacts uki,initrd,kernel,partitions build
 
-latest_raw() {
-    ls -t "${WORK_DIR}"/${IMAGE_ID}*.raw 2>/dev/null | head -1
-}
-# mkosi 产物名 = ${ImageId}[_${ImageVersion}].raw，glob 免疫命名变体
-BUILT_RAW="$(latest_raw)"
-[[ -n "${BUILT_RAW}" ]] || die "未找到构建产物（${WORK_DIR}/${IMAGE_ID}*.raw）"
+# pass1 分区工件 → 版本化 EROFS 根镜像（sysupdate/loop 挂载的正名产物）
+EROFS_SPLIT="$(ls "${WORK_DIR}"/${IMAGE_ID}*.root-x86-64.raw 2>/dev/null | head -1)"
+[[ -n "${EROFS_SPLIT}" ]] || die "未找到 pass1 EROFS 分区工件（${IMAGE_ID}*.root-x86-64.raw）"
+EROFS_FILE="${WORK_DIR}/${IMAGE_ID}_${VER}.erofs"
+mv -f "${EROFS_SPLIT}" "${EROFS_FILE}"
 
-# ── 自适应定稿（二遍构建派生全部尺寸）──
-# 派生关系：
-#   ESP 目标  = max(单 UKI 实测大小) × ESP_SLOTS（A/B + 更新中临时）
-#   B 槽目标  = A 槽分区实测大小（两槽同角色，首启 repart 按此扩容）
-#   名义盘    = A + B + ESP + var 构建期分区 × IMAGE_HEADROOM
-#   （IMAGE_SIZE_MB 显式设置时优先于计算值）
+KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
+[[ -n "${KERNEL_FILE}" ]] || die "未找到 pass1 kernel 工件（rescue UKI 原料，${IMAGE_ID}*.vmlinuz）"
+INITRD_FILE="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.initrd 2>/dev/null | head -1)"
+[[ -n "${INITRD_FILE}" ]] || die "未找到 pass1 initrd 工件（rescue UKI 原料）"
+
+# EROFS 种子：pass2 经 CopyFiles=/@os-staging:/@os 写入 @os 子卷
+# （0444 与 70-root.transfer 的 Target Mode= 对齐）
+install -D -m 0444 "${EROFS_FILE}" "${STAGED_OS_DIR}/${IMAGE_ID}_${VER}.erofs"
+
+# ── rescue UKI（Phase 1：同 kernel+initrd，cmdline 追加只读根分支）──
+# 手工 ukify 独立 UKI 是必要路线：mkosi v26 UnifiedKernelImageProfiles=
+# 产物不作为 systemd-boot 菜单独立条目，无法满足「rescue 手动选择」语义。
+# cmdline 基础行直接从 pass1 UKI 的 .cmdline PE 段提取（objcopy）：
+# 主 UKI 即唯一事实（mkosi.conf 基础行 + 本脚本 CLI 追加的完整产物），
+# rescue 仅追加只读根分支参数，消除手抄双源
+UKI_FILE_PASS1="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.efi | head -1)"
+[[ -n "${UKI_FILE_PASS1}" ]] || die "未找到 pass1 UKI（cmdline 提取源）"
+UKI_CMDLINE="$(objcopy -O binary --only-section=.cmdline "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
+[[ -n "${UKI_CMDLINE}" ]] || die "从 pass1 UKI 提取 .cmdline 失败（objcopy）"
+info "ukify rescue UKI（只读根入口）..."
+ukify build \
+    --linux="${KERNEL_FILE}" \
+    --initrd="${INITRD_FILE}" \
+    --cmdline="${UKI_CMDLINE} basalt.ro=1 systemd.unit=rescue.target" \
+    --output="${STAGED_RESCUE_UKI}"
+
+# ── 自适应定稿（pass2 派生全部尺寸）──
+# 派生关系（文件轮转）：
+#   ESP 目标  = max(单 UKI 实测) × (InstancesMax+1) + rescue UKI 实测
+#               （+1 = 更新过程瞬态；≥ 64MiB vfat 实用下限）
+#   名义盘    = ESP + var 静息（@data 种子 + @os 1 份镜像 + overlay 目录）
+#               × IMAGE_HEADROOM + (InstancesMax-1) 份额外镜像 + ROOT_MARGIN_MB
+#               （IMAGE_SIZE_MB 显式设置时优先于计算值）
 ukis=("${WORK_DIR}"/${IMAGE_ID}*.efi)
 [[ -e "${ukis[0]}" ]] || die "未找到 UKI 产物，自适应定稿失败（构建输出异常）"
-
 uki_bytes=0
 for u in "${ukis[@]}"; do
     sz=$(stat -c %s "${u}")
     (( sz > uki_bytes )) && uki_bytes=${sz}
 done
-ESP_MIN_BYTES=$(( 64 * MB ))   # vfat 实用下限（GPT 结构 + sd-boot）
-esp_target=$(( uki_bytes * ESP_SLOTS ))
+rescue_bytes=$(stat -c %s "${STAGED_RESCUE_UKI}")
+ESP_MIN_BYTES=$(( 64 * MB ))
+esp_target=$(( uki_bytes * ( INSTANCES_MAX + 1 ) + rescue_bytes ))
 (( esp_target < ESP_MIN_BYTES )) && esp_target=${ESP_MIN_BYTES}
 esp_target=$(( (esp_target + MB - 1) / MB * MB ))   # 上取整 MiB
 
-# 分区实测：sfdisk -J（util-linux 自带 JSON），按 DPS 标准 Type GUID 取
-# 第一块 root（min start = A 槽）与 var 的字节大小
-read -r root_bytes var_bytes < <(sfdisk -J "${BUILT_RAW}" | python3 -c '
-import json, sys
-t = json.load(sys.stdin)["partitiontable"]
-ss = int(t.get("sectorsize", 512))
-ps = t["partitions"]
-# DPS（Discoverable Partition Specification）标准类型：
-# root-x86-64 与 var；root 多槽时同 Type 依 start 排序配对
-ROOT, VAR = ("4f68bce3-e8cd-4db1-96e7-fbcaf984b709",
-             "4d21b016-b534-45c2-a9fb-5c16e091fd21")
-root = min((p for p in ps if p.get("type", "").lower() == ROOT),
-           key=lambda p: p["start"])
-var = next((p for p in ps if p.get("type", "").lower() == VAR), None)
-print(root["size"] * ss, (var["size"] * ss) if var else 0)
-')
-[[ -n "${root_bytes}" && "${root_bytes}" -gt 0 ]] || die "root 分区实测失败"
-
-# B 槽余量：两槽物理上夹死无法再扩，此值 = 构建后未来所有版本 root 镜像
-# 相对当前实测的累计增长预算（超过即更新失败）；两槽对称各持有一份
-ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-128}"
-b_target=$(( (root_bytes + ROOT_MARGIN_MB * MB + MB - 1) / MB * MB ))
-nominal_mb=$(( (root_bytes * 2 + ROOT_MARGIN_MB * 2 * MB + esp_target + var_bytes * IMAGE_HEADROOM + MB - 1) / MB ))
-
-info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；root=${root_bytes}B → B=${b_target}B（余量${ROOT_MARGIN_MB}MB）；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
-
-# 渲染 1/4：构建侧 ESP 精确尺寸
+# 渲染 1/3：构建侧 ESP 精确尺寸
 cat > "${REPART_DIR}/10-esp.conf" <<EOF
 [Partition]
 Type=esp
@@ -294,45 +346,24 @@ SizeMinBytes=${esp_target}
 SizeMaxBytes=${esp_target}
 EOF
 
-# 渲染 2/4：设备侧 B 槽尺寸（暂存进 extra tree，EXIT trap 统一恢复）
-STAGED_B_DEF="${SCRIPT_DIR}/mkosi/mkosi.extra/usr/lib/repart.d/91-root-b.conf"
-cp -f "${STAGED_B_DEF}" "${WORK_DIR}/91-root-b.conf.orig"
-cat > "${STAGED_B_DEF}" <<EOF
-# 构建期自适应渲染（build.sh；勿手改 —— 源模板为 git 版本）
-# B 槽 = A 槽实测 + 余量：两槽对称，任意次 sysupdate 写入完整 root 原始镜像不溢出
-[Partition]
-Type=root
-SizeMinBytes=${b_target}
-GrowFileSystem=no
+# 渲染 2/3：移除 pass1 root 定义（root 分区从 GPT 退出）
+rm -f "${PASS1_ROOT_CONF}"
+
+# 渲染 3/3：var 增补种子 CopyFiles（.orig 备份由通用暂存-恢复机制承载）
+cat >> "${REPART_DIR}/30-var.conf" <<EOF
+# build.sh pass2 渲染：EROFS 种子入 @os
+CopyFiles=/@os-staging:/@os
 EOF
 
-# 渲染 3/4：构建侧 B 槽同步全尺寸。分区起点不可移动，若 B 构建期最小化
-# 占位，首启 repart 想扩 B 时尾部空闲隔着 var 物理不可达
-# （Can't fit ... refusing，连带 var 不扩）
-cat > "${REPART_DIR}/21-root-b.conf" <<EOF
-[Partition]
-Type=root
-Label=_empty
-Format=erofs
-SizeMinBytes=${b_target}
-SizeMaxBytes=${b_target}
-EOF
-
-# 渲染 4/4：构建侧 A 槽同步 +余量。余量必须两槽对称：更新后角色互换，
-# 若 A 保持内容最小尺寸，第二次 sysupdate 写回 A 时余量即失效
-cat > "${REPART_DIR}/20-root-a.conf" <<EOF
-[Partition]
-Type=root
-Label=${IMAGE_ID}_1
-Format=erofs
-Compression=lz4hc
-CopyFiles=/
-SizeMinBytes=${b_target}
-SizeMaxBytes=${b_target}
-EOF
-
-info "mkosi -f build（自适应定稿重建；包缓存/增量缓存仍生效）..."
+info "mkosi -f build（pass 2/2：终盘 = ESP + var；包缓存/增量缓存仍生效）..."
 mkosi -f "${MKOSI_ARGS[@]}" build
+
+latest_raw() {
+    # 排除 pass1 拆出的分区工件（同 .raw 后缀）；显式排除优于正向匹配，
+    # 免疫主输出名变体
+    ls -t "${WORK_DIR}"/${IMAGE_ID}*.raw 2>/dev/null \
+        | { grep -v '\.root-x86-64\.raw$' || true; } | head -1
+}
 BUILT_RAW="$(latest_raw)"
 [[ -n "${BUILT_RAW}" ]] || die "二次构建未产出 raw"
 
@@ -343,8 +374,30 @@ for initrd in "${WORK_DIR}"/${IMAGE_ID}*.initrd; do
     cp -f "${initrd}" "${OUTPUT_DIR}/"
 done
 
-# BUILT_RAW 已是最终产物名（latest 无版本后缀时与 RAW_FILE 同一文件）
+# ROOT 工件（裸 EROFS 根镜像）：CI 模块门禁第二参数（erofsfuse/loop 读取）
+# 的输入；同 initrd 处理——不入 BUILD_ARTIFACTS 与发布清单
+cp -f "${EROFS_FILE}" "${OUTPUT_DIR}/"
+
+# BUILT_RAW 已是最终产物名（显式版本恒注入，与 RAW_FILE 同名）
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
+
+# ── 分区实测：var 静息尺寸（@data 种子 + @os 1 份镜像 + overlay 目录）──
+erofs_bytes=$(stat -c %s "${EROFS_FILE}")
+read -r var_bytes < <(sfdisk -J "${RAW_FILE}" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["partitiontable"]
+ss = int(t.get("sectorsize", 512))
+# DPS（Discoverable Partition Specification）标准类型：var
+VAR = "4d21b016-b534-45c2-a9fb-5c16e091fd21"
+var = next((p for p in t["partitions"] if p.get("type", "").lower() == VAR), None)
+print((var["size"] * ss) if var else 0)
+')
+[[ "${var_bytes}" -gt 0 ]] || die "var 分区实测失败"
+nominal_mb=$(( ( esp_target + var_bytes * IMAGE_HEADROOM
+                 + erofs_bytes * ( INSTANCES_MAX - 1 )
+                 + ROOT_MARGIN_MB * MB + MB - 1 ) / MB ))
+info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；erofs=${erofs_bytes}B 保留${INSTANCES_MAX}份；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
+
 # 名义尺寸：显式 IMAGE_SIZE_MB 优先，否则用自适应计算值；
 # 不得小于 mkosi 实际产出（否则 truncate 切掉 var 尾部与 GPT 备份头）
 raw_mb=$(( ($(stat -c %s "${RAW_FILE}") + MB - 1) / MB ))
@@ -355,14 +408,14 @@ truncate -s "${IMAGE_SIZE_MB}M" "${RAW_FILE}"
 # ── 冒烟 ──
 if [[ "${SMOKE}" == "true" ]]; then
     info "QEMU 冒烟启动（Ctrl-A X 退出）..."
-    # 复用完整 MKOSI_ARGS：cmdline（root=PARTLABEL 版本标签）必须与产物一致
+    # 复用完整 MKOSI_ARGS：cmdline（basalt.image 版本绑定）必须与产物一致
     mkosi "${MKOSI_ARGS[@]}" qemu
 fi
 
 # ── 导出 ──
 IFS=',' read -r -a formats <<<"${OUTPUT_FORMATS//[[:space:]]/}"
 for f in "${formats[@]}"; do
-    case "${f}" in
+    case "$f" in
         img)  ;;           # 最后处理（压缩会移除源文件）
         vmdk) export_vmdk ;;
         ova)  export_ova ;;
@@ -370,8 +423,19 @@ for f in "${formats[@]}"; do
     esac
 done
 for f in "${formats[@]}"; do
-    [[ "${f}" == "img" ]] && export_img_xz
+    [[ "$f" == "img" ]] && export_img_xz
 done
+
+# ── OTA 产物（sysupdate 版本枚举源）──
+# 版本化 EROFS（xz 分发形态，70-root.transfer 的 Source MatchPattern）+
+# 版本化 UKI（80-uki.transfer 的 Source MatchPattern）
+EROFS_XZ_FILE="${OUTPUT_DIR}/${IMAGE_ID}_${VER}.erofs.xz"
+UKI_FILE="${OUTPUT_DIR}/${IMAGE_ID}_${VER}.efi"
+info "导出 OTA 工件（${IMAGE_ID}_${VER}.erofs.xz + ${IMAGE_ID}_${VER}.efi）..."
+xz -T0 -c "${EROFS_FILE}" > "${EROFS_XZ_FILE}"
+uki_latest="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.efi | head -1)"
+cp -f "${uki_latest}" "${UKI_FILE}"
+BUILD_ARTIFACTS+=("${EROFS_XZ_FILE}" "${UKI_FILE}")
 
 # ── 本地验证 ──
 if [[ "${RUN_TEST}" != "none" ]]; then
@@ -380,7 +444,7 @@ if [[ "${RUN_TEST}" != "none" ]]; then
     export SSH_PASSWORD="${ROOT_PASSWORD}"
     tests=()
     for t in ${RUN_TEST//,/ }; do
-        case "${t}" in
+        case "$t" in
             readiness) tests+=("test-readiness.sh") ;;
             dataplane) tests+=("test-dataplane.sh") ;;
             *) die "未知 RUN_TEST 项 '${t}'（支持 none|readiness|dataplane）" ;;
@@ -394,16 +458,10 @@ if [[ "${RUN_TEST}" != "none" ]]; then
 fi
 
 # ── 发布清单 ──
-# 发布物仅 img.xz + SHA256SUMS（工厂/dd 部署与完整性校验）；
-# 版本化 OTA 产物（basalt_<v>.efi / basalt_<v>.raw.xz）由部署方按
-# sysupdate.d 的 MatchPattern 在更新源放置，不在本 release 发布。
-release_files=()
-if [[ "${COMPRESS_OUTPUT}" == "yes" ]]; then
-    release_files+=("$(basename "${IMAGE_XZ_FILE}")")
-else
-    release_files+=("$(basename "${IMAGE_RAW_FILE}")")
-fi
-( cd "${OUTPUT_DIR}" && sha256sum "${release_files[@]}" > SHA256SUMS )
+# sysupdate 版本枚举源 = erofs.xz + 版本化 UKI（SHA256SUMS 为 url-file 源的
+# 完整性校验契约）；工厂全盘 img(.xz) 仅供 dd 部署，不入清单
+( cd "${OUTPUT_DIR}" && sha256sum \
+    "$(basename "${EROFS_XZ_FILE}")" "$(basename "${UKI_FILE}")" > SHA256SUMS )
 
 # ── CI metadata 契约（.github 收集 output/metadata/build-metadata.txt，
 # produced_files 逗号分隔：custom-build 按逗号解析；
@@ -421,6 +479,7 @@ mkdir -p "${OUTPUT_DIR}/metadata"
     echo "produced_files=${produced}"
     echo "output_formats=${OUTPUT_FORMATS}"
     echo "resolved_version=${LANDSCAPE_VERSION}"
+    echo "image_version=${VER}"
     echo "base_system=debian"
     echo "include_docker=${INCLUDE_DOCKER}"
     echo "run_test=${RUN_TEST}"

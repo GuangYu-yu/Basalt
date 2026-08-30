@@ -1,17 +1,15 @@
 # =============================================================================
 # mkosi.sysupdate/80-uki.transfer —— 构建侧定义（入口点资源，最后写）
-# 与设备侧同一 sysupdate/UKI 更新模型；构建侧仅本地安装/验证 artifact，
+# 与设备侧同一 UKI 更新模型；构建侧仅本地安装/验证 artifact，
 # 不启用设备启动阶段的 tries/boot-counting（三段式文件名与自动回滚属
 # 设备侧职责，见 mkosi.extra/usr/lib/sysupdate.d/80-uki.transfer）。
-# Source 为本机构建输出目录中的版本化 UKI（basalt[_<版本>].efi，
-# cmdline 绑同版本 PARTLABEL）。
+# Source 为本机构建输出目录中的版本化 UKI（basalt_<v>.efi，cmdline 绑同版本
+# basalt.image=）；regular-file 为本地文件源的合法类型（同 70-root）。
 # =============================================================================
-
 [Transfer]
-Notify=stdout
 
 [Source]
-Type=file
+Type=regular-file
 Path=.
 MatchPattern=basalt_@v.efi
 

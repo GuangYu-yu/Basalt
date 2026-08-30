@@ -1,10 +1,13 @@
 # 设备侧 sysupdate transfer —— UKI（入口点资源）
-# transfer 文件名字母序决定写入顺序：入口点（UKI）必须最后写（80 > 70-root），
-# 异常中断不会留下入口就绪而 backing 未就绪的半状态（sysupdate.d(5)）。
+# transfer 文件名字母序决定写入顺序：入口点（UKI）最后写（80 > 70-root），
+# 异常中断只会留下「有镜像无入口」的无害半状态（sysupdate.d(5) 两阶段
+# 语义：先全部下载到临时目标，再按 transfer 文件名字母序 rename 定稿 +
+# 磁盘同步）。
 # 版本化 UKI 文件保留多份：旧 UKI 条目仍可启动 = 回滚路径。
+# InstancesMax=3 与 70-root.transfer 一致（保留深度相同）；rescue UKI
+# （basalt-rescue.efi）不匹配 MatchPattern，vacuum 不动。
 # ESP 挂载点由 fstab PARTLABEL=ESP 条目固定（/efi）。
 [Transfer]
-Notify=stdout
 
 [Source]
 Type=url-file
@@ -14,7 +17,7 @@ MatchPattern=basalt_@v.efi
 [Target]
 Type=directory
 Path=/efi/EFI/Linux
-# tries 三段式 = 官方 root-verity.md 同范式：写入后重命名为 @v+3-0
+# tries 三段式（BLS #boot-counting）：写入后重命名为 @v+3-0
 # （TriesLeft/TriesDone），systemd-boot 据此做启动尝试计数 —— 连续失败
 # 自动回落旧版本
 MatchPattern=basalt_@v+3-0.efi \
@@ -22,4 +25,6 @@ MatchPattern=basalt_@v+3-0.efi \
              basalt_@v.efi
 TriesLeft=3
 TriesDone=0
-InstancesMax=2
+InstancesMax=3
+# 上行 TriesLeft/InstancesMax=3 为模板默认：build.sh 暂存渲染按
+# build.env INSTANCES_MAX 统一替换（保留深度与重试次数同源），勿手改数值

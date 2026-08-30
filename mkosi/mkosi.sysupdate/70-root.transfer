@@ -1,25 +1,29 @@
 # =============================================================================
 # mkosi.sysupdate/70-root.transfer —— 构建侧定义
-# 供 `mkosi sysupdate` 动词使用：将本机构建出的 raw 安装到本机/测试机。
-# 本地实测路径：构建后以 file:// / 本地目录为 Source ——
-#   systemd-sysupdate --transfer-source=<发布目录> update
+# 供 `mkosi sysupdate` 动词使用（mkosi v25+ 以本目录为定义目录调用
+# systemd-sysupdate，源经 --transfer-source 指向构建输出目录）：将本机构建
+# 出的 EROFS 根镜像安装到本机/测试机的 /var/lib/basalt/images。
+# 与设备侧（mkosi.extra/usr/lib/sysupdate.d/70-root.transfer）同一
+# regular-file 目标模型；Source 用 regular-file（本地文件源，sysupdate.d(5)
+# 合法源类型；旧 Type=file 非文档列举类型，一并修正）。
+# 本地实测路径：构建后
+#   systemd-sysupdate --transfer-source=<构建输出目录> update
 # 生产 OTA 发布通道（更新服务器/CDN、签名分发）属部署方责任，不在本项目范围；
-# 设备侧（mkosi.extra/usr/lib/sysupdate.d/）Source 仍为占位 URL。
+# 设备侧 Source 仍为占位 URL。
 # =============================================================================
 
 [Transfer]
-Notify=stdout
+ProtectVersion=%A
 
 [Source]
-Type=file
+Type=regular-file
 Path=.
-MatchPattern=basalt_@v.raw \
-            basalt_@v.raw.xz
+MatchPattern=basalt_@v.erofs \
+            basalt_@v.erofs.xz
 
 [Target]
-Type=partition
-Path=auto
-MatchPattern=basalt_@v
-MatchPartitionType=root
-InstancesMax=2
-PartitionFlags=0
+Type=regular-file
+Path=/var/lib/basalt/images
+MatchPattern=basalt_@v.erofs
+Mode=0444
+InstancesMax=3

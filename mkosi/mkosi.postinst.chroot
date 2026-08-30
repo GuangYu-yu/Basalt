@@ -24,6 +24,7 @@ ln -sfn /var/lib/landscape /root/.landscape-router
 
 # 服务启用/禁用由 system-preset 声明（30-landscape.preset，mkosi 原生
 # preset-all 应用）：ssh/networking 为 readiness 契约；chrony 单 NTP 客户端；
-# sysupdate.timer 设备侧 A/B 更新定时检查（sysupdate-reboot.timer 不启用，
-# 重启时机由部署方决定）；resolved/NetworkManager disable 防第二网络栈。
+# sysupdate.timer 设备侧文件轮转更新（EROFS 镜像 + UKI 成对落盘）定时检查
+# （sysupdate-reboot.timer 不启用，重启时机由部署方决定）；
+# resolved/NetworkManager disable 防第二网络栈。
 # 分区/文件系统扩容由 initrd 内 systemd-repart + x-systemd.growfs 完成
