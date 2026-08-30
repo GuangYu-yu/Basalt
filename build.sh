@@ -267,6 +267,9 @@ if [[ -f "${STAGED_CONFIG}" ]]; then
 fi
 
 # ── Pass 1：拆出 EROFS 根镜像 + kernel/initrd/UKI 工件 ──
+# 防御断言：@os-staging 必须在 pass1 结束后才允许存在——pass1 的 root 分区
+# CopyFiles=/ 会烘焙 mkosi.extra/ 全部内容，种子若提前就位即自我嵌套
+[[ ! -e "${STAGED_OS_DIR}" ]] || die "@os-staging 残留泄漏进 pass1（CopyFiles=/ 将嵌套种子）"
 # 临时 root 分区定义：repart SplitName 默认 %t（分区类型标识）→ 分区工件
 # <主输出名>.root-x86-64.raw = 裸 EROFS 根镜像（Label 不参与工件命名，
 # 扩展名恒为 .raw；全盘产物弃用）。partitions 由 CLI 追加（主配置
