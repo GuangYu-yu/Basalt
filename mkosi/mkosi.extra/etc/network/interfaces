@@ -1,3 +1,10 @@
 # Managed by Landscape Router - do not edit
+# eth2 = 专用管理口（不在 landscape TOML 内，ifupdown 静态配置）：
+# 测试/现场经此口 SSH/API，数据面（eth0/eth1）重建不影响管理通道。
+# 无 gateway/DNS —— 回程流量仅到达 SLIRP 子网内直连地址，默认路由归 eth0
 auto lo
 iface lo inet loopback
+
+auto eth2
+iface eth2 inet static
+    address 192.168.99.1/24

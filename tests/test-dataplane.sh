@@ -51,6 +51,7 @@ MCAST_ADDR="${MCAST_ADDR:-230.0.0.1}"
 MCAST_PORT="${MCAST_PORT:-${LANDSCAPE_DEFAULT_MCAST_PORT}}"
 ROUTER_WAN_MAC="${ROUTER_WAN_MAC:-52:54:00:12:34:01}"
 ROUTER_LAN_MAC="${ROUTER_LAN_MAC:-52:54:00:12:34:02}"
+ROUTER_MGMT_MAC="${ROUTER_MGMT_MAC:-52:54:00:12:34:03}"
 CLIENT_MAC="${CLIENT_MAC:-52:54:00:12:34:10}"
 
 CLIENT_SERIAL_LOG=""
@@ -125,9 +126,10 @@ preflight() {
 
     ROUTER_WAN_DEVICE_OPTS="${ROUTER_WAN_DEVICE_OPTS:-,mac=${ROUTER_WAN_MAC}}"
     ROUTER_LAN_DEVICE_OPTS="${ROUTER_LAN_DEVICE_OPTS:-,mac=${ROUTER_LAN_MAC}}"
-    # WAN 回归纯数据面（默认 user,id=wan：DHCP + 出网），hostfwd 全部走
-    # common.sh 的 LAN 管理段。client 经 mcast socket 挂进 router 的 LAN hub
-    ROUTER_LAN_PEER_NETDEV="${ROUTER_LAN_PEER_NETDEV:-socket,id=lanpeer,mcast=${MCAST_ADDR}:${MCAST_PORT}}"
+    ROUTER_MGMT_DEVICE_OPTS="${ROUTER_MGMT_DEVICE_OPTS:-,mac=${ROUTER_MGMT_MAC}}"
+    # hostfwd 全部走 common.sh 的 MGMT 口（eth2）；LAN 段只承载数据面，
+    # client 与 router eth1 同挂 mcast 组
+    ROUTER_LAN_NETDEV="${ROUTER_LAN_NETDEV:-socket,id=lan,mcast=${MCAST_ADDR}:${MCAST_PORT}}"
 
     ok "Preflight passed"
 }

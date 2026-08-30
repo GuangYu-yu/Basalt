@@ -582,49 +582,36 @@ timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 }
 
-# LAN 管理段 netdev：SLIRP 子网对齐 landscape_init.toml 的 LAN 网段（单一
-# 事实），hostfwd 目标为 router eth1 管理地址。dhcp=off —— LAN 段租约只由
-# landscape 自己签发，SLIRP 内建 DHCP 不得与 dataplane 客户端竞争。
-# host= 显式取 .254：SLIRP 默认占 network+2，会落进 DHCP 池（.2 起）与
-# landscape 租约冲突；.254 在默认池外且本拓扑无真实占用者。
-# 要求 QEMU >= 8.1（user netdev 的 dhcp= 与 hubport 的 netdev= 链式参数）
-landscape_lan_mgmt_netdev() {
-    local id="${1:-lanmgmt}"
-    printf 'user,id=%s,net=%s0/%s,host=%s254,dhcp=off,hostfwd=tcp::%s-%s:22,hostfwd=tcp::%s-%s:%s' \
-        "${id}" \
-        "${LANDSCAPE_EXPECTED_LAN_SUBNET_PREFIX}" "${LANDSCAPE_EXPECTED_LAN_NETMASK:-24}" \
-        "${LANDSCAPE_EXPECTED_LAN_SUBNET_PREFIX}" \
-        "${SSH_PORT}" "${LANDSCAPE_EXPECTED_LAN_GATEWAY}" \
-        "${WEB_PORT}" "${LANDSCAPE_EXPECTED_LAN_GATEWAY}" "${LANDSCAPE_CONTROL_PORT}"
+# 管理段 netdev：独立 SLIRP 段直连 router 第三块网卡 eth2（镜像内静态
+# 192.168.99.1，见 mkosi.extra/etc/network/interfaces —— 两侧地址必须一致）。
+# eth2 不在 landscape TOML 内 → 数据面（eth0/eth1）的任何重建都不触碰管理
+# 通道，这是路由器 appliance 的专用 MGMT 口姿势。
+# 不共用 LAN 网段的原因：QEMU 8.2 的 user backend 无 dhcp= 开关（dhcp=off 是
+# passt backend 的参数，QEMU 10.1+），SLIRP 内建 DHCP 必然与 landscape 的
+# LAN DHCP 竞争租约，故管理段必须是自己独占的 L2。
+LANDSCAPE_MGMT_SUBNET="${LANDSCAPE_MGMT_SUBNET:-192.168.99.0/24}"
+LANDSCAPE_MGMT_GUEST_IP="${LANDSCAPE_MGMT_GUEST_IP:-192.168.99.1}"
+
+landscape_mgmt_netdev() {
+    printf 'user,id=mgmt,net=%s,hostfwd=tcp::%s-%s:22,hostfwd=tcp::%s-%s:%s' \
+        "${LANDSCAPE_MGMT_SUBNET}" \
+        "${SSH_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}" \
+        "${WEB_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}" "${LANDSCAPE_CONTROL_PORT}"
 }
 
 landscape_router_start_vm() {
     local image_path="$1"
-    # 管理通道（SSH/API hostfwd）终止于 LAN 侧 router 管理地址而非 NAT 化的
-    # WAN：eth0 上 ipconfigs/nat/route_wans 的任何数据面重建都不影响测试的
-    # 控制通道 —— 路由器 appliance 的标准管理姿势。WAN 仅承载数据面
-    # （SLIRP 为 eth0 提供 DHCP 与出网）
+    # 管理通道（SSH/API hostfwd）终止于专用 MGMT 口 eth2 而非 NAT 化的 WAN：
+    # eth0/eth1 上数据面的任何重建都不影响测试的控制通道 —— 路由器
+    # appliance 的标准管理姿势。WAN 仅承载数据面（SLIRP 提供 DHCP 与出网）
     local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan}"
-    local lan_peer_netdev="${ROUTER_LAN_PEER_NETDEV:-}"
+    local lan_netdev="${ROUTER_LAN_NETDEV:-user,id=lan}"
     local wan_device_opts="${ROUTER_WAN_DEVICE_OPTS:-}"
     local lan_device_opts="${ROUTER_LAN_DEVICE_OPTS:-}"
+    local mgmt_device_opts="${ROUTER_MGMT_DEVICE_OPTS:-}"
     local qemu_mem="${QEMU_MEM:-1024}"
     local qemu_smp="${QEMU_SMP:-2}"
     local qemu_label="${ROUTER_LABEL:-Router}"
-
-    # LAN 段 = hub：router eth1、管理 SLIRP（hostfwd 落点）与可选的数据面
-    # peer（mcast socket，由 test-dataplane 注入）共享同一 L2。
-    # peer netdev 的 id 固定为 lanpeer，供 hubport 链式引用
-    local -a lan_netdev_args=(
-        -netdev "$(landscape_lan_mgmt_netdev lanmgmt)"
-        -netdev "hubport,id=lan,hubid=1,netdev=lanmgmt"
-    )
-    if [[ -n "${lan_peer_netdev}" ]]; then
-        lan_netdev_args+=(
-            -netdev "${lan_peer_netdev}"
-            -netdev "hubport,id=lanpeer,hubid=1,netdev=lanpeer"
-        )
-    fi
 
     mkdir -p "${LANDSCAPE_TEST_LOG_DIR}"
 
@@ -665,7 +652,9 @@ landscape_router_start_vm() {
         -device "virtio-net-pci,netdev=wan${wan_device_opts}" \
         -netdev "${wan_netdev}" \
         -device "virtio-net-pci,netdev=lan${lan_device_opts}" \
-        "${lan_netdev_args[@]}" \
+        -netdev "${lan_netdev}" \
+        -device "virtio-net-pci,netdev=mgmt${mgmt_device_opts}" \
+        -netdev "$(landscape_mgmt_netdev)" \
         -display none \
         -serial "file:${LANDSCAPE_ROUTER_SERIAL_LOG}" \
         -monitor "unix:${LANDSCAPE_ROUTER_MONITOR},server,nowait" \
