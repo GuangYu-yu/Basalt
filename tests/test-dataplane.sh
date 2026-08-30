@@ -177,11 +177,14 @@ start_client() {
     read -r -a kvm_args <<< "$(detect_kvm)"
 
     info "Starting client VM (CirrOS)..."
-
+    # CirrOS 开机阻塞探测云 metadata（169.254.169.254，20×~2.2s≈44s）；
+    # ds=nocloud 经 SMBIOS serial 注入禁用之（CirrOS/cloud-init 读 DMI
+    # serial 作附加 cmdline 的标准用法），client 秒级就绪
     qemu-system-x86_64 \
         "${kvm_args[@]}" \
         -m 256 \
         -smp 1 \
+        -smbios "type=1,serial=ds=nocloud" \
         -drive "file=${TEMP_CIRROS},format=qcow2,if=virtio" \
         -device "virtio-net-pci,netdev=net0,mac=${CLIENT_MAC}" \
         -netdev "socket,id=net0,mcast=${MCAST_ADDR}:${MCAST_PORT}" \
