@@ -42,8 +42,12 @@ LANDSCAPE_TEST_NAME="dataplane"
 LANDSCAPE_IMAGE_PATH="${IMAGE_PATH}"
 
 CIRROS_VERSION="0.6.2"
+# CirrOS 直启需要 disk(rootfs)+kernel+initramfs 三资产；校验走同 release 的
+# MD5SUMS（单一事实，asset 名以 GitHub release 实测为准）
 CIRROS_URL="https://github.com/cirros-dev/cirros/releases/download/${CIRROS_VERSION}/cirros-${CIRROS_VERSION}-x86_64-disk.img"
-CIRROS_CHECKSUM_MD5="c8fc807773e5354afe61636071771906"
+CIRROS_KERNEL_URL="https://github.com/cirros-dev/cirros/releases/download/${CIRROS_VERSION}/cirros-${CIRROS_VERSION}-x86_64-kernel"
+CIRROS_INITRD_URL="https://github.com/cirros-dev/cirros/releases/download/${CIRROS_VERSION}/cirros-${CIRROS_VERSION}-x86_64-initramfs"
+CIRROS_MD5SUMS_URL="https://github.com/cirros-dev/cirros/releases/download/${CIRROS_VERSION}/MD5SUMS"
 CIRROS_USER="cirros"
 CIRROS_PASSWORD="gocubsgo"
 
@@ -137,27 +141,45 @@ preflight() {
 download_cirros() {
     local download_dir="${CIRROS_CACHE_DIR}/${CIRROS_VERSION}"
     local cirros_file="${download_dir}/cirros-${CIRROS_VERSION}-x86_64-disk.img"
-    local actual_md5=""
+    local kernel_file="${download_dir}/cirros-${CIRROS_VERSION}-x86_64-kernel"
+    local initrd_file="${download_dir}/cirros-${CIRROS_VERSION}-x86_64-initramfs"
+    local sums_file="${download_dir}/MD5SUMS"
+    local base sum actual
 
     mkdir -p "${download_dir}"
 
-    if [[ ! -f "${cirros_file}" ]]; then
-        info "Downloading CirrOS ${CIRROS_VERSION} ..." >&2
-        if ! curl -fL --retry 3 --retry-delay 5 -o "${cirros_file}" "${CIRROS_URL}" >&2; then
-            error "Failed to download CirrOS from ${CIRROS_URL}" >&2
+    fetch_if_missing() {
+        local file="$1" url="$2"
+        if [[ ! -f "${file}" ]]; then
+            info "Downloading $(basename "${file}") ..." >&2
+            curl -fL --retry 3 --retry-delay 5 -o "${file}" "${url}" >&2 || return 1
+        else
+            info "$(basename "${file}") already cached" >&2
+        fi
+    }
+
+    fetch_if_missing "${sums_file}" "${CIRROS_MD5SUMS_URL}" || return 1
+    fetch_if_missing "${cirros_file}" "${CIRROS_URL}" || return 1
+    fetch_if_missing "${kernel_file}" "${CIRROS_KERNEL_URL}" || return 1
+    fetch_if_missing "${initrd_file}" "${CIRROS_INITRD_URL}" || return 1
+
+    # MD5SUMS 逐文件核对（disk/kernel/initramfs 均为 HTTPS 下载，校验闭环）
+    for file in "${cirros_file}" "${kernel_file}" "${initrd_file}"; do
+        base="$(basename "${file}")"
+        sum="$(awk -v b="${base}" '$2==b || $3==b {print $1; exit}' "${sums_file}")"
+        [[ -n "${sum}" ]] || { error "MD5SUMS 中未找到 ${base}" >&2; return 1; }
+        actual="$(md5sum "${file}" | awk '{print $1}')"
+        if [[ "${actual}" != "${sum}" ]]; then
+            error "Checksum mismatch for ${base}: expected ${sum}, got ${actual}" >&2
             return 1
         fi
-    else
-        info "CirrOS image already cached" >&2
-    fi
+    done
 
-    actual_md5="$(md5sum "${cirros_file}" | awk '{print $1}')"
-    if [[ "${actual_md5}" != "${CIRROS_CHECKSUM_MD5}" ]]; then
-        error "CirrOS checksum mismatch: expected ${CIRROS_CHECKSUM_MD5}, got ${actual_md5}" >&2
-        return 1
-    fi
+    CIRROS_KERNEL_FILE="${kernel_file}"
+    CIRROS_INITRD_FILE="${initrd_file}"
+    export CIRROS_KERNEL_FILE CIRROS_INITRD_FILE
 
-    ok "CirrOS ready (${cirros_file})" >&2
+    ok "CirrOS ready (disk/kernel/initramfs)" >&2
     echo "${cirros_file}"
 }
 
@@ -177,14 +199,17 @@ start_client() {
     read -r -a kvm_args <<< "$(detect_kvm)"
 
     info "Starting client VM (CirrOS)..."
-    # CirrOS 开机阻塞探测云 metadata（169.254.169.254，20×~2.2s≈44s）；
-    # ds=nocloud 经 SMBIOS serial 注入禁用之（CirrOS/cloud-init 读 DMI
-    # serial 作附加 cmdline 的标准用法），client 秒级就绪
+    # CirrOS 直启：-kernel/-initrd 经 cmdline 注入 ds=nocloud（SMBIOS 路径对
+    # 0.6.2 精简实现无效，实证见 serial "datasource: None None"）；disk.img 仅
+    # 作 rootfs（root=LABEL=cirros-rootfs），metadata 探测（169.254.169.254）
+    # 被 NoCloud 短路，免去 44s 阻塞
     qemu-system-x86_64 \
         "${kvm_args[@]}" \
         -m 256 \
         -smp 1 \
-        -smbios "type=1,serial=ds=nocloud" \
+        -kernel "${CIRROS_KERNEL_FILE}" \
+        -initrd "${CIRROS_INITRD_FILE}" \
+        -append "root=LABEL=cirros-rootfs console=ttyS0 ds=nocloud" \
         -drive "file=${TEMP_CIRROS},format=qcow2,if=virtio" \
         -device "virtio-net-pci,netdev=net0,mac=${CLIENT_MAC}" \
         -netdev "socket,id=net0,mcast=${MCAST_ADDR}:${MCAST_PORT}" \
