@@ -125,8 +125,9 @@ preflight() {
 
     ROUTER_WAN_DEVICE_OPTS="${ROUTER_WAN_DEVICE_OPTS:-,mac=${ROUTER_WAN_MAC}}"
     ROUTER_LAN_DEVICE_OPTS="${ROUTER_LAN_DEVICE_OPTS:-,mac=${ROUTER_LAN_MAC}}"
-    ROUTER_WAN_NETDEV="${ROUTER_WAN_NETDEV:-user,id=wan,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${WEB_PORT}-:${LANDSCAPE_CONTROL_PORT}}"
-    ROUTER_LAN_NETDEV="${ROUTER_LAN_NETDEV:-socket,id=lan,mcast=${MCAST_ADDR}:${MCAST_PORT}}"
+    # WAN 回归纯数据面（默认 user,id=wan：DHCP + 出网），hostfwd 全部走
+    # common.sh 的 LAN 管理段。client 经 mcast socket 挂进 router 的 LAN hub
+    ROUTER_LAN_PEER_NETDEV="${ROUTER_LAN_PEER_NETDEV:-socket,id=lanpeer,mcast=${MCAST_ADDR}:${MCAST_PORT}}"
 
     ok "Preflight passed"
 }
