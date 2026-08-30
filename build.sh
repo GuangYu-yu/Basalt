@@ -273,13 +273,17 @@ fi
 # 临时 root 分区定义：repart SplitName 默认 %t（分区类型标识）→ 分区工件
 # <主输出名>.root-x86-64.raw = 裸 EROFS 根镜像（Label 不参与工件命名，
 # 扩展名恒为 .raw；全盘产物弃用）。partitions 由 CLI 追加（主配置
-# SplitArtifacts 保持 uki,initrd，终盘不拆分区工件）
+# SplitArtifacts 保持 uki,initrd，终盘不拆分区工件）。
+# Minimize=guess 必需：repart 按实测内容（CopyFiles 填充后的 erofs）
+# 定分区尺寸；缺省时该分区不参与尺寸推导，实测被分到 4K →
+# "contents don't fit"（CI run 33337902596 实证）
 cat > "${PASS1_ROOT_CONF}" <<EOF
 [Partition]
 Type=root
 Label=${IMAGE_ID}_${VER}
 Format=erofs
 Compression=lz4hc
+Minimize=guess
 CopyFiles=/
 EOF
 info "mkosi build（pass 1/2：拆分 EROFS/kernel/initrd/UKI 工件）..."
@@ -362,10 +366,12 @@ info "mkosi -f build（pass 2/2：终盘 = ESP + var；包缓存/增量缓存仍
 mkosi -f "${MKOSI_ARGS[@]}" build
 
 latest_raw() {
-    # 排除 pass1 拆出的分区工件（同 .raw 后缀）；显式排除优于正向匹配，
-    # 免疫主输出名变体
+    # 排除 pass1 --split-artifacts partitions 拆出的全部分区工件
+    # （<主名>.<type>.raw，root-x86-64/var/esp 等；同 .raw 后缀共存于 work/）；
+    # 主输出 <名>.raw 无中间 .type 段——主名为 IMAGE_ID[_VER][_variant]，
+    # 段间分隔是 _/-，不会出现额外点段
     ls -t "${WORK_DIR}"/${IMAGE_ID}*.raw 2>/dev/null \
-        | { grep -v '\.root-x86-64\.raw$' || true; } | head -1
+        | { grep -vE '\.[a-z][a-z0-9-]*\.raw$' || true; } | head -1
 }
 BUILT_RAW="$(latest_raw)"
 [[ -n "${BUILT_RAW}" ]] || die "二次构建未产出 raw"
