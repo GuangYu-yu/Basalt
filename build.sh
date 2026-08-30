@@ -116,15 +116,14 @@ MKOSI_ARGS=(
     # v26 脚本 sandbox 清洗宿主环境，需显式注入（postinst 的 ld 用户密码用）
     --environment      "ROOT_PASSWORD=${ROOT_PASSWORD}"
 )
-# UKI 自描述根：cmdline 绑 sysupdate 版本标签
+# UKI 自描述根：cmdline 绑出厂分区标签。
 # （mkosi CLI 的 KernelCommandLine 为追加语义，base 见 mkosi.conf）。
-# 工厂构建（latest）= 版本 1，与 mkosi.repart/20-root-a.conf 的 Label 一致
-# （该 Label 为槽位标签权威，repart 无版本 specifier，需人工保持一致）；
-# 发布构建（--version vX）= x，与 sysupdate 写入后的分区标签同源。
+# 出厂 img 由 dd/QEMU 直启，cmdline 必须等于其 repart 分区标签 basalt_1
+# （mkosi.repart/20-root-a.conf 的 Label，repart 无版本 specifier → 恒为 1）。
+# LANDSCAPE_VERSION 只决定下载哪个 landscape 二进制，不参与标签推导；
+# 版本化标签（basalt_<v>）由 sysupdate OTA 运行期重命名分区时施加，与
+# 对应版本 UKI 的 cmdline 同源，非构建期职责。
 ROOT_LABEL_VER="1"
-if [[ -n "${LANDSCAPE_VERSION:-}" && "${LANDSCAPE_VERSION}" != "latest" ]]; then
-    ROOT_LABEL_VER="${LANDSCAPE_VERSION#v}"
-fi
 # GPT 分区名上限 36 字符，超长被 sfdisk/repart 静默截断 → root=PARTLABEL 永远
 # 找不到分区、紧急模式。构建期显式失败优于静默产物
 partlabel="${IMAGE_ID}_${ROOT_LABEL_VER}"
