@@ -197,17 +197,18 @@ start_client() {
     read -r -a kvm_args <<< "$(detect_kvm)"
 
     info "Starting client VM (CirrOS)..."
-    # CirrOS 直启：-kernel/-initrd 经 cmdline 注入 ds=nocloud（SMBIOS 路径对
-    # 0.6.2 精简实现无效，实证见 serial "datasource: None None"）；disk.img 仅
-    # 作 rootfs（root=LABEL=cirros-rootfs），metadata 探测（169.254.169.254）
-    # 被 NoCloud 短路，免去 44s 阻塞
+    # CirrOS 0.6.2 直启：cirros-ds 只解析 cmdline 的 dslist=（不认现代
+    # cloud-init 的 ds=，源码实证 sbin/cirros-ds）。默认 DATASOURCE_LIST 为
+    # "nocloud configdrive ec2"，net 模式会落 ec2 → 探测 169.254 ×20 ≈44s
+    # 阻塞；dslist=nocloud,none：nocloud 无 seed（SEED_PRE/POST_D 空）后由
+    # none（always found）兜底，跳过 ec2，client 秒级就绪
     qemu-system-x86_64 \
         "${kvm_args[@]}" \
         -m 256 \
         -smp 1 \
         -kernel "${CIRROS_KERNEL_FILE}" \
         -initrd "${CIRROS_INITRD_FILE}" \
-        -append "root=LABEL=cirros-rootfs console=ttyS0 ds=nocloud" \
+        -append "root=LABEL=cirros-rootfs console=ttyS0 dslist=nocloud,none" \
         -drive "file=${TEMP_CIRROS},format=qcow2,if=virtio" \
         -device "virtio-net-pci,netdev=net0,mac=${CLIENT_MAC}" \
         -netdev "socket,id=net0,mcast=${MCAST_ADDR}:${MCAST_PORT}" \
