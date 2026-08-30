@@ -240,8 +240,10 @@ wait_for_guest_ssh() {
 
     info "Waiting for ${label} SSH (timeout: ${timeout}s)..."
 
+    # 墙钟计时：单次探测本身可阻塞数十秒，按 sleep 累加会严重低估耗时
+    local t0=${SECONDS}
     local elapsed=0
-    while [[ $elapsed -lt $timeout ]]; do
+    while [[ $(( SECONDS - t0 )) -lt $timeout ]]; do
         if ! kill -0 "${pid}" 2>/dev/null; then
             error "${label} VM died unexpectedly"
             dump_log_tail "${serial_log}" "${label} serial log"
@@ -249,13 +251,13 @@ wait_for_guest_ssh() {
         fi
 
         if guest_run "echo ready" &>/dev/null; then
-            ok "SSH available after ${elapsed}s"
+            ok "SSH available after $(( SECONDS - t0 ))s"
             return 0
         fi
 
         sleep 3
-        ((elapsed += 3))
-        if ((elapsed % 15 == 0)); then
+        elapsed=$(( SECONDS - t0 ))
+        if ((elapsed % 15 < 3)); then
             info "  ...still waiting (${elapsed}s)"
         fi
     done
@@ -821,6 +823,16 @@ landscape_router_dump_diagnostics() {
     fi
 }
 
+# CI 外层硬超时以 SIGTERM 杀进程：failure 分支未执行 → 证据不落盘（run
+# 33295741103 实证）。取证挂在 TERM 上，任意被杀时点先落盘诊断再交给
+# EXIT trap 清理；文件路径未初始化（preflight 前）则跳过
+landscape_dump_diagnostics_on_term() {
+    if [[ -n "${LANDSCAPE_ROUTER_DIAGNOSTICS_FILE:-}" ]]; then
+        landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"
+    fi
+    exit 143
+}
+
 
 wait_for_landscape_interfaces_ready() {
     local token="$1"
@@ -903,6 +915,8 @@ landscape_router_wait_ready() {
         return 1
     fi
     api_login_state="ready"
+    # 登录成功即存全局：TERM 取证 trap 依赖它抓取带 token 的 API 快照
+    LANDSCAPE_ROUTER_API_TOKEN="$token"
 
     if ! detect_landscape_api_layout "$token" "$ready_timeout"; then
         api_layout_state="failed"
@@ -935,7 +949,6 @@ landscape_router_wait_ready() {
         fi
     done
 
-    LANDSCAPE_ROUTER_API_TOKEN="$token"
     landscape_router_write_readiness_snapshot ready "" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state" "${service_states[@]}"
     landscape_router_dump_diagnostics "$token"
     ok "${label} readiness contract satisfied"
@@ -1102,40 +1115,48 @@ landscape_api_login() {
 
 detect_landscape_api_layout() {
     local token="$1"
+    # 墙钟计时（单次探测可阻塞数十秒，按 sleep 累加会严重低估耗时）
+    local t0=${SECONDS}
     local elapsed=0
     local timeout="${2:-60}"
+    # 探测语义：404=前缀不存在；其余（200/401/5xx）=前缀正确。
+    # 前缀判定不依赖具体服务的就绪状态（dhcp_v4 未就绪时返回 5xx 仍算命中）
+    local prefix_layouts=(v1 src)
+    local prefix prefix_code
+    local -A iter_codes=()
 
-    while [[ $elapsed -lt $timeout ]]; do
-        if landscape_api_get_path "$token" '/api/v1/services/dhcp_v4/status' &>/dev/null; then
-            API_LAYOUT='v1'
-            info "Detected API layout: ${API_LAYOUT}"
-            return 0
-        fi
-
-        if landscape_api_get_path "$token" '/api/src/services/dhcp_v4/status' &>/dev/null; then
-            API_LAYOUT='src'
-            info "Detected API layout: ${API_LAYOUT}"
-            return 0
-        fi
+    while [[ $(( SECONDS - t0 )) -lt $timeout ]]; do
+        # 每轮留证：CI 硬超时可能在 failure 分支前杀进程，循环内逐步留痕
+        for prefix in "${prefix_layouts[@]}"; do
+            prefix_code=$(guest_run "curl -sk --max-time ${LANDSCAPE_TEST_HTTP_TIMEOUT} \
+                -o /dev/null -w '%{http_code}' \
+                -H 'Authorization: Bearer ${token}' \
+                ${API_BASE}/api/${prefix}/services/dhcp_v4/status" 2>/dev/null) || prefix_code="curl_err"
+            iter_codes[${prefix}]=${prefix_code}
+            if [[ "${prefix_code}" =~ ^(2|4|5)[0-9][0-9]$ ]] && [[ "${prefix_code}" != "404" ]]; then
+                API_LAYOUT="${prefix}"
+                info "Detected API layout: ${API_LAYOUT} (probe=${prefix_code})"
+                return 0
+            fi
+        done
+        info "  layout probes: v1=${iter_codes[v1]} src=${iter_codes[src]} (${elapsed}s)"
 
         sleep 3
-        ((elapsed += 3))
-        if ((elapsed % 15 == 0)); then
+        elapsed=$(( SECONDS - t0 ))
+        if ((elapsed % 15 < 3)); then
             info "  ...waiting for supported API layout (${elapsed}s)"
         fi
     done
 
-    error 'Unable to detect supported API layout'
-    # 失败取证：两前缀探测端点的 HTTP 状态码（404=路径变更 / 401=token 作用域 /
-    # 5xx=服务未就绪），login 同源 curl 可用，据此可判定原因类别
-    local probe_prefix probe_code
-    for probe_prefix in v1 src; do
-        probe_code=$(guest_run "curl -sk --max-time ${LANDSCAPE_TEST_HTTP_TIMEOUT} \
+    # 失败取证先于返回，保证证据与快照按序落盘
+    for prefix in "${prefix_layouts[@]}"; do
+        prefix_code=$(guest_run "curl -sk --max-time ${LANDSCAPE_TEST_HTTP_TIMEOUT} \
             -o /dev/null -w '%{http_code}' \
             -H 'Authorization: Bearer ${token}' \
-            ${API_BASE}/api/${probe_prefix}/services/dhcp_v4/status" 2>/dev/null) || probe_code="curl_err"
-        error "layout probe evidence: prefix=${probe_prefix} http_code=${probe_code}"
+            ${API_BASE}/api/${prefix}/services/dhcp_v4/status" 2>/dev/null) || prefix_code="curl_err"
+        error "layout probe evidence: prefix=${prefix} http_code=${prefix_code}"
     done
+    error 'Unable to detect supported API layout'
     return 1
 }
 

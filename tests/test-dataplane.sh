@@ -86,8 +86,8 @@ cleanup() {
 }
 
 trap cleanup EXIT
-# TERM/INT 转发为 exit 以触发 EXIT trap 清理（原理见 tests/common.sh）
-trap 'exit 143' TERM
+# TERM 先落盘诊断再退出（CI 硬超时路径的证据保障），EXIT trap 负责清理
+trap landscape_dump_diagnostics_on_term TERM
 trap 'exit 130' INT
 
 preflight() {
