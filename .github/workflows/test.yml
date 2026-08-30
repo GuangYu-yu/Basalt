@@ -82,35 +82,8 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: 解压镜像
-        run: |
-          set -euo pipefail
-          cd output
-          shopt -s nullglob
-          xz_images=(*.img.xz)
-          if [[ ${#xz_images[@]} -eq 0 ]]; then
-            echo "output 中未找到 *.img.xz 镜像产物" >&2
-            exit 1
-          fi
-          for f in "${xz_images[@]}"; do
-            xz -T0 -d -k "$f"
-          done
-
-      - name: 选择测试镜像
-        run: |
-          set -euo pipefail
-          source build.env
-          img="$(ls "output/${IMAGE_ID}"*.img | head -n1)"
-          echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
-
-      - name: 安装测试依赖
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y sshpass socat curl jq \
-            qemu-system-x86 ovmf qemu-utils
+      - name: 准备测试镜像
+        uses: ./.github/actions/prepare-test-image
 
       - name: 运行就绪检查
         env:

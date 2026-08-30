@@ -13,6 +13,8 @@ output/
 
 # mkosi 中间态
 .mkosi-*
+# 构建期暂存-恢复备份（异常退出时残留）
+*.orig
 
 # Python
 __pycache__/

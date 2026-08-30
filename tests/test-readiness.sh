@@ -25,9 +25,6 @@ source "${SCRIPT_DIR}/common.sh"
 source "${SCRIPT_DIR}/local-runtime.sh"
 
 IMAGE_PATH="${1:-${PROJECT_DIR}/output/basalt.img}"
-SSH_PORT="${SSH_PORT:-${LANDSCAPE_DEFAULT_SSH_PORT}}"
-WEB_PORT="${WEB_PORT:-${LANDSCAPE_DEFAULT_WEB_PORT}}"
-LANDSCAPE_CONTROL_PORT="${LANDSCAPE_CONTROL_PORT:-${LANDSCAPE_DEFAULT_CONTROL_PORT}}"
 QEMU_MEM="${QEMU_MEM:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
@@ -50,11 +47,11 @@ trap landscape_dump_diagnostics_on_term TERM
 trap 'exit 130' INT
 
 docker_functional_check() {
-    guest_run "command -v docker >/dev/null 2>&1"
-
+    guest_run "command -v docker >/dev/null 2>&1" ||
+        return 1
     wait_for_guest_command "docker service" 60 3 \
-        guest_run "systemctl is-active --quiet docker"
-    guest_run "systemctl is-active --quiet docker"
+        guest_run "systemctl is-active --quiet docker" ||
+        return 1
 
     guest_run "docker info >/dev/null 2>&1"
 }
@@ -73,7 +70,7 @@ preflight() {
         exit 2
     fi
 
-    if ! ensure_local_ports_free "${SSH_PORT}" "${WEB_PORT}" "$(landscape_bootstrap_ssh_port)"; then
+    if ! ensure_local_ports_free "${SSH_PORT}" "$(landscape_bootstrap_ssh_port)"; then
         exit 2
     fi
 
@@ -149,7 +146,7 @@ run_smoke_checks() {
         run_skip "Docker image is functional" "Docker not expected for include_docker=${LANDSCAPE_TEST_INCLUDE_DOCKER:-unknown}"
     fi
 
-    run_check "Root uses full-overlay writable layer" auto_overlay_root_check
+    run_check "Root writable (overlay; read-only fallback allowed)" auto_overlay_root_check
 
     echo ""
     echo "============================================================"

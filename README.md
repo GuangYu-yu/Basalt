@@ -36,14 +36,13 @@ python3 -m pip install --break-system-packages \
 | 产物 | 说明 |
 |---|---|
 | `basalt.img.xz` | 磁盘镜像（dd 部署用） |
-| `basalt.efi` | UKI（OTA 发布用，与镜像同版本） |
-| `SHA256SUMS` | 发布清单（sysupdate 版本枚举依赖） |
+| `SHA256SUMS` | 镜像完整性校验清单 |
 
 常用参数：
 
 ```bash
 ./build.sh --include-docker true        # 纳入 Docker
-./build.sh --version v1.2.3             # 发布构建（版本化产物名 + OTA 可枚举）
+./build.sh --version v1.2.3             # 发布构建（绑定 landscape 发布版本）
 ./build.sh --output-format img,vmdk,ova # 多格式导出
 ./build.sh --smoke                      # 构建后 QEMU 冒烟启动（Ctrl-A X 退出）
 ./build.sh --no-compress                # 保留 raw（本地测试需配合 RUN_TEST）

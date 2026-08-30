@@ -1,7 +1,7 @@
 # =============================================================================
 # 发布：tag 推送 → 双变体构建+测试 → 元数据校验 → GitHub Release
-# 发布物：basalt_<v>.img.xz + 版本化 UKI (*.efi) + SHA256SUMS
-# （设备侧 sysupdate url-file 源依赖发布目录中的 SHA256SUMS 枚举版本）
+# 发布物：basalt.img.xz（无版本，工厂/dd 部署）+ SHA256SUMS
+# （版本化 OTA 产物 basalt_<v>.efi/.raw.xz 由部署方在更新源放置，不在本 release 发布）
 # =============================================================================
 
 name: 发布
@@ -85,7 +85,6 @@ jobs:
           for dir in artifacts/no-docker artifacts/docker; do
             [[ -f "${dir}/metadata/build-metadata.txt" ]] || { echo "缺少构建元数据: ${dir}" >&2; exit 1; }
             compgen -G "${dir}/*.img.xz" > /dev/null || { echo "缺少 img.xz: ${dir}" >&2; exit 1; }
-            compgen -G "${dir}/*.efi" > /dev/null || { echo "缺少 UKI: ${dir}" >&2; exit 1; }
             [[ -f "${dir}/SHA256SUMS" ]] || { echo "缺少 SHA256SUMS: ${dir}" >&2; exit 1; }
 
             git_sha="$(awk -F'=' '/^git_sha=/{print $2; exit}' "${dir}/metadata/build-metadata.txt")"
@@ -98,9 +97,7 @@ jobs:
         with:
           files: |
             artifacts/no-docker/*.img.xz
-            artifacts/no-docker/*.efi
             artifacts/no-docker/SHA256SUMS
             artifacts/docker/*.img.xz
-            artifacts/docker/*.efi
             artifacts/docker/SHA256SUMS
           generate_release_notes: true

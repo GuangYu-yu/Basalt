@@ -27,9 +27,6 @@ source "${SCRIPT_DIR}/common.sh"
 source "${SCRIPT_DIR}/local-runtime.sh"
 
 IMAGE_PATH="${1:-${PROJECT_DIR}/output/basalt.img}"
-SSH_PORT="${SSH_PORT:-${LANDSCAPE_DEFAULT_SSH_PORT}}"
-WEB_PORT="${WEB_PORT:-${LANDSCAPE_DEFAULT_WEB_PORT}}"
-LANDSCAPE_CONTROL_PORT="${LANDSCAPE_CONTROL_PORT:-${LANDSCAPE_DEFAULT_CONTROL_PORT}}"
 QEMU_MEM="${QEMU_MEM:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
@@ -53,10 +50,7 @@ CIRROS_PASSWORD="gocubsgo"
 
 MCAST_ADDR="${MCAST_ADDR:-230.0.0.1}"
 MCAST_PORT="${MCAST_PORT:-${LANDSCAPE_DEFAULT_MCAST_PORT}}"
-ROUTER_WAN_MAC="${ROUTER_WAN_MAC:-52:54:00:12:34:01}"
-ROUTER_LAN_MAC="${ROUTER_LAN_MAC:-52:54:00:12:34:02}"
-ROUTER_MGMT_MAC="${ROUTER_MGMT_MAC:-52:54:00:12:34:03}"
-CLIENT_MAC="${CLIENT_MAC:-52:54:00:12:34:10}"
+# 各 MAC 默认值由 local-runtime.sh 统一声明（并发套件自动按分配 ID 变体化）
 
 CLIENT_SERIAL_LOG=""
 CLIENT_PID=""
@@ -109,7 +103,7 @@ preflight() {
         exit 2
     fi
 
-    if ! ensure_local_ports_free "${SSH_PORT}" "${WEB_PORT}" "$(landscape_bootstrap_ssh_port)"; then
+    if ! ensure_local_ports_free "${SSH_PORT}" "$(landscape_bootstrap_ssh_port)"; then
         exit 2
     fi
 

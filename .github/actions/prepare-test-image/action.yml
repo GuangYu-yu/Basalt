@@ -1,0 +1,42 @@
+# =============================================================================
+# 测试镜像准备（composite action）：解压 xz 镜像 + 选定 IMAGE_PATH + 安装测试依赖
+# 前置：output/ 目录已含 *.img.xz 镜像产物
+# 产出：GITHUB_ENV.IMAGE_PATH 指向解压后的 raw 镜像
+# =============================================================================
+name: 'Prepare test image'
+description: '解压 xz 镜像并安装 QEMU 测试依赖'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 解压镜像
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd output
+        shopt -s nullglob
+        xz_images=(*.img.xz)
+        if [[ ${#xz_images[@]} -eq 0 ]]; then
+          echo "output 中未找到 *.img.xz 镜像产物" >&2
+          exit 1
+        fi
+        for f in "${xz_images[@]}"; do
+          xz -T0 -d -k "$f"
+        done
+
+    - name: 选择测试镜像
+      shell: bash
+      run: |
+        set -euo pipefail
+        source build.env
+        img="$(ls "output/${IMAGE_ID}"*.img | head -n1)"
+        echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
+
+    - name: 安装测试依赖
+      timeout-minutes: 10
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y sshpass socat curl jq \
+          qemu-system-x86 ovmf qemu-utils

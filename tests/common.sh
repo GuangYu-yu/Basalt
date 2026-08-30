@@ -42,7 +42,6 @@ LANDSCAPE_DEFAULT_CONTROL_PORT=6443
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR:-$(pwd)}/output}"
 WORK_DIR="${WORK_DIR:-${PROJECT_DIR:-$(pwd)}/work}"
 LANDSCAPE_TEST_LOG_DIR="${LANDSCAPE_TEST_LOG_DIR:-${OUTPUT_DIR}/test-logs}"
-LANDSCAPE_TEST_AUTO_ALLOCATED=0
 LANDSCAPE_TEST_OWN_LOG_DIR=0
 LANDSCAPE_TEST_TMP_LOG_DIR="${LANDSCAPE_TEST_TMP_LOG_DIR:-}"
 LANDSCAPE_TEST_TMP_WORK_DIR="${LANDSCAPE_TEST_TMP_WORK_DIR:-}"
@@ -206,22 +205,26 @@ dump_log_tail() {
 SSH_ARGS=()
 LANDSCAPE_TEST_REMOTE_TIMEOUT="${LANDSCAPE_TEST_REMOTE_TIMEOUT:-15}"
 
-setup_ssh() {
-    local user="${SSH_USER:-root}"
-    local host="${SSH_HOST:-localhost}"
-    SSH_ARGS=(
+# SSH 命令统一构造：目标端口不同（常规 SSH_PORT / 首启 bootstrap 端口），
+# 其余参数共享（含 TCG 单 vCPU KEX 需 30s ConnectTimeout 的校准）
+_build_ssh_args() {
+    local -n args_ref="$1"
+    local port="$2"
+    args_ref=(
         timeout --foreground "${LANDSCAPE_TEST_REMOTE_TIMEOUT}"
         sshpass -p "${SSH_PASSWORD}" ssh
         -n
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
-        # TCG 单 vCPU 上 guest 重负载期（服务启动/eBPF/本地 TLS 并发）SSH KEX
-        # 可能超过 10s；按最慢路径校准
         -o ConnectTimeout=30
         -o LogLevel=ERROR
-        -p "${SSH_PORT}"
-        "${user}@${host}"
+        -p "${port}"
+        "${SSH_USER:-root}@${SSH_HOST:-localhost}"
     )
+}
+
+setup_ssh() {
+    _build_ssh_args SSH_ARGS "${SSH_PORT}"
 }
 
 guest_run() {
@@ -601,15 +604,15 @@ landscape_bootstrap_ssh_port() {
 }
 
 landscape_mgmt_netdev() {
-    printf 'user,id=mgmt,net=%s,hostfwd=tcp::%s-%s:22,hostfwd=tcp::%s-%s:%s' \
-        "${LANDSCAPE_MGMT_SUBNET}" \
-        "${SSH_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}" \
-        "${WEB_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}" "${LANDSCAPE_CONTROL_PORT}"
+    # 仅 SSH hostfwd：测试全部经 guest 内 curl 访问 API（guest_run），
+    # 宿主侧无 web 端口消费方
+    printf 'user,id=mgmt,net=%s,hostfwd=tcp::%s-%s:22' \
+        "${LANDSCAPE_MGMT_SUBNET}" "${SSH_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}"
 }
 
 landscape_router_start_vm() {
     local image_path="$1"
-    # 管理通道（SSH/API hostfwd）终止于专用 MGMT 口 eth2 而非 NAT 化的 WAN：
+    # 管理通道（SSH hostfwd）终止于专用 MGMT 口 eth2 而非 NAT 化的 WAN：
     # eth0/eth1 上数据面的任何重建都不影响测试的控制通道 —— 路由器
     # appliance 的标准管理姿势。WAN 仅承载数据面（SLIRP 提供 DHCP 与出网），
     # 外加一条 bootstrap hostfwd（独立端口）用于首启后经 SSH 给 eth2 注入
@@ -693,17 +696,8 @@ landscape_router_bootstrap_mgmt() {
     local label="${1:-Router}"
     local boot_port
     boot_port="$(landscape_bootstrap_ssh_port)"
-    local boot_ssh=(
-        timeout --foreground "${LANDSCAPE_TEST_REMOTE_TIMEOUT}"
-        sshpass -p "${SSH_PASSWORD}" ssh
-        -n
-        -o StrictHostKeyChecking=no
-        -o UserKnownHostsFile=/dev/null
-        -o ConnectTimeout=30
-        -o LogLevel=ERROR
-        -p "${boot_port}"
-        "${SSH_USER:-root}@${SSH_HOST:-localhost}"
-    )
+    local boot_ssh=()
+    _build_ssh_args boot_ssh "${boot_port}"
 
     info "Bootstrapping ${label} mgmt interface via WAN (port ${boot_port})..."
     local t0=${SECONDS}
@@ -849,16 +843,15 @@ landscape_router_write_readiness_snapshot() {
 
 landscape_router_dump_diagnostics() {
     local token="${1:-}"
-    # 管线镜像固定使用 systemd 作为 init；SSH 未建立时无诊断可采集
-    local init_system="unknown"
 
+    # SSH 未建立时无 guest 内诊断可采集；管线镜像固定使用 systemd
+    local have_ssh=false
     if [[ ${#SSH_ARGS[@]} -gt 0 ]]; then
-        init_system="systemd"
+        have_ssh=true
     fi
 
     {
         echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        echo "init_system=${init_system}"
         echo "api_base=${API_BASE:-}"
         echo "api_layout=${API_LAYOUT:-}"
         echo ""
@@ -886,7 +879,7 @@ landscape_router_dump_diagnostics() {
         guest_run "cat /proc/sys/net/ipv4/ip_forward" 2>&1 || true
         echo ""
 
-        if [[ "${init_system}" == "systemd" ]]; then
+        if [[ "${have_ssh}" == true ]]; then
             echo "== systemd status: landscape-router =="
             guest_run "systemctl status landscape-router --no-pager -l" 2>&1 || true
             echo ""
@@ -950,6 +943,15 @@ wait_for_landscape_interfaces_ready() {
     done
 }
 
+# 统一失败出口：落盘 readiness 快照与诊断（token 已获取则带 API 快照），
+# 调用方随后 return 1
+readiness_fail() {
+    local failure_reason="$1"
+    shift
+    landscape_router_write_readiness_snapshot failed "$failure_reason" "$@"
+    landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"
+}
+
 landscape_router_wait_ready() {
     local label="${1:-Router}"
     local ssh_timeout="${2:-${SSH_TIMEOUT:-120}}"
@@ -961,24 +963,20 @@ landscape_router_wait_ready() {
     local interfaces_state="pending"
     local -a service_states=()
     local token=""
-    local service_key iface binding failure_reason=""
+    local service_key iface binding
 
     LANDSCAPE_ROUTER_API_TOKEN=""
 
     if ! wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "$label" "$ssh_timeout"; then
         ssh_state="failed"
-        failure_reason="guest ssh unreachable"
-        landscape_router_write_readiness_snapshot failed "$failure_reason" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
-        landscape_router_dump_diagnostics
+        readiness_fail "guest ssh unreachable" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
         return 1
     fi
     ssh_state="ready"
 
     if ! detect_landscape_api_base "$ready_timeout" "$LANDSCAPE_API_READY_INTERVAL"; then
         api_listener_state="failed"
-        failure_reason="api listener unreachable"
-        landscape_router_write_readiness_snapshot failed "$failure_reason" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
-        landscape_router_dump_diagnostics
+        readiness_fail "api listener unreachable" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
         return 1
     fi
     api_listener_state="ready"
@@ -986,9 +984,7 @@ landscape_router_wait_ready() {
     token=$(landscape_api_login "$ready_timeout" "$LANDSCAPE_API_READY_INTERVAL" 2>/dev/null || true)
     if [[ -z "$token" ]]; then
         api_login_state="failed"
-        failure_reason="api login failed"
-        landscape_router_write_readiness_snapshot failed "$failure_reason" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
-        landscape_router_dump_diagnostics
+        readiness_fail "api login failed" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
         return 1
     fi
     api_login_state="ready"
@@ -997,18 +993,14 @@ landscape_router_wait_ready() {
 
     if ! detect_landscape_api_layout "$token" "$ready_timeout"; then
         api_layout_state="failed"
-        failure_reason="api layout detection failed"
-        landscape_router_write_readiness_snapshot failed "$failure_reason" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
-        landscape_router_dump_diagnostics "$token"
+        readiness_fail "api layout detection failed" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
         return 1
     fi
     api_layout_state="ready"
 
     if ! wait_for_landscape_interfaces_ready "$token" "$ready_timeout"; then
         interfaces_state="failed"
-        failure_reason="expected interfaces missing from api"
-        landscape_router_write_readiness_snapshot failed "$failure_reason" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
-        landscape_router_dump_diagnostics "$token"
+        readiness_fail "expected interfaces missing from api" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state"
         return 1
     fi
     interfaces_state="ready"
@@ -1019,9 +1011,8 @@ landscape_router_wait_ready() {
             service_states+=("${service_key}.${iface}=ready")
         else
             service_states+=("${service_key}.${iface}=failed")
-            failure_reason="service ${service_key} on ${iface} not running"
-            landscape_router_write_readiness_snapshot failed "$failure_reason" "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state" "${service_states[@]}"
-            landscape_router_dump_diagnostics "$token"
+            readiness_fail "service ${service_key} on ${iface} not running" \
+                "$ssh_state" "$api_listener_state" "$api_login_state" "$api_layout_state" "$interfaces_state" "${service_states[@]}"
             return 1
         fi
     done

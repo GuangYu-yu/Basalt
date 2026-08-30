@@ -21,18 +21,8 @@ usage() {
 # ── 配置 ──
 [[ -f "${SCRIPT_DIR}/build.env" ]] || die "缺少 build.env（配置单一声明文件）"
 source "${SCRIPT_DIR}/build.env"
-INCLUDE_DOCKER="${INCLUDE_DOCKER:-false}"
-OUTPUT_FORMATS="${OUTPUT_FORMATS:-img}"
-COMPRESS_OUTPUT="${COMPRESS_OUTPUT:-yes}"
-ROOT_PASSWORD="${ROOT_PASSWORD:-landscape}"
-TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
-LOCALE="${LOCALE:-C.UTF-8}"
-APT_MIRROR="${APT_MIRROR:-}"
-IMAGE_SIZE_MB="${IMAGE_SIZE_MB-}"          # 空 = 自适应（见自适应定稿段）
-IMAGE_HEADROOM="${IMAGE_HEADROOM-2}"       # 名义盘中 var 余量倍数
+# 全部可调参数的默认值均在 build.env 声明，此处不再重复
 MB=$(( 1024 * 1024 ))                      # 字节算术统一单位，杜绝裸字面量
-RUN_TEST="${RUN_TEST:-none}"
-IMAGE_ID="${IMAGE_ID:-basalt}"             # 产物名/PARTLABEL/sysupdate 的同源前缀（build.env 单一声明）
 SMOKE=false
 
 CLI_FORMATS=()
@@ -66,7 +56,6 @@ require qemu-img qemu-utils
 require xz       xz-utils
 require curl     curl
 require python3  python3
-
 # uki 引导 + ToolsTree + systemd-boot 形态需要 mkosi >= 26
 # （apt 发行版里的旧版缺 Bootloader=/KernelInitrdModules= 语义）；
 # mkosi 不发布 PyPI 包，经 GitHub tag 源码包安装
@@ -98,10 +87,12 @@ source "${SCRIPT_DIR}/lib/export.sh"
 STAGED_CONFIG="${SCRIPT_DIR}/mkosi/mkosi.extra/usr/share/landscape/landscape_init.toml"
 STAGED_WEBAPP="${SCRIPT_DIR}/mkosi/mkosi.extra/root/landscape-webserver"
 STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
+# 先清残留：上次构建中途退出（die/TERM）留在 extra tree 的文件若不在此清除，
+# 会被本次构建的 CopyFiles 静默烘焙进镜像
+rm -f "${STAGED_CONFIG}" "${STAGED_WEBAPP}" "${STAGED_STATIC}"
 if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
     [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
     install -Dm644 "${EFFECTIVE_CONFIG_PATH}" "${STAGED_CONFIG}"
-    STAGED_CONFIG_SET=1
 fi
 
 # ── mkosi 参数拼装 ──
@@ -152,7 +143,6 @@ fi
 # CLI 目录注册，而 systemd-repart 对跨目录同名定义先到先得
 # （conf-files.c files_add() 的 hashmap 去重），work 渲染会被静默跳过。
 # 因此只能原位渲染，.orig 备份承载还原职责（repart 只消费 *.conf）。
-ESP_SLOTS="${ESP_SLOTS:-3}"
 REPART_DIR="${SCRIPT_DIR}/mkosi/mkosi.repart"
 STAGED_REPART_CONFS=()
 for conf in "${REPART_DIR}"/*.conf; do
@@ -170,8 +160,9 @@ done
 sed -i -e "s/basalt_/${IMAGE_ID}_/g" -e "s#/basalt/#/${IMAGE_ID}/#g" \
     "${STAGED_SYSUPDATE_D[@]}"
 cleanup_staged() {
-    [[ -n "${STAGED_CONFIG_SET:-}" ]] && rm -f "${STAGED_CONFIG}"
-    [[ -n "${STAGED_ASSETS_SET:-}" ]] && rm -f "${STAGED_WEBAPP}" "${STAGED_STATIC}"
+    # 无条件清理暂存产物：上次构建中途退出（die/TERM）的残留若不清除，
+    # 会被本次构建的 CopyFiles 静默烘焙进镜像
+    rm -f "${STAGED_CONFIG}" "${STAGED_WEBAPP}" "${STAGED_STATIC}"
     for conf in "${STAGED_REPART_CONFS[@]:-}"; do
         [[ -n "$conf" && -f "$conf.orig" ]] && mv -f "$conf.orig" "$conf"
     done
@@ -224,17 +215,15 @@ if [[ "${LANDSCAPE_VERSION}" == "latest" ]]; then
 else
     ASSET_BASE="${LANDSCAPE_REPO}/releases/download/${LANDSCAPE_VERSION}"
 fi
-require curl curl
 info "下载 Landscape 发布物（${LANDSCAPE_VERSION}）..."
 mkdir -p "${STAGED_WEBAPP%/*}" "${STAGED_STATIC%/*}"
 curl -fL --retry 3 -o "${STAGED_WEBAPP}" "${ASSET_BASE}/landscape-webserver-x86_64"
 chmod +x "${STAGED_WEBAPP}"
 curl -fL --retry 3 -o "${STAGED_STATIC}" "${ASSET_BASE}/static.zip"
-STAGED_ASSETS_SET=1
 
 # 渲染 InitConfig 版本契约：顶层 version 必须与 webserver 一致，缺失即
 # Boot("Init config version mismatch") 拒启 → 服务重启循环 → 无人配置网络
-if [[ "${STAGED_CONFIG_SET:-0}" == 1 ]]; then
+if [[ -f "${STAGED_CONFIG}" ]]; then
     sed -i "1i version = \"${LANDSCAPE_VERSION#v}\"" "${STAGED_CONFIG}"
 fi
 
@@ -347,16 +336,8 @@ mkosi -f "${MKOSI_ARGS[@]}" build
 BUILT_RAW="$(latest_raw)"
 [[ -n "${BUILT_RAW}" ]] || die "二次构建未产出 raw"
 
-# ── UKI 产物收集（仅 *.efi，sysupdate OTA 发布用）──
-# 版本化 UKI（cmdline 绑同版本 PARTLABEL）与 raw 盘共享同一镜像定义
-for uki in "${WORK_DIR}"/${IMAGE_ID}*.efi; do
-    [[ -e "${uki}" ]] || continue
-    cp -f "${uki}" "${OUTPUT_DIR}/"
-    BUILD_ARTIFACTS+=("${OUTPUT_DIR}/${uki##*/}")
-done
-
 # ── initrd 收集（mkosi SplitArtifacts 拆出的合并 initrd，模块门禁/调试用）──
-# 不入 BUILD_ARTIFACTS 与 SHA256SUMS：sysupdate 契约只消费 img(.xz) 与 *.efi
+# 不入 BUILD_ARTIFACTS 与 SHA256SUMS：仅模块门禁消费，不入发布清单
 for initrd in "${WORK_DIR}"/${IMAGE_ID}*.initrd; do
     [[ -e "${initrd}" ]] || continue
     cp -f "${initrd}" "${OUTPUT_DIR}/"
@@ -413,19 +394,15 @@ if [[ "${RUN_TEST}" != "none" ]]; then
 fi
 
 # ── 发布清单 ──
-# 设备侧 sysupdate url-file 源以发布目录中的 SHA256SUMS 枚举版本（sysupdate.d(5)）；
-# 仅纳入设备侧 MatchPattern 消费的产物（img(.xz) + *.efi），vmdk/ova 与 metadata 不入清单。
-# 版本化构建（--version vX）的产物名 basalt_<v>.{img.xz,efi} 与 MatchPattern
-# 对应；工厂镜像（无版本后缀）仅供 dd 部署，不参与 OTA 枚举。
+# 发布物仅 img.xz + SHA256SUMS（工厂/dd 部署与完整性校验）；
+# 版本化 OTA 产物（basalt_<v>.efi / basalt_<v>.raw.xz）由部署方按
+# sysupdate.d 的 MatchPattern 在更新源放置，不在本 release 发布。
 release_files=()
 if [[ "${COMPRESS_OUTPUT}" == "yes" ]]; then
     release_files+=("$(basename "${IMAGE_XZ_FILE}")")
 else
     release_files+=("$(basename "${IMAGE_RAW_FILE}")")
 fi
-for a in "${BUILD_ARTIFACTS[@]}"; do
-    [[ "${a}" == *.efi ]] && release_files+=("${a##*/}")
-done
 ( cd "${OUTPUT_DIR}" && sha256sum "${release_files[@]}" > SHA256SUMS )
 
 # ── CI metadata 契约（.github 收集 output/metadata/build-metadata.txt，
