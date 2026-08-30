@@ -175,12 +175,10 @@ download_cirros() {
         fi
     done
 
-    CIRROS_KERNEL_FILE="${kernel_file}"
-    CIRROS_INITRD_FILE="${initrd_file}"
-    export CIRROS_KERNEL_FILE CIRROS_INITRD_FILE
-
+    # 函数在 $(...) 子 shell 中运行，export 无法传回父 shell → 路径经 stdout
+    # 三行输出，由调用处 read 落到父 shell 变量（见 main）
     ok "CirrOS ready (disk/kernel/initramfs)" >&2
-    echo "${cirros_file}"
+    printf '%s\n' "${cirros_file}" "${kernel_file}" "${initrd_file}"
 }
 
 start_client() {
@@ -350,7 +348,7 @@ main() {
     preflight
 
     local cirros_file
-    cirros_file="$(download_cirros)" || exit 2
+    read -r cirros_file CIRROS_KERNEL_FILE CIRROS_INITRD_FILE <<< "$(download_cirros)" || exit 2
 
     if ! landscape_router_start_vm "${IMAGE_PATH}"; then
         exit 2
