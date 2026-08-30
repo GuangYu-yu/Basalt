@@ -220,6 +220,7 @@ jobs:
           path: output/
 
       - name: 准备测试镜像
+        timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
       - name: 运行就绪检查
@@ -255,6 +256,7 @@ jobs:
           path: output/
 
       - name: 准备测试镜像
+        timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
       - name: 运行数据平面测试

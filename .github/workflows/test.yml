@@ -83,6 +83,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: 准备测试镜像
+        timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
       - name: 运行就绪检查

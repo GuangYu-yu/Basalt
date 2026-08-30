@@ -33,7 +33,6 @@ runs:
         echo "IMAGE_PATH=${img}" >> "${GITHUB_ENV}"
 
     - name: 安装测试依赖
-      timeout-minutes: 10
       shell: bash
       run: |
         set -euo pipefail
