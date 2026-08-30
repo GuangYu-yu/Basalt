@@ -288,12 +288,14 @@ wait_for_dhcp_assignment() {
     return 1
 }
 
-router_can_ping_client() {
+router_can_tcp_reach_client() {
     local client_ip="$1"
     local attempt
 
+    # ICMP 在 CI 宿主不可靠（GitHub runner Azure VM 阻断入站 ICMP）；改以
+    # TCP :22（client dropbear sshd，真实管理端口）验证 LAN 连通，语义更强
     for attempt in 1 2 3 4 5 6; do
-        if guest_run "ping -c 2 -W 3 ${client_ip}" &>/dev/null; then
+        if guest_run "timeout 3 bash -c 'exec 3<>/dev/tcp/${client_ip}/22'" &>/dev/null; then
             return 0
         fi
         sleep 3
@@ -323,7 +325,7 @@ run_e2e_checks() {
 
     echo ""
     echo "---- LAN Connectivity ----"
-    run_check "Router can ping client (${client_ip})" router_can_ping_client "$client_ip"
+    run_check "Router can reach client sshd (${client_ip}:22)" router_can_tcp_reach_client "$client_ip"
 
     write_client_diagnostics "$client_ip"
     landscape_router_dump_diagnostics "$token"
