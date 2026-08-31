@@ -403,7 +403,7 @@ import json, sys
 t = json.load(sys.stdin)["partitiontable"]
 ss = int(t.get("sectorsize", 512))
 # DPS（Discoverable Partition Specification）标准类型：var
-VAR = "4d21b016-b534-45c2-a9fb-5c16e091fd21"
+VAR = "4d21b016-b534-45c2-a9fb-5c16e091fd2d"
 var = next((p for p in t["partitions"] if p.get("type", "").lower() == VAR), None)
 print((var["size"] * ss) if var else 0)
 ')
