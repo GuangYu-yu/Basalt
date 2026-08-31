@@ -211,23 +211,48 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
     tmp = tempfile.mkdtemp(prefix="basalt-gate-")
     mnt = os.path.join(tmp, "root")
     os.mkdir(mnt)
-    if os.geteuid() == 0:
-        subprocess.run(["mount", "-o", "ro,loop", str(erofs), mnt], check=True)
-        try:
-            paths, builtin = walk_modules(mnt)
-        finally:
+    try:
+        if os.geteuid() == 0:
+            subprocess.run(["mount", "-o", "ro,loop", str(erofs), mnt], check=True)
+        elif shutil.which("erofsfuse"):
+            subprocess.run(["erofsfuse", str(erofs), mnt], check=True)
+        else:
+            sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
+        paths, builtin = walk_modules(mnt)
+        revdep = reverse_dep_index(mnt)
+    finally:
+        if os.geteuid() == 0:
             subprocess.run(["umount", mnt], check=True)
-    elif shutil.which("erofsfuse"):
-        subprocess.run(["erofsfuse", str(erofs), mnt], check=True)
-        try:
-            paths, builtin = walk_modules(mnt)
-        finally:
+        else:
             unmount = shutil.which("fusermount3") or shutil.which("fusermount")
             subprocess.run([unmount, "-u", mnt], check=True)
-    else:
-        sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
     shutil.rmtree(tmp, ignore_errors=True)
-    return modules_from_paths(paths, builtin)
+    modules, forbidden = modules_from_paths(paths, builtin)
+    # 违例失败自证：反查 modules.dep 打印把违例模块拖回根树的保留模块，
+    # 直接定位需要追加排除的依赖方（如 net/mac80211 之于 cfg80211）
+    for viol in forbidden:
+        mod = modname(viol)
+        deps = revdep.get(mod, [])
+        if deps:
+            print(f"[module-gate] 依赖 {mod} 的镜像内模块：")
+            for d in deps:
+                print(f"  {d}")
+        else:
+            print(f"[module-gate] 镜像内无模块依赖 {mod}（其本身在 include 匹配集）")
+    return modules, forbidden
+
+
+def reverse_dep_index(mnt: str) -> dict[str, list[str]]:
+    """解析镜像内 modules.dep，返回 模块名 → 依赖它的模块路径 清单。"""
+    index: dict[str, list[str]] = {}
+    for depfile in Path(mnt).glob("usr/lib/modules/*/modules.dep"):
+        for line in depfile.read_text(encoding="utf-8", errors="replace").splitlines():
+            path, _, deps = line.partition(":")
+            if not path:
+                continue
+            for d in deps.split():
+                index.setdefault(modname(d), []).append(path.strip())
+    return index
 
 
 def check(blob: bytes) -> int:
