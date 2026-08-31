@@ -259,6 +259,11 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
             sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
         paths, builtin = walk_modules(mnt)
         revdep = reverse_dep_index(mnt)
+        # 依赖者文件存在性须在挂载期间判定（unmount 后路径失效）
+        revdep_exist = {
+            mod: [(Path(mnt) / d).exists() for d in deps]
+            for mod, deps in revdep.items()
+        }
     finally:
         if os.geteuid() == 0:
             subprocess.run(["umount", mnt], check=True)
@@ -267,6 +272,12 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
             subprocess.run([unmount, "-u", mnt], check=True)
     shutil.rmtree(tmp, ignore_errors=True)
     modules, forbidden = modules_from_paths(paths, builtin)
+    # 闭包拉回诊断：v26 的 resolve_module_dependencies 以
+    # todo = {*builtin, *modules} 初始化，modules.builtin 中的模块名
+    # 直接进闭包查询——cfg80211 若在 builtin，必被拉回 required
+    print(f"[module-gate] ROOT builtin（{len(builtin)} 个）: "
+          f"{' '.join(sorted(builtin)) or '<EMPTY>'}")
+    print(f"[module-gate] cfg80211 in ROOT builtin: {'cfg80211' in builtin}")
     # 违例失败自证：反查 modules.dep 打印把违例模块拖回根树的保留模块，
     # 直接定位需要追加排除的依赖方（如 net/mac80211 之于 cfg80211）
     for viol in forbidden:
@@ -274,8 +285,8 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
         deps = revdep.get(mod, [])
         if deps:
             print(f"[module-gate] 依赖 {mod} 的镜像内模块：")
-            for d in deps:
-                print(f"  {d}")
+            for d, exists in zip(deps, revdep_exist.get(mod, [])):
+                print(f"  {'[文件在镜像]' if exists else '[仅 dep 记录]'} {d}")
         else:
             print(f"[module-gate] 镜像内无模块依赖 {mod}（其本身在 include 匹配集）")
     # 违例自证（v26 filter 语义）：镜像内违例模块若被 KernelModules= 判定
