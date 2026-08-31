@@ -17,10 +17,10 @@
   其余      allowed：不在契约内的模块不构成失败（依赖闭包合法产物）
 
 契约内容：
-  initrd 启动链  virtio_blk virtio_pci virtio_net ahci sd_mod nvme autofs4
-                 erofs overlay btrfs vfat loop
-  initrd 平台    ata_piix vmw_pvscsi mptspi mpt3sas hv_vmbus hv_storvsc
-                 hv_netvsc xen_blkfront
+  initrd 启动链  virtio_blk virtio_scsi virtio_pci virtio_net ahci sd_mod
+                 nvme autofs4 erofs overlay btrfs vfat loop
+  initrd 平台    ata_piix vmw_pvscsi mptspi mpt3sas hv_vmbus
+                 hv_storvsc hv_netvsc xen_blkfront
   root 数据面    nf_conntrack tun veth bridge e1000 r8169
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
@@ -35,9 +35,9 @@ from pathlib import Path
 import zstandard
 
 REQUIRED_INITRD = {
-    "virtio_blk", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
+    "virtio_blk", "virtio_scsi", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
     "erofs", "overlay", "btrfs", "vfat", "loop",
-    # 各平台存储控制器 / Hypervisor 半虚拟化：PVE IDE / ESXi / Hyper-V / Xen
+    # 各平台存储控制器 / Hypervisor 半虚拟化：QEMU IDE / ESXi / Hyper-V / Xen
     "ata_piix", "vmw_pvscsi", "mptspi", "mpt3sas",
     "hv_vmbus", "hv_storvsc", "hv_netvsc", "xen_blkfront",
 }
@@ -60,10 +60,15 @@ REQUIRED_ROOT = {
 }
 
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
-# Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）
+# Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）。
+# 含 repart 扩容关键三件套：时序 dropin、定义源（--definitions）dropin、
+# 定义文件本身——任一丢失则首启扩容回归（repart 无定义 FAILED）
 REQUIRED_UNITS = {
     "usr/lib/systemd/system/initrd-root-overlay.service",
     "usr/lib/systemd/system/initrd-switch-root.service.d/10-overlay.conf",
+    "usr/lib/systemd/system/systemd-repart.service.d/90-after-sysroot.conf",
+    "usr/lib/systemd/system/systemd-repart.service.d/99-console.conf",
+    "etc/repart.d/92-var-grow.conf",
 }
 
 
