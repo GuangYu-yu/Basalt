@@ -18,11 +18,11 @@
 ## 环境要求
 
 - Linux 宿主（mkosi 管线不支持 Windows/macOS 原生运行）
-- `mkosi >= 26`、`qemu-img`、`xz`、`python3`、`curl`、`ukify`（systemd-ukify）、`objcopy`（binutils）、`sfdisk`（util-linux）
+- `mkosi >= 26`、`qemu-img`、`xz`、`python3`、`curl`、`ukify`（systemd-ukify）+ PE stub（systemd-boot-efi）、`objcopy`（binutils）、`sfdisk`（util-linux）
 
 ```bash
 sudo apt install mkosi qemu-utils xz-utils python3 curl \
-  systemd-ukify binutils util-linux
+  systemd-ukify systemd-boot-efi binutils util-linux
 # apt 版本过旧时从源码安装固定版本
 python3 -m pip install --break-system-packages \
   https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz

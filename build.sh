@@ -80,6 +80,10 @@ require objcopy binutils
 # rescue UKI（basalt.ro=1 只读根入口）手工编排；ToolsTree 内 ukify 的宿主侧
 # 调用路径待实测（V6），宿主 ukify 为确定路径
 require ukify    systemd-ukify
+# ukify 默认 PE stub（Linux UKI 段容器）：systemd-boot-efi 包提供；
+# 缺失时报 FileNotFoundError 而非提示 → 构建期显式断言替代 traceback
+EFI_STUB="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
+[[ -f "${EFI_STUB}" ]] || die "缺少 ukify PE stub ${EFI_STUB}（安装: apt install systemd-boot-efi）"
 # uki 引导 + ToolsTree + systemd-boot 形态需要 mkosi >= 26
 # （apt 发行版里的旧版缺 Bootloader=/KernelInitrdModules= 语义）；
 # mkosi 不发布 PyPI 包，经 GitHub tag 源码包安装
