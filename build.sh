@@ -163,6 +163,11 @@ if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
 fi
 # APT 镜像直通（mkosi 原生 --mirror，单源无 failover 候选链）
 [[ -n "${APT_MIRROR}" ]] && MKOSI_ARGS+=(--mirror "${APT_MIRROR}")
+# 诊断：MKOSI_DEBUG=1 时透传 mkosi --debug（模块过滤函数运行时列表等
+# debug 日志落 CI step 输出），常规构建保持默认日志级别、产物不受影响
+if [[ "${MKOSI_DEBUG:-0}" == 1 ]]; then
+    MKOSI_ARGS+=(--debug)
+fi
 
 # ── 暂存-恢复：构建期渲染仓库模板文件，EXIT trap 统一还原 git 原状 ──
 # 不可用 --repart-dir 指向 work 拷贝：mkosi 自动发现的 mkosi.repart/ 先于
