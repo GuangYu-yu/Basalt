@@ -43,8 +43,20 @@ REQUIRED_INITRD = {
 }
 
 REQUIRED_ROOT = {
-    # 数据面：landscape NIC / TC-eBPF / 虚拟组网
-    "nf_conntrack", "tun", "veth", "bridge", "e1000", "r8169",
+    # 数据面核心（netfilter 连接跟踪/NAT/表）
+    "nf_conntrack", "nf_tables", "nfnetlink",
+    # 流量控制（sched/cls/act：tc 链，landscape QoS）
+    "sch_htb", "sch_fq_codel", "cls_bpf", "cls_fw", "act_skbedit", "act_mirred",
+    # 虚拟组网（bridge/veth/tun/隧道/802.1Q/wireguard）
+    "bridge", "veth", "tun", "vxlan", "geneve", "8021q", "wireguard",
+    # 加密转发（xfrm/IPsec 隧道）
+    "xfrm_user", "xfrm4_tunnel",
+    # 有线网卡驱动代表（drivers/net/ethernet 等）
+    "e1000", "e1000e", "r8169", "virtio_net", "igb",
+    # 链路聚合（bonding/team）
+    "bonding", "team",
+    # ppp（WAN 上行拨号）
+    "ppp_generic", "pppoe",
 }
 
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
@@ -76,6 +88,43 @@ def forbidden_from_conf(conf: Path, setting: str) -> tuple[str, ...]:
                 out.append(v[1:])
         return tuple(out)
     return ()
+
+
+def retained_from_conf(conf: Path, setting: str) -> tuple[str, ...]:
+    """从 mkosi.conf 指定设置块提取正向目录条目（net/ drivers/net/ 等）。
+
+    与 forbidden_from_conf 对应：保留目录是"无遗漏"粗粒度契约——镜像内
+    kernel/ 目录树必须包含它们（filter 配置失效导致整个子系统丢失即失败，
+    如 KernelInitrdModules= 空格组导致的空 initrd 教训）。default/host/
+    模块名等非目录条目自动跳过。
+    """
+    lines = conf.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() != setting:
+            continue
+        out = []
+        for raw in lines[i + 1:]:
+            if raw.strip() and not raw[0].isspace():
+                break
+            v = raw.split("#", 1)[0].strip()
+            if (not v.startswith("-") and not v.startswith("re:")
+                    and not v.startswith("default") and v.endswith("/")):
+                out.append(v)
+        return tuple(out)
+    return ()
+
+
+def kernel_dirs(paths: set[str]) -> set[str]:
+    """镜像内 kernel/ 目录树（含各级父目录，相对 kver，如 net/core/）。"""
+    dirs = set()
+    for p in paths:
+        m = re.match(r"usr/lib/modules/[^/]+/kernel/(.+)/[^/]+\.ko", p)
+        if not m:
+            continue
+        parts = m.group(1).split("/")
+        for i in range(1, len(parts) + 1):
+            dirs.add("/".join(parts[:i]) + "/")
+    return dirs
 
 NEWC_MAGIC = b"070701"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -227,10 +276,11 @@ def walk_modules(root: str) -> tuple[set[str], set[str]]:
 
 
 def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
-                       ) -> tuple[set[str], list[str]]:
+                       ) -> tuple[set[str], list[str], set[str]]:
     """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
 
     需要文件系统访问：root（loop 挂载）或 erofsfuse（非 root）。
+    返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
     """
     tmp = tempfile.mkdtemp(prefix="basalt-gate-")
     mnt = os.path.join(tmp, "root")
@@ -250,16 +300,22 @@ def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
             unmount = shutil.which("fusermount3") or shutil.which("fusermount")
             subprocess.run([unmount, "-u", mnt], check=True)
     shutil.rmtree(tmp, ignore_errors=True)
-    return modules_from_paths(paths, builtin, forbidden)
+    modules, violations = modules_from_paths(paths, builtin, forbidden)
+    return modules, violations, paths
 
 
-def check(blob: bytes, forbidden: tuple[str, ...]) -> int:
+def check(blob: bytes, forbidden: tuple[str, ...],
+          retained: tuple[str, ...]) -> int:
     names = cpio_names(blob)
     paths = set(names)
     builtin = builtin_from_blob(blob, names)
     modules, violations = modules_from_paths(paths, builtin, forbidden)
 
     missing = check_artifact("initrd", modules, violations, REQUIRED_INITRD)
+    for r in retained:
+        if r not in kernel_dirs(paths):
+            print(f"  MISS-DIR {r}")
+            missing.append(f"缺保留目录 {r}")
 
     name_set = set(names)
     for unit in sorted(REQUIRED_UNITS):
@@ -285,6 +341,8 @@ def main() -> int:
     conf = Path(__file__).resolve().parent.parent / "mkosi" / "mkosi.conf"
     initrd_forbidden = forbidden_from_conf(conf, "KernelInitrdModules=")
     root_forbidden = forbidden_from_conf(conf, "KernelModules=")
+    initrd_retained = retained_from_conf(conf, "KernelInitrdModules=")
+    root_retained = retained_from_conf(conf, "KernelModules=")
     # 防御：排除项派生为空 = 配置解析失效，直接失败而非静默放行
     if not initrd_forbidden or not root_forbidden:
         sys.exit(f"门禁配置解析失败：mkosi.conf 排除项派生为空 "
@@ -292,13 +350,18 @@ def main() -> int:
 
     initrd = Path(sys.argv[1])
     blob = decode_initrd(initrd.read_bytes())
-    rc = check(blob, initrd_forbidden)
+    rc = check(blob, initrd_forbidden, initrd_retained)
 
     if len(sys.argv) > 2:
         # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
-        root_modules, root_violations = root_erofs_modules(Path(sys.argv[2]), root_forbidden)
+        root_modules, root_violations, root_paths = \
+            root_erofs_modules(Path(sys.argv[2]), root_forbidden)
         missing = check_artifact("root(EROFS)", root_modules,
                                  root_violations, REQUIRED_ROOT)
+        for r in root_retained:
+            if r not in kernel_dirs(root_paths):
+                print(f"  MISS-DIR {r}")
+                missing.append(f"缺保留目录 {r}")
         if missing:
             print(f"[module-gate] FAIL ROOT 缺失/违例：{' '.join(missing)}", file=sys.stderr)
             return 1
