@@ -22,6 +22,7 @@
   forbidden      net/bluetooth/ net/wireless/ drivers/net/wireless/
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
+import fnmatch
 import os
 import re
 import shutil
@@ -47,6 +48,44 @@ REQUIRED_ROOT = {
 
 # 禁用子系统（路径级判断，命中即违例）
 FORBIDDEN_PATHS = ("net/bluetooth/", "net/wireless/", "drivers/net/wireless/")
+
+# ── v26 模块过滤语义移植（mkosi/kmod.py globs_match_*，用于违例自证）──
+# 判定「镜像内违例模块是否本应被 KernelModules= 排除」，分流根因：
+#   判定 DROP 却在镜像内 → 产物绕过 filter（依赖闭包/拷贝环节）
+#   判定 KEEP → v26 匹配函数在真实路径上行为异常（匹配 bug）
+# 覆盖 wireless 判定的相关 glob 子集，与 mkosi.conf KernelModules= 同步
+# （cfg80211 为 mkosi-initrd default 展开的正向 basename 条目）
+V26_GLOBS = [
+    "cfg80211",
+    "net/", "drivers/net/",
+    "-net/wireless/", "-net/mac80211/", "-drivers/net/wireless/",
+]
+
+
+def v26_normalize_module_name(name: str) -> str:
+    return name.replace("_", "-")
+
+
+def v26_globs_match_filename(name: str, globs: list[str],
+                             *, match_default: bool = False) -> bool:
+    for glob in reversed(globs):
+        if negative := glob.startswith("-"):
+            glob = glob[1:]
+        if glob.endswith("/"):
+            glob += "*"
+        if (
+            (glob.startswith("/") and fnmatch.fnmatch(f"/{name}", f"/kernel{glob}"))
+            or (glob.startswith("/") and fnmatch.fnmatch(f"/{name}", glob))
+            or ("/" in glob and fnmatch.fnmatch(f"/{name}", f"*/{glob}"))
+            or fnmatch.fnmatch(name.split("/")[-1], glob)
+        ):
+            return not negative
+    return match_default
+
+
+def v26_globs_match_module(name: str, globs: list[str]) -> bool:
+    name = re.sub(r"\.ko(\.(gz|xz|zst))?$", "", name)
+    return v26_globs_match_filename(name, globs)
 
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
 # Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）
@@ -239,6 +278,15 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
                 print(f"  {d}")
         else:
             print(f"[module-gate] 镜像内无模块依赖 {mod}（其本身在 include 匹配集）")
+    # 违例自证（v26 filter 语义）：镜像内违例模块若被 KernelModules= 判定
+    # 排除（DROP）却仍在 → 产物来源绕过 filter；若判定 KEEP → 匹配 bug
+    for viol in forbidden:
+        rel = viol.split("usr/lib/modules/", 1)[-1]
+        if "/" in rel:
+            rel = rel.split("/", 1)[1]  # 剥 <kver>/，得 kernel/...
+        verdict = ("DROP" if not v26_globs_match_module(
+            v26_normalize_module_name(rel), V26_GLOBS) else "KEEP")
+        print(f"[module-gate] v26 filter 判定 {verdict}：{viol}")
     return modules, forbidden
 
 
