@@ -407,7 +407,11 @@ VAR = "4d21b016-b534-45c2-a9fb-5c16e091fd21"
 var = next((p for p in t["partitions"] if p.get("type", "").lower() == VAR), None)
 print((var["size"] * ss) if var else 0)
 ')
-[[ "${var_bytes}" -gt 0 ]] || die "var 分区实测失败"
+# var 实测失败时转储分区表 JSON 供诊断（type 匹配依赖 sfdisk 输出格式）
+[[ -n "${var_bytes:-}" && "${var_bytes}" -gt 0 ]] || {
+    sfdisk -J "${RAW_FILE}" >&2 || true
+    die "var 分区实测失败（上方为 sfdisk -J 原始输出）"
+}
 nominal_mb=$(( ( esp_target + var_bytes * IMAGE_HEADROOM
                  + erofs_bytes * ( INSTANCES_MAX - 1 )
                  + ROOT_MARGIN_MB * MB + MB - 1 ) / MB ))
