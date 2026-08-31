@@ -337,6 +337,24 @@ def check(blob: bytes, forbidden: tuple[str, ...],
     return 0
 
 
+def audit_dirs(paths: set[str], label: str) -> None:
+    """目录审计：输出镜像内 kernel/ 目录树，暴露"该排除未排除"的多余子系统。
+
+    forbidden 只验证 KernelModules= 显式排除项；net/ 内未排除的子系统
+    （如废弃协议 ipx/netrom/llc）不在验证范围——审计输出供构建者审查，
+    发现多余子系统后加入 KernelModules= 排除项（门禁随之自动收紧）。
+    """
+    dirs = kernel_dirs(paths)
+    top = sorted({d.split("/", 1)[0] + "/" for d in dirs})
+    net2 = sorted({"/".join(d.split("/")[:2]) + "/"
+                   for d in dirs if d.startswith("net/")})
+    drv2 = sorted({"/".join(d.split("/")[:2]) + "/"
+                   for d in dirs if d.startswith("drivers/")})
+    print(f"[module-gate] {label} kernel/ 顶层：{' '.join(top)}")
+    print(f"[module-gate] {label} net/ 子目录：{' '.join(net2)}")
+    print(f"[module-gate] {label} drivers/ 子目录：{' '.join(drv2)}")
+
+
 def main() -> int:
     conf = Path(__file__).resolve().parent.parent / "mkosi" / "mkosi.conf"
     initrd_forbidden = forbidden_from_conf(conf, "KernelInitrdModules=")
@@ -366,6 +384,7 @@ def main() -> int:
             print(f"[module-gate] FAIL ROOT 缺失/违例：{' '.join(missing)}", file=sys.stderr)
             return 1
         print("[module-gate] root PASS")
+        audit_dirs(root_paths, "root(EROFS)")
     return rc
 
 
