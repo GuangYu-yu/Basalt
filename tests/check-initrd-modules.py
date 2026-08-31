@@ -246,6 +246,12 @@ def check(blob: bytes) -> int:
             missing.append(unit)
 
     if missing:
+        # 失败自证：builtin 全集（空集也能暴露解析 bug）+ modules.builtin 文件
+        # 是否存在于 cpio 名录（存在但集合为空 = builtin_from_blob 解析失败）
+        print(f"[module-gate] builtin 集合（{len(builtin)} 个）: "
+              f"{' '.join(sorted(builtin)) or '<EMPTY>'}")
+        print("[module-gate] modules.builtin 文件存在: "
+              f"{any(n.endswith('modules.builtin') for n in names)}")
         print(f"[module-gate] FAIL 缺失/违例：{' '.join(missing)}", file=sys.stderr)
         return 1
     print("[module-gate] initrd PASS")
