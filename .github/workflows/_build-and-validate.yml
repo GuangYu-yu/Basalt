@@ -142,8 +142,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_FORMATS: ${{ inputs.output_formats }}
           DIAG_CMDLINE: ${{ inputs.diag_cmdline == true && '1' || '0' }}
-          # 一次性诊断：透传 mkosi --debug，抓模块过滤运行时列表（定位后移除）
-          MKOSI_DEBUG: '1'
           # 智能初始化拓扑注入：缺省时 webserver 走 --auto（Web 引导），无网络配置
           # → CI 虚机 WAN 永无地址，SSH/API 就绪契约必然失败
           EFFECTIVE_CONFIG_PATH: ${{ github.workspace }}/configs/landscape_init.toml

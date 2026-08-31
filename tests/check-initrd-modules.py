@@ -22,7 +22,6 @@
   forbidden      net/bluetooth/ net/wireless/ drivers/net/wireless/
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
-import fnmatch
 import os
 import re
 import shutil
@@ -48,44 +47,6 @@ REQUIRED_ROOT = {
 
 # 禁用子系统（路径级判断，命中即违例）
 FORBIDDEN_PATHS = ("net/bluetooth/", "net/wireless/", "drivers/net/wireless/")
-
-# ── v26 模块过滤语义移植（mkosi/kmod.py globs_match_*，用于违例自证）──
-# 判定「镜像内违例模块是否本应被 KernelModules= 排除」，分流根因：
-#   判定 DROP 却在镜像内 → 产物绕过 filter（依赖闭包/拷贝环节）
-#   判定 KEEP → v26 匹配函数在真实路径上行为异常（匹配 bug）
-# 覆盖 wireless 判定的相关 glob 子集，与 mkosi.conf KernelModules= 同步
-# （cfg80211 为 mkosi-initrd default 展开的正向 basename 条目）
-V26_GLOBS = [
-    "cfg80211",
-    "net/", "drivers/net/",
-    "-net/wireless/", "-net/mac80211/", "-drivers/net/wireless/",
-]
-
-
-def v26_normalize_module_name(name: str) -> str:
-    return name.replace("_", "-")
-
-
-def v26_globs_match_filename(name: str, globs: list[str],
-                             *, match_default: bool = False) -> bool:
-    for glob in reversed(globs):
-        if negative := glob.startswith("-"):
-            glob = glob[1:]
-        if glob.endswith("/"):
-            glob += "*"
-        if (
-            (glob.startswith("/") and fnmatch.fnmatch(f"/{name}", f"/kernel{glob}"))
-            or (glob.startswith("/") and fnmatch.fnmatch(f"/{name}", glob))
-            or ("/" in glob and fnmatch.fnmatch(f"/{name}", f"*/{glob}"))
-            or fnmatch.fnmatch(name.split("/")[-1], glob)
-        ):
-            return not negative
-    return match_default
-
-
-def v26_globs_match_module(name: str, globs: list[str]) -> bool:
-    name = re.sub(r"\.ko(\.(gz|xz|zst))?$", "", name)
-    return v26_globs_match_filename(name, globs)
 
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
 # Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）
@@ -258,12 +219,6 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
         else:
             sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
         paths, builtin = walk_modules(mnt)
-        revdep = reverse_dep_index(mnt)
-        # 依赖者文件存在性须在挂载期间判定（unmount 后路径失效）
-        revdep_exist = {
-            mod: [(Path(mnt) / d).exists() for d in deps]
-            for mod, deps in revdep.items()
-        }
     finally:
         if os.geteuid() == 0:
             subprocess.run(["umount", mnt], check=True)
@@ -271,47 +226,7 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
             unmount = shutil.which("fusermount3") or shutil.which("fusermount")
             subprocess.run([unmount, "-u", mnt], check=True)
     shutil.rmtree(tmp, ignore_errors=True)
-    modules, forbidden = modules_from_paths(paths, builtin)
-    # 闭包拉回诊断：v26 的 resolve_module_dependencies 以
-    # todo = {*builtin, *modules} 初始化，modules.builtin 中的模块名
-    # 直接进闭包查询——cfg80211 若在 builtin，必被拉回 required
-    print(f"[module-gate] ROOT builtin（{len(builtin)} 个）: "
-          f"{' '.join(sorted(builtin)) or '<EMPTY>'}")
-    print(f"[module-gate] cfg80211 in ROOT builtin: {'cfg80211' in builtin}")
-    # 违例失败自证：反查 modules.dep 打印把违例模块拖回根树的保留模块，
-    # 直接定位需要追加排除的依赖方（如 net/mac80211 之于 cfg80211）
-    for viol in forbidden:
-        mod = modname(viol)
-        deps = revdep.get(mod, [])
-        if deps:
-            print(f"[module-gate] 依赖 {mod} 的镜像内模块：")
-            for d, exists in zip(deps, revdep_exist.get(mod, [])):
-                print(f"  {'[文件在镜像]' if exists else '[仅 dep 记录]'} {d}")
-        else:
-            print(f"[module-gate] 镜像内无模块依赖 {mod}（其本身在 include 匹配集）")
-    # 违例自证（v26 filter 语义）：镜像内违例模块若被 KernelModules= 判定
-    # 排除（DROP）却仍在 → 产物来源绕过 filter；若判定 KEEP → 匹配 bug
-    for viol in forbidden:
-        rel = viol.split("usr/lib/modules/", 1)[-1]
-        if "/" in rel:
-            rel = rel.split("/", 1)[1]  # 剥 <kver>/，得 kernel/...
-        verdict = ("DROP" if not v26_globs_match_module(
-            v26_normalize_module_name(rel), V26_GLOBS) else "KEEP")
-        print(f"[module-gate] v26 filter 判定 {verdict}：{viol}")
-    return modules, forbidden
-
-
-def reverse_dep_index(mnt: str) -> dict[str, list[str]]:
-    """解析镜像内 modules.dep，返回 模块名 → 依赖它的模块路径 清单。"""
-    index: dict[str, list[str]] = {}
-    for depfile in Path(mnt).glob("usr/lib/modules/*/modules.dep"):
-        for line in depfile.read_text(encoding="utf-8", errors="replace").splitlines():
-            path, _, deps = line.partition(":")
-            if not path:
-                continue
-            for d in deps.split():
-                index.setdefault(modname(d), []).append(path.strip())
-    return index
+    return modules_from_paths(paths, builtin)
 
 
 def check(blob: bytes) -> int:
