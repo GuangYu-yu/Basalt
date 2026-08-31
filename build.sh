@@ -319,6 +319,8 @@ UKI_FILE_PASS1="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.efi | head -1)"
 UKI_CMDLINE="$(objcopy -O binary --only-section=.cmdline "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
 [[ -n "${UKI_CMDLINE}" ]] || die "从 pass1 UKI 提取 .cmdline 失败（objcopy）"
 info "ukify rescue UKI（只读根入口）..."
+# ukify 不创建输出目录的父目录，缺失时报 FileNotFoundError → 先建目录
+install -d "$(dirname "${STAGED_RESCUE_UKI}")"
 ukify build \
     --linux="${KERNEL_FILE}" \
     --initrd="${INITRD_FILE}" \
