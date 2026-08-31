@@ -301,8 +301,6 @@ mv -f "${EROFS_SPLIT}" "${EROFS_FILE}"
 
 KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
 [[ -n "${KERNEL_FILE}" ]] || die "未找到 pass1 kernel 工件（rescue UKI 原料，${IMAGE_ID}*.vmlinuz）"
-INITRD_FILE="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.initrd 2>/dev/null | head -1)"
-[[ -n "${INITRD_FILE}" ]] || die "未找到 pass1 initrd 工件（rescue UKI 原料）"
 
 # EROFS 种子：pass2 经 CopyFiles=/@os-staging:/@os 写入 @os 子卷
 # （0444 与 70-root.transfer 的 Target Mode= 对齐）
@@ -318,6 +316,12 @@ UKI_FILE_PASS1="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.efi | head -1)"
 [[ -n "${UKI_FILE_PASS1}" ]] || die "未找到 pass1 UKI（cmdline 提取源）"
 UKI_CMDLINE="$(objcopy -O binary --only-section=.cmdline "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
 [[ -n "${UKI_CMDLINE}" ]] || die "从 pass1 UKI 提取 .cmdline 失败（objcopy）"
+# UKI 内实际 initrd = 子镜像 initrd + kernel-modules initrd 的拼接流
+# （SplitArtifacts=initrd 只拆出前者）；rescue UKI 原料与模块门禁工件
+# 一律取 pass1 UKI 的 .initrd PE 段——与主 UKI 同源，消除工件分裂
+INITRD_FILE="${WORK_DIR}/${IMAGE_ID}_${VER}.initrd"
+objcopy -O binary --only-section=.initrd "${UKI_FILE_PASS1}" "${INITRD_FILE}"
+[[ -s "${INITRD_FILE}" ]] || die "从 pass1 UKI 提取 .initrd 失败（objcopy）"
 info "ukify rescue UKI（只读根入口）..."
 # ukify 不创建输出目录的父目录，缺失时报 FileNotFoundError → 先建目录
 install -d "$(dirname "${STAGED_RESCUE_UKI}")"
@@ -382,12 +386,9 @@ latest_raw() {
 BUILT_RAW="$(latest_raw)"
 [[ -n "${BUILT_RAW}" ]] || die "二次构建未产出 raw"
 
-# ── initrd 收集（mkosi SplitArtifacts 拆出的合并 initrd，模块门禁/调试用）──
+# ── initrd 收集（pass1 UKI 的 .initrd PE 段 = UKI 内实际 initrd，模块门禁/调试用）──
 # 不入 BUILD_ARTIFACTS 与 SHA256SUMS：仅模块门禁消费，不入发布清单
-for initrd in "${WORK_DIR}"/${IMAGE_ID}*.initrd; do
-    [[ -e "${initrd}" ]] || continue
-    cp -f "${initrd}" "${OUTPUT_DIR}/"
-done
+cp -f "${INITRD_FILE}" "${OUTPUT_DIR}/"
 
 # ROOT 工件（裸 EROFS 根镜像）：CI 模块门禁第二参数（erofsfuse/loop 读取）
 # 的输入；同 initrd 处理——不入 BUILD_ARTIFACTS 与发布清单

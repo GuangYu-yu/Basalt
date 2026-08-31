@@ -116,10 +116,10 @@ jobs:
           # systemd-ukify：rescue UKI 编排（build.sh 宿主侧 ukify）；
           # systemd-boot-efi 提供 ukify 需要的 PE stub
           # /usr/lib/systemd/boot/efi/linuxx64.efi.stub
-          # erofs-utils + fuse3：模块门禁读取裸 EROFS 根镜像（erofsfuse，
-          # 非 root 门禁步骤；fusermount3 由 fuse3 提供）
+          # erofs-utils/fuse3/erofsfuse：模块门禁读取裸 EROFS 根镜像
+          # （erofsfuse 为独立包，非 root 门禁步骤；fusermount3 由 fuse3 提供）
           sudo apt-get install -y systemd-repart qemu-utils xz-utils \
-            systemd-ukify systemd-boot-efi erofs-utils fuse3 \
+            systemd-ukify systemd-boot-efi erofs-utils erofsfuse fuse3 \
             python3-pip debian-archive-keyring
           sudo python3 -m pip install --break-system-packages \
             https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
