@@ -8,9 +8,12 @@
           缺省跳过 ROOT 断言；需要 root（loop 挂载）或 erofsfuse 读取）
 
 三态契约（与 mkosi.conf 的 KernelInitrdModules=/KernelModules= 对应；此处是
-验证端，二者需同步修改；绝不比较完整模块集合，只做两种判断）：
+验证端，契约定义在 mkosi.conf，本脚本自动派生、不手工同步）：
   required  子集判断：契约集合 ⊆ 工件内模块（.ko 文件或 modules.builtin）
-  forbidden 不相交判断：工件内模块 ∷ 禁用子系统 = ∅
+  forbidden 不相交判断：工件内模块 ∷ 配置排除的子系统 = ∅（forbidden 前缀
+            由 forbidden_from_conf() 从 KernelInitrdModules=/KernelModules=
+            的负向目录条目派生——单一事实，任一排除项因依赖闭包拉回而
+            失效（如 cfg80211）都会被门禁立即暴露）
   其余      allowed：不在契约内的模块不构成失败（依赖闭包合法产物）
 
 契约内容：
@@ -19,7 +22,6 @@
   initrd 平台    ata_piix vmw_pvscsi mptspi mpt3sas hv_vmbus hv_storvsc
                  hv_netvsc xen_blkfront
   root 数据面    nf_conntrack tun veth bridge e1000 r8169
-  forbidden      net/bluetooth/ net/wireless/ drivers/net/wireless/
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
 import os
@@ -45,15 +47,35 @@ REQUIRED_ROOT = {
     "nf_conntrack", "tun", "veth", "bridge", "e1000", "r8169",
 }
 
-# 禁用子系统（路径级判断，命中即违例）
-FORBIDDEN_PATHS = ("net/bluetooth/", "net/wireless/", "drivers/net/wireless/")
-
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
 # Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）
 REQUIRED_UNITS = {
     "usr/lib/systemd/system/initrd-root-overlay.service",
     "usr/lib/systemd/system/initrd-switch-root.service.d/10-overlay.conf",
 }
+
+
+def forbidden_from_conf(conf: Path, setting: str) -> tuple[str, ...]:
+    """从 mkosi.conf 指定设置块提取负向目录条目（去 `-` 前缀）。
+
+    契约单一事实：forbidden = KernelInitrdModules=/KernelModules= 的显式
+    排除项（`-` 前缀目录）。门禁据此验证每个排除项都真实生效——任一
+    排除的子系统因依赖闭包拉回残留模块（如 cfg80211）即失败。
+    解析容忍行内注释、空行与块内缩进注释；顶格新行结束当前块。
+    """
+    lines = conf.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() != setting:
+            continue
+        out = []
+        for raw in lines[i + 1:]:
+            if raw.strip() and not raw[0].isspace():
+                break
+            v = raw.split("#", 1)[0].strip()
+            if v.startswith("-") and v.endswith("/"):
+                out.append(v[1:])
+        return tuple(out)
+    return ()
 
 NEWC_MAGIC = b"070701"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -158,12 +180,13 @@ def builtin_from_blob(blob: bytes, names: list[str]) -> set[str]:
     return builtin
 
 
-def modules_from_paths(paths: set[str], builtin: set[str]) -> tuple[set[str], list[str]]:
+def modules_from_paths(paths: set[str], builtin: set[str],
+                       forbidden: tuple[str, ...]) -> tuple[set[str], list[str]]:
     """三态契约输入：模块名集合（.ko + builtin）与违例路径清单。"""
     kos = {modname(n): n for n in paths
            if re.search(r"usr/lib/modules/[^/]+/.*\.ko(\.(gz|xz|zst))?$", n)}
     violations = sorted(
-        {n for n in paths if any(f in f"/{n}" for f in FORBIDDEN_PATHS)})
+        {n for n in paths if any(f in f"/{n}" for f in forbidden)})
     return set(kos) | builtin, violations
 
 
@@ -203,7 +226,8 @@ def walk_modules(root: str) -> tuple[set[str], set[str]]:
     return paths, builtin
 
 
-def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
+def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
+                       ) -> tuple[set[str], list[str]]:
     """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
 
     需要文件系统访问：root（loop 挂载）或 erofsfuse（非 root）。
@@ -226,16 +250,16 @@ def root_erofs_modules(erofs: Path) -> tuple[set[str], list[str]]:
             unmount = shutil.which("fusermount3") or shutil.which("fusermount")
             subprocess.run([unmount, "-u", mnt], check=True)
     shutil.rmtree(tmp, ignore_errors=True)
-    return modules_from_paths(paths, builtin)
+    return modules_from_paths(paths, builtin, forbidden)
 
 
-def check(blob: bytes) -> int:
+def check(blob: bytes, forbidden: tuple[str, ...]) -> int:
     names = cpio_names(blob)
     paths = set(names)
     builtin = builtin_from_blob(blob, names)
-    modules, forbidden = modules_from_paths(paths, builtin)
+    modules, violations = modules_from_paths(paths, builtin, forbidden)
 
-    missing = check_artifact("initrd", modules, forbidden, REQUIRED_INITRD)
+    missing = check_artifact("initrd", modules, violations, REQUIRED_INITRD)
 
     name_set = set(names)
     for unit in sorted(REQUIRED_UNITS):
@@ -258,15 +282,23 @@ def check(blob: bytes) -> int:
 
 
 def main() -> int:
+    conf = Path(__file__).resolve().parent.parent / "mkosi" / "mkosi.conf"
+    initrd_forbidden = forbidden_from_conf(conf, "KernelInitrdModules=")
+    root_forbidden = forbidden_from_conf(conf, "KernelModules=")
+    # 防御：排除项派生为空 = 配置解析失效，直接失败而非静默放行
+    if not initrd_forbidden or not root_forbidden:
+        sys.exit(f"门禁配置解析失败：mkosi.conf 排除项派生为空 "
+                 f"(initrd={len(initrd_forbidden)}, root={len(root_forbidden)})")
+
     initrd = Path(sys.argv[1])
     blob = decode_initrd(initrd.read_bytes())
-    rc = check(blob)
+    rc = check(blob, initrd_forbidden)
 
     if len(sys.argv) > 2:
         # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
-        root_modules, root_forbidden = root_erofs_modules(Path(sys.argv[2]))
+        root_modules, root_violations = root_erofs_modules(Path(sys.argv[2]), root_forbidden)
         missing = check_artifact("root(EROFS)", root_modules,
-                                 root_forbidden, REQUIRED_ROOT)
+                                 root_violations, REQUIRED_ROOT)
         if missing:
             print(f"[module-gate] FAIL ROOT 缺失/违例：{' '.join(missing)}", file=sys.stderr)
             return 1
