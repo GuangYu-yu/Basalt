@@ -118,8 +118,10 @@ jobs:
           # /usr/lib/systemd/boot/efi/linuxx64.efi.stub
           # erofs-utils/fuse3/erofsfuse：模块门禁读取裸 EROFS 根镜像
           # （erofsfuse 为独立包，非 root 门禁步骤；fusermount3 由 fuse3 提供）
+          # kmod：depmod -e -F 符号完整性门禁（不依赖 runner 隐式安装，
+          # runner 镜像随版本持续更新）
           sudo apt-get install -y systemd-repart qemu-utils xz-utils \
-            systemd-ukify systemd-boot-efi erofs-utils erofsfuse fuse3 \
+            systemd-ukify systemd-boot-efi erofs-utils erofsfuse fuse3 kmod \
             python3-pip debian-archive-keyring
           sudo python3 -m pip install --break-system-packages \
             https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
@@ -192,8 +194,11 @@ jobs:
           ver="$(sed -n 's/^image_version=//p' output/metadata/build-metadata.txt)"
           erofs="output/${IMAGE_ID}_${ver}.erofs"
           [[ -f "${erofs}" ]] || { echo "ROOT 工件缺失: ${erofs}" >&2; exit 1; }
+          # pass1 根分区产物（裸 EROFS）：符号门禁取 /boot/System.map-<kver>
+          root_raw="$(ls "output/${IMAGE_ID}"*.root-x86-64.raw | head -n1)"
+          [[ -f "${root_raw}" ]] || { echo "ROOT 分区工件缺失: ${root_raw}" >&2; exit 1; }
           # 门禁步骤非 root：erofsfuse 路径（loop 挂载需 root，脚本内自动分支）
-          python3 tests/check-initrd-modules.py "${initrd}" "${erofs}"
+          python3 tests/check-initrd-modules.py "${initrd}" "${erofs}" "${root_raw}"
 
       - name: 列出输出文件
         run: ls -lh output/

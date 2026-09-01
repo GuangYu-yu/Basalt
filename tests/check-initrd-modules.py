@@ -363,6 +363,88 @@ def audit_dirs(paths: set[str], label: str) -> None:
     print(f"[module-gate] {label} drivers/ 子目录：{' '.join(drv2)}")
 
 
+def extract_cpio(blob: bytes, dest: Path) -> None:
+    """把合并 cpio 流解包到目录（depmod 需要真实文件树；含 symlink/dir）。"""
+    off = 0
+    while True:
+        off = blob.find(NEWC_MAGIC, off)
+        if off < 0:
+            break
+        hdr = blob[off:off + 110]
+        try:
+            namesize = int(hdr[94:102], 16)
+            filesize = int(hdr[54:62], 16)
+            mode = int(hdr[14:22], 16)
+        except ValueError:
+            off += 1
+            continue
+        name = blob[off + 110:off + 110 + namesize - 1].decode("utf-8", "replace")
+        data_start = (off + 110 + namesize + 3) & ~3
+        body = blob[data_start:data_start + filesize]
+        off = (data_start + filesize + 3) & ~3
+        if name in ("", "TRAILER!!!"):
+            continue
+        target = dest / name.lstrip("/")
+        if mode & 0o170000 == 0o120000:  # symlink
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                target.symlink_to(body.decode("utf-8", "replace"))
+            except OSError:
+                pass
+        elif mode & 0o170000 == 0o040000:  # dir
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+
+
+def kver_from_names(names: list[str]) -> str | None:
+    """从 cpio 名录提取内核版本目录（usr/lib/modules/<kver>/）。"""
+    for n in names:
+        m = re.match(r"usr/lib/modules/([^/]+)/", n)
+        if m:
+            return m.group(1)
+    return None
+
+
+def extract_system_map(root_raw: Path, kver: str, dest: Path) -> bool:
+    """从 pass1 root 分区产物（裸 EROFS）提取 /boot/System.map-<kver>。
+
+    用 dump.erofs --path/--cat（无 FUSE 依赖；erofs-utils 1.9.4 无
+    --extract 参数）。返回是否成功（退出码 0 且产物非空）。
+    """
+    cmd = ["dump.erofs", f"--path=/boot/System.map-{kver}", "--cat",
+           str(root_raw)]
+    with open(dest, "wb") as f:
+        p = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE)
+    return p.returncode == 0 and dest.stat().st_size > 0
+
+
+def check_symbol_closure(blob: bytes, root_raw: Path, kver: str) -> list[str]:
+    """depmod -e -F 符号完整性门禁：initrd 模块集引用的符号必须由
+    模块集自身或内核（System.map）提供，否则启动链加载必然失败。
+
+    mkosi 的 modinfo 闭包不含符号依赖（33514287139 实证：btrfs→libcrc32c
+    需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
+    符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
+    （不解析关键词，depmod 措辞无稳定契约）。
+    """
+    with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
+        root = Path(tmp)
+        extract_cpio(blob, root)
+        smap = root / "System.map"
+        if not extract_system_map(root_raw, kver, smap):
+            return [f"System.map 提取失败：dump.erofs --path=/boot/System.map-{kver}"]
+        p = subprocess.run(
+            ["depmod", "-b", str(root), "-e", "-F", str(smap), kver],
+            capture_output=True, text=True)
+        if p.returncode < 0:
+            return [f"depmod 执行失败（signal {p.returncode}）"]
+        if p.returncode != 0 and not p.stderr.strip():
+            return [f"depmod 退出码 {p.returncode} 且无诊断输出"]
+        return [ln.strip() for ln in p.stderr.splitlines() if ln.strip()]
+
+
 def main() -> int:
     conf = Path(__file__).resolve().parent.parent / "mkosi" / "mkosi.conf"
     initrd_forbidden = forbidden_from_conf(conf, "KernelInitrdModules=")
@@ -377,6 +459,20 @@ def main() -> int:
     initrd = Path(sys.argv[1])
     blob = decode_initrd(initrd.read_bytes())
     rc = check(blob, initrd_forbidden, initrd_retained)
+
+    if len(sys.argv) > 3:
+        # 符号完整性门禁（depmod -e -F）：initrd 模块集引用符号必须自足
+        # （模块集内提供 或 内核导出），补齐 mkosi modinfo 闭包不含符号
+        # 依赖的盲区（33514287139：btrfs 符号依赖 crc32c 遗漏 → 启动失败）
+        kver = kver_from_names(cpio_names(blob))
+        if not kver:
+            sys.exit("initrd 未找到 usr/lib/modules/<kver>，符号门禁无法运行")
+        sym_issues = check_symbol_closure(blob, Path(sys.argv[3]), kver)
+        if sym_issues:
+            print(f"[module-gate] FAIL 符号完整性：{'；'.join(sym_issues[:20])}",
+                  file=sys.stderr)
+            return 1
+        print("[module-gate] symbol closure PASS")
 
     if len(sys.argv) > 2:
         # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
