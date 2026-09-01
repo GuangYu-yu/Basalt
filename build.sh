@@ -137,8 +137,11 @@ MKOSI_ARGS=(
     --image-version    "${VER}"
     --timezone         "${TIMEZONE}"
     --locale           "${LOCALE}"
-    # v26 脚本 sandbox 清洗宿主环境，需显式注入（postinst 的 ld 用户密码用）
+    # v26 脚本 sandbox 清洗宿主环境，需显式注入（postinst 的 ld 用户密码用 +
+    # os-release 注入：IMAGE_ID/IMAGE_VERSION 是 ProtectVersion=%A 契约源）
     --environment      "ROOT_PASSWORD=${ROOT_PASSWORD}"
+    --environment      "IMAGE_ID=${IMAGE_ID}"
+    --environment      "IMAGE_VERSION=${VER}"
 )
 # UKI 自描述根（文件轮转契约；mkosi CLI 的 KernelCommandLine 为追加语义，
 # 基础行见 mkosi.conf）：

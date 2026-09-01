@@ -28,3 +28,11 @@ ln -sfn /var/lib/landscape /root/.landscape-router
 # （sysupdate-reboot.timer 不启用，重启时机由部署方决定）；
 # resolved/NetworkManager disable 防第二网络栈。
 # 分区/文件系统扩容由 initrd 内 systemd-repart + x-systemd.growfs 完成
+
+# ProtectVersion=%A 契约（build.sh 的 UKI .osrel 断言同源）：mkosi 只把版本
+# 作为 $IMAGE_VERSION 环境变量提供，不自动写入 os-release；ukify 的 .osrel
+# 段取自镜像 /usr/lib/os-release → 此处显式注入（IMAGE_ID/IMAGE_VERSION 由
+# build.sh 经 --environment 显式注入，见 MKOSI_ARGS）。/etc/os-release 是指向
+# 本文件的 symlink（Debian 布局），运行期 %A 展开与构建期断言同源命中。
+sed -i "/^IMAGE_ID=/d;/^IMAGE_VERSION=/d" /usr/lib/os-release
+printf 'IMAGE_ID=%s\nIMAGE_VERSION=%s\n' "${IMAGE_ID}" "${IMAGE_VERSION}" >> /usr/lib/os-release
