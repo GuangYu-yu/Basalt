@@ -420,20 +420,21 @@ def extract_system_map(root_raw: Path, kver: str, dest: Path) -> bool:
     return p.returncode == 0 and dest.stat().st_size > 0
 
 
-def check_symbol_closure(blob: bytes, root_raw: Path, kver: str) -> list[str]:
+def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
     """depmod -e -F 符号完整性门禁：initrd 模块集引用的符号必须由
     模块集自身或内核（System.map）提供，否则启动链加载必然失败。
 
     mkosi 的 modinfo 闭包不含符号依赖（33514287139 实证：btrfs→libcrc32c
     需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
     符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
-    （不解析关键词，depmod 措辞无稳定契约）。
+    （不解析关键词，depmod 措辞无稳定契约）。System.map 取自根镜像
+    EROFS 的 /boot/System.map-<kver>（linux-image 包安装到 /boot）。
     """
     with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
         root = Path(tmp)
         extract_cpio(blob, root)
         smap = root / "System.map"
-        if not extract_system_map(root_raw, kver, smap):
+        if not extract_system_map(erofs, kver, smap):
             return [f"System.map 提取失败：dump.erofs --path=/boot/System.map-{kver}"]
         p = subprocess.run(
             ["depmod", "-b", str(root), "-e", "-F", str(smap), kver],
@@ -460,24 +461,24 @@ def main() -> int:
     blob = decode_initrd(initrd.read_bytes())
     rc = check(blob, initrd_forbidden, initrd_retained)
 
-    if len(sys.argv) > 3:
+    if len(sys.argv) > 2:
+        erofs = Path(sys.argv[2])
         # 符号完整性门禁（depmod -e -F）：initrd 模块集引用符号必须自足
         # （模块集内提供 或 内核导出），补齐 mkosi modinfo 闭包不含符号
         # 依赖的盲区（33514287139：btrfs 符号依赖 crc32c 遗漏 → 启动失败）
         kver = kver_from_names(cpio_names(blob))
         if not kver:
             sys.exit("initrd 未找到 usr/lib/modules/<kver>，符号门禁无法运行")
-        sym_issues = check_symbol_closure(blob, Path(sys.argv[3]), kver)
+        sym_issues = check_symbol_closure(blob, erofs, kver)
         if sym_issues:
             print(f"[module-gate] FAIL 符号完整性：{'；'.join(sym_issues[:20])}",
                   file=sys.stderr)
             return 1
         print("[module-gate] symbol closure PASS")
 
-    if len(sys.argv) > 2:
         # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
         root_modules, root_violations, root_paths = \
-            root_erofs_modules(Path(sys.argv[2]), root_forbidden)
+            root_erofs_modules(erofs, root_forbidden)
         missing = check_artifact("root(EROFS)", root_modules,
                                  root_violations, REQUIRED_ROOT)
         for r in root_retained:
