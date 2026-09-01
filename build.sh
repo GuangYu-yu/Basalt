@@ -367,13 +367,15 @@ esp_target=$(( uki_bytes * ( INSTANCES_MAX + 1 ) + rescue_bytes ))
 (( esp_target < ESP_MIN_BYTES )) && esp_target=${ESP_MIN_BYTES}
 esp_target=$(( (esp_target + MB - 1) / MB * MB ))   # 上取整 MiB
 
-# 渲染 1/3：构建侧 ESP 精确尺寸（只拷 /efi——systemd-boot + UKI + loader；
-# /boot 的 Debian 传统内核文件与 UKI 引导无关，不入 ESP）
+# 渲染 1/3：构建侧 ESP 精确尺寸。两源合并：/boot/EFI（主 UKI，mkosi
+# 安装位）+ /efi（systemd-boot + rescue + loader）；/boot 根的 Debian
+# 传统内核文件（vmlinuz/System.map/config）与 UKI 引导无关，不入 ESP。
 cat > "${REPART_DIR}/10-esp.conf" <<EOF
 [Partition]
 Type=esp
 Label=ESP
 Format=vfat
+CopyFiles=/boot/EFI:/EFI
 CopyFiles=/efi:/
 SizeMinBytes=${esp_target}
 SizeMaxBytes=${esp_target}

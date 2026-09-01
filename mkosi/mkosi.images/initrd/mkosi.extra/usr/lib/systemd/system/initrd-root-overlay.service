@@ -26,6 +26,9 @@ After=sysroot.mount systemd-repart.service dev-disk-by\x2dpartlabel-var.device
 # basalt.ro=1（rescue UKI）：跳过 overlay，双 move 得纯只读 EROFS 根
 #   move 前须 make-private：/sysroot（@os）与 /run/root-image 传播属性为
 #   shared，mount --move 跨传播域移动不被支持
+
+[Service]
+Type=oneshot
 # 单行命令：unit 语法引号不可跨行（多行引号会被判 Unbalanced quoting，
 # 整个 unit 拒载）
 # loop 挂载带重试：首启 systemd-repart 扩分区表触发 udev 重枚举，单发
