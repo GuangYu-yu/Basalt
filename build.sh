@@ -142,7 +142,10 @@ MKOSI_ARGS=(
 #     同版本同源（任意可启动 UKI 的镜像必然同版本存在）
 MKOSI_ARGS+=(
     --kernel-command-line "root=/dev/disk/by-partlabel/var"
-    --kernel-command-line "rootflags=subvol=@os,compress=zstd:1,noatime"
+    # 显式 rw：systemd 对无 rw/ro 的 rootflags 实测挂载为 ro（33537131152 取证：
+    # @os 子卷 ro=false 且 cmdline 无 ro，但 /sysroot 挂载含 ro → overlay upper
+    # 只读 → 组装失败）。@os 是 overlay upper/images 宿主，必须可写。
+    --kernel-command-line "rootflags=subvol=@os,compress=zstd:1,noatime,rw"
     --kernel-command-line "basalt.image=${IMAGE_ID}_${VER}.erofs"
 )
 # 网卡命名对齐：configs/landscape_init.toml 拓扑声明 eth0/eth1，预测性命名
