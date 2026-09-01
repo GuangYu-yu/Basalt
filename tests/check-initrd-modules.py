@@ -435,7 +435,15 @@ def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str
             dest.write_bytes(p.read_bytes())
     except subprocess.CalledProcessError as e:
         return False, f"EROFS 挂载失败（{' '.join(e.cmd)}）：{(e.stderr or b'').decode('utf-8', 'replace').strip()[:200]}"
-    return True, ""
+    # 副本完整性校验：非空 + 标准 System.map 行格式（地址 类型 符号）
+    size = dest.stat().st_size
+    lines = dest.read_text("utf-8", "replace").splitlines()
+    if size == 0 or not lines:
+        return False, f"{src} 副本为空（{size}B）"
+    first = lines[0].split()
+    if len(first) != 3 or not re.fullmatch(r"[0-9a-fA-F]{8,16}", first[0]):
+        return False, f"{src} 副本非标准 System.map 格式（{size}B，首行：{lines[0][:80]!r}）"
+    return True, f"{size}B/{len(lines)}行"
 
 
 def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
@@ -456,6 +464,7 @@ def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
         ok, detail = extract_system_map(erofs, kver, smap)
         if not ok:
             return [f"System.map 不可用：{detail}"]
+        print(f"[module-gate] System.map 副本：{detail}")
         p = subprocess.run(
             ["depmod", "-b", str(root), "-e", "-F", str(smap), kver],
             capture_output=True, text=True)
@@ -463,7 +472,17 @@ def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
             return [f"depmod 执行失败（signal {p.returncode}）"]
         if p.returncode != 0 and not p.stderr.strip():
             return [f"depmod 退出码 {p.returncode} 且无诊断输出"]
-        return [ln.strip() for ln in p.stderr.splitlines() if ln.strip()]
+        issues = [ln.strip() for ln in p.stderr.splitlines() if ln.strip()]
+        # 诊断统计：unknown 符号/涉及模块去重，区分「副本或工具问题」与真实符号缺失
+        unknown = sorted({ln.rsplit(" ", 1)[-1] for ln in issues
+                          if "needs unknown symbol" in ln})
+        mods = sorted({ln.split("/kernel/")[-1].split(".ko", 1)[0] for ln in issues
+                       if "needs unknown symbol" in ln})
+        print(f"[module-gate] depmod 诊断 {len(issues)} 条；"
+              f"unknown 符号 {len(unknown)} 个；涉及模块 {len(mods)} 个")
+        print(f"[module-gate] unknown 符号样本：{'、'.join(unknown[:15])}")
+        print(f"[module-gate] 涉及模块样本：{'、'.join(mods[:15])}")
+        return issues
 
 
 def main() -> int:
