@@ -407,17 +407,33 @@ def kver_from_names(names: list[str]) -> str | None:
     return None
 
 
-def extract_system_map(root_raw: Path, kver: str, dest: Path) -> bool:
-    """从 pass1 root 分区产物（裸 EROFS）提取 /boot/System.map-<kver>。
+def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str]:
+    """从根 EROFS 提取 System.map：先探测后提取，不假设路径存在。
 
-    用 dump.erofs --path/--cat（无 FUSE 依赖；erofs-utils 1.9.4 无
-    --extract 参数）。返回是否成功（退出码 0 且产物非空）。
+    探测：dump.erofs --ls --path=/boot，命中 System.map-<kver> 才 --cat；
+    不存在即明确 FAIL（不猜测其它路径）。--cat 失败只依赖非零退出码
+    判定，不匹配 stderr 文本（dump.erofs 措辞无稳定契约）。
     """
-    cmd = ["dump.erofs", f"--path=/boot/System.map-{kver}", "--cat",
-           str(root_raw)]
-    with open(dest, "wb") as f:
-        p = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE)
-    return p.returncode == 0 and dest.stat().st_size > 0
+    ls = subprocess.run(
+        ["dump.erofs", "--ls", "--path=/boot", str(root_raw)],
+        capture_output=True, text=True)
+    if ls.returncode != 0:
+        detail = (ls.stderr or ls.stdout or "").strip()
+        return False, f"dump.erofs --ls /boot 失败（exit {ls.returncode}）：{detail[:200]}"
+    entries = []
+    for line in ls.stdout.splitlines():
+        name = line.split()[-1].rsplit("/", 1)[-1]
+        entries.append(name)
+        if name == f"System.map-{kver}":
+            with open(dest, "wb") as f:
+                p = subprocess.run(
+                    ["dump.erofs", f"--path=/boot/{name}", "--cat", str(root_raw)],
+                    stdout=f, stderr=subprocess.PIPE)
+            if p.returncode != 0 or dest.stat().st_size == 0:
+                detail = (p.stderr or b"").decode("utf-8", "replace").strip()
+                return False, f"--cat /boot/{name} 失败（exit {p.returncode}）：{detail[:200]}"
+            return True, ""
+    return False, "未找到 System.map-<kver>；/boot 条目：" + "、".join(entries[:30])
 
 
 def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
@@ -427,15 +443,17 @@ def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
     mkosi 的 modinfo 闭包不含符号依赖（33514287139 实证：btrfs→libcrc32c
     需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
     符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
-    （不解析关键词，depmod 措辞无稳定契约）。System.map 取自根镜像
-    EROFS 的 /boot/System.map-<kver>（linux-image 包安装到 /boot）。
+    （不解析关键词，depmod 措辞无稳定契约）。System.map 从根镜像
+    EROFS 提取：先 dump.erofs --ls 探测 /boot，命中 System.map-<kver>
+    才 --cat，不存在即明确 FAIL（不假设 linux-image 一定装到 /boot）。
     """
     with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
         root = Path(tmp)
         extract_cpio(blob, root)
         smap = root / "System.map"
-        if not extract_system_map(erofs, kver, smap):
-            return [f"System.map 提取失败：dump.erofs --path=/boot/System.map-{kver}"]
+        ok, detail = extract_system_map(erofs, kver, smap)
+        if not ok:
+            return [f"System.map 不可用：{detail}"]
         p = subprocess.run(
             ["depmod", "-b", str(root), "-e", "-F", str(smap), kver],
             capture_output=True, text=True)
