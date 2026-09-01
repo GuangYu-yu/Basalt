@@ -120,6 +120,15 @@ STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
 # 会被本次构建的 CopyFiles 静默烘焙进镜像
 rm -f "${STAGED_CONFIG}" "${STAGED_WEBAPP}" "${STAGED_STATIC}"
 
+# 工厂拓扑烘焙（main 同源）：CI 经 EFFECTIVE_CONFIG_PATH 注入（workflow 设置
+# configs/landscape_init.toml），无配置时跳过——缺此步骤 landscape 首启无
+# /usr/share/landscape/landscape_init.toml → 走 --auto 不配数据面 → eth0 down
+# → bootstrap 通道不通（CI 33546790127 readiness dump 实证）
+if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
+    [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
+    install -Dm644 "${EFFECTIVE_CONFIG_PATH}" "${STAGED_CONFIG}"
+fi
+
 # ── mkosi 参数拼装 ──
 MKOSI_ARGS=(
     -C "${SCRIPT_DIR}/mkosi"
