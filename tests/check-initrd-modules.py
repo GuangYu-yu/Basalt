@@ -24,6 +24,7 @@
   root 数据面    nf_conntrack tun veth bridge e1000 r8169
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
+import contextlib
 import os
 import re
 import shutil
@@ -283,12 +284,12 @@ def walk_modules(root: str) -> tuple[set[str], set[str]]:
     return paths, builtin
 
 
-def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
-                       ) -> tuple[set[str], list[str], set[str]]:
-    """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
+@contextlib.contextmanager
+def mounted_erofs(erofs: Path):
+    """挂载裸 EROFS 供文件读取：root（loop 挂载）或 erofsfuse（非 root）。
 
-    需要文件系统访问：root（loop 挂载）或 erofsfuse（非 root）。
-    返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
+    dump.erofs --cat 在 CI erofs-utils 版本不存在（exit 234），单文件
+    提取弃用；统一走挂载后读文件系统真实内容。
     """
     tmp = tempfile.mkdtemp(prefix="basalt-gate-")
     mnt = os.path.join(tmp, "root")
@@ -300,14 +301,24 @@ def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
             subprocess.run(["erofsfuse", str(erofs), mnt], check=True)
         else:
             sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
-        paths, builtin = walk_modules(mnt)
+        yield mnt
     finally:
         if os.geteuid() == 0:
             subprocess.run(["umount", mnt], check=True)
         else:
             unmount = shutil.which("fusermount3") or shutil.which("fusermount")
             subprocess.run([unmount, "-u", mnt], check=True)
-    shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
+                       ) -> tuple[set[str], list[str], set[str]]:
+    """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
+
+    返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
+    """
+    with mounted_erofs(erofs) as mnt:
+        paths, builtin = walk_modules(mnt)
     modules, violations = modules_from_paths(paths, builtin, forbidden)
     return modules, violations, paths
 
@@ -408,21 +419,21 @@ def kver_from_names(names: list[str]) -> str | None:
 
 
 def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str]:
-    """从根 EROFS 提取 System.map：/usr/lib/modules/<kver>/System.map。
+    """从根 EROFS 提取 System.map：挂载后读 /usr/lib/modules/<kver>/System.map。
 
     mkosi 构建期把 System.map 放该路径（initrd 子镜像 RemoveFiles=
     /usr/lib/modules/*/System.map 为证），根镜像无对应删除规则 → 应保留。
-    以提取命令作事实验证：存在即 --cat 使用，失败即明确 FAIL；
-    只依赖非零退出码/空产物判定，不匹配 stderr 文本。
+    挂载读取为事实验证：存在即拷贝使用，缺失即明确 FAIL。
     """
-    path = f"/usr/lib/modules/{kver}/System.map"
-    with open(dest, "wb") as f:
-        p = subprocess.run(
-            ["dump.erofs", f"--path={path}", "--cat", str(root_raw)],
-            stdout=f, stderr=subprocess.PIPE)
-    if p.returncode != 0 or dest.stat().st_size == 0:
-        detail = (p.stderr or b"").decode("utf-8", "replace").strip()
-        return False, f"--cat {path} 失败（exit {p.returncode}）：{detail[:200]}"
+    src = f"/usr/lib/modules/{kver}/System.map"
+    try:
+        with mounted_erofs(root_raw) as mnt:
+            p = Path(mnt) / "usr" / "lib" / "modules" / kver / "System.map"
+            if not p.is_file():
+                return False, f"{src} 不存在于根 EROFS"
+            dest.write_bytes(p.read_bytes())
+    except subprocess.CalledProcessError as e:
+        return False, f"EROFS 挂载失败（{' '.join(e.cmd)}）：{(e.stderr or b'').decode('utf-8', 'replace').strip()[:200]}"
     return True, ""
 
 
@@ -434,8 +445,8 @@ def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
     需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
     符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
     （不解析关键词，depmod 措辞无稳定契约）。System.map 从根镜像
-    EROFS 提取：--cat /usr/lib/modules/<kver>/System.map（mkosi 构建期
-    放置路径），失败即明确 FAIL（事实验证，不做 SplitArtifacts 假设）。
+    EROFS 提取：挂载后读 /usr/lib/modules/<kver>/System.map（mkosi 构建期
+    放置路径），缺失即明确 FAIL（事实验证，不做 SplitArtifacts 假设）。
     """
     with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
         root = Path(tmp)
