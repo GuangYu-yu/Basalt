@@ -380,7 +380,10 @@ EOF
 rm -f "${PASS1_ROOT_CONF}"
 
 # 渲染 3/3：var 增补种子 CopyFiles（.orig 备份由通用暂存-恢复机制承载）
+# 前导空行：防御目标文件末尾无换行时注释被拼接（CI 33544443433 实证
+# Minimize=guess# build.sh pass2 渲染 解析失败）
 cat >> "${REPART_DIR}/30-var.conf" <<EOF
+
 # build.sh pass2 渲染：EROFS 种子入 @images
 CopyFiles=/@os-staging:/@images
 EOF
