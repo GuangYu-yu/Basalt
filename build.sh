@@ -308,8 +308,11 @@ KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
 [[ -n "${KERNEL_FILE}" ]] || die "未找到 pass1 kernel 工件（rescue UKI 原料，${IMAGE_ID}*.vmlinuz）"
 
 # EROFS 种子：pass2 经 CopyFiles=/@os-staging:/@os 写入 @os 子卷
-# （0444 与 70-root.transfer 的 Target Mode= 对齐）
-install -D -m 0444 "${EROFS_FILE}" "${STAGED_OS_DIR}/${IMAGE_ID}_${VER}.erofs"
+# （0444 与 70-root.transfer 的 Target Mode= 对齐）。路径契约：images/
+# 子目录 = 70-root.transfer Target /var/lib/basalt/images（@os 子卷同源），
+# initrd-root-overlay 从 /sysroot/images/ 查找（33532141777 实证：种子落
+# @os 根导致 loop mount ENOENT ×15 → emergency）
+install -D -m 0444 "${EROFS_FILE}" "${STAGED_OS_DIR}/images/${IMAGE_ID}_${VER}.erofs"
 
 # ── rescue UKI（Phase 1：同 kernel+initrd，cmdline 追加只读根分支）──
 # 手工 ukify 独立 UKI 是必要路线：mkosi v26 UnifiedKernelImageProfiles=
