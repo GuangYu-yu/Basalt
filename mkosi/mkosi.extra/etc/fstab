@@ -2,7 +2,7 @@
 # /usr/lib/sysupdate.d/80-uki.transfer 的 Path= 前提（单一事实派生）。
 PARTLABEL=ESP /efi vfat umask=0077,noatime 0 0
 # @os 运行期挂载点：overlay upper/work 层的宿主（initrd 期同卷挂 /sysroot 组装 overlay）。
-# 显式 rw：与 build.sh rootflags 同源（33537131152 取证：无 rw/ro 时实测挂载 ro）。
+# 显式 rw：与 build.sh rootflags 同源（systemd 缺 rw/ro 时挂载为 ro）。
 PARTLABEL=var /var/lib/basalt btrfs subvol=@os,compress=zstd:1,noatime,rw 0 0
 # @images：版本化 EROFS 镜像，默认只读（挂载层保护，误删不可能）；
 # 写入仅经 systemd-sysupdate.service 的 rw wrapper 窗口
@@ -12,7 +12,7 @@ PARTLABEL=var /var/lib/basalt/images btrfs subvol=@images,ro,compress=zstd:1,noa
 # /var（@data）：手写 PARTLABEL=var（与其余条目统一），刻意不用 repart
 # MountPoint= 自动生成的 fs UUID 段——两阶段构建（pass1 EROFS 固化 fstab /
 # pass2 最终盘 mkfs）产生两次独立 fs UUID，fstab 固化值与盘上实际失配导致
-# fsck 等不到设备（CI 33543082784 实证）。growfs 由本条目 x-systemd.growfs
+# fsck 等不到设备。growfs 由本条目 x-systemd.growfs
 # 触发，分区级 grow 由 initrd 92-var-grow.conf 承担。
 PARTLABEL=var /var btrfs subvol=@data,compress=zstd:1,noatime,x-systemd.growfs 0 0
 # / 的 overlay 组装在 initrd 完成（见 mkosi.images/initrd/.../initrd-root-overlay.service）：

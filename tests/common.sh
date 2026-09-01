@@ -893,9 +893,9 @@ landscape_router_dump_diagnostics() {
     fi
 }
 
-# CI 外层硬超时以 SIGTERM 杀进程：failure 分支未执行 → 证据不落盘（run
-# 33295741103 实证）。取证挂在 TERM 上，任意被杀时点先落盘诊断再交给
-# EXIT trap 清理；文件路径未初始化（preflight 前）则跳过
+# CI 外层硬超时以 SIGTERM 杀进程：failure 分支未执行 → 证据不落盘。
+# 取证挂在 TERM 上，任意被杀时点先落盘诊断再交给 EXIT trap 清理；
+# 文件路径未初始化（preflight 前）则跳过
 landscape_dump_diagnostics_on_term() {
     if [[ -n "${LANDSCAPE_ROUTER_DIAGNOSTICS_FILE:-}" ]]; then
         landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"

@@ -130,7 +130,7 @@ mkosi/
   mkosi.images/initrd/   initrd 子镜像（overlay 组装 + 首启扩容定义）
   mkosi.extra/           镜像内文件（fstab、服务、设备侧 sysupdate 定义）
   mkosi.postinst.chroot  chroot 内安装动作
-  mkosi.finalize         宿主侧收尾（machine-id 清理、strip、渲染）
+  mkosi.finalize         宿主侧收尾（machine-id 清理、strip、禁焙扫描）
 tests/                   readiness / dataplane / 模块门禁
 ```
 

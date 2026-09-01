@@ -192,7 +192,7 @@ start_client() {
 
     info "Starting client VM (CirrOS)..."
     # CirrOS 0.6.2 直启：cirros-ds 只解析 cmdline 的 dslist=（不认现代
-    # cloud-init 的 ds=，源码实证 sbin/cirros-ds）。默认 DATASOURCE_LIST 为
+    # cloud-init 的 ds=）。默认 DATASOURCE_LIST 为
     # "nocloud configdrive ec2"，net 模式会落 ec2 → 探测 169.254 ×20 ≈44s
     # 阻塞；dslist=nocloud,none：nocloud 无 seed（SEED_PRE/POST_D 空）后由
     # none（always found）兜底，跳过 ec2，client 秒级就绪

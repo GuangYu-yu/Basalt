@@ -78,8 +78,7 @@ require curl     curl
 require python3  python3
 # pass1 UKI 的 .cmdline PE 段提取（rescue UKI cmdline 唯一事实源）
 require objcopy binutils
-# rescue UKI（basalt.ro=1 只读根入口）手工编排；ToolsTree 内 ukify 的宿主侧
-# 调用路径待实测（V6），宿主 ukify 为确定路径
+# rescue UKI（basalt.ro=1 只读根入口）手工编排，用宿主侧 ukify
 require ukify    systemd-ukify
 # ukify 默认 PE stub（Linux UKI 段容器）：systemd-boot-efi 包提供；
 # 缺失时报 FileNotFoundError 而非提示 → 构建期显式断言替代 traceback
@@ -120,10 +119,10 @@ STAGED_STATIC="${SCRIPT_DIR}/mkosi/mkosi.extra/root/static.zip"
 # 会被本次构建的 CopyFiles 静默烘焙进镜像
 rm -f "${STAGED_CONFIG}" "${STAGED_WEBAPP}" "${STAGED_STATIC}"
 
-# 工厂拓扑烘焙（main 同源）：CI 经 EFFECTIVE_CONFIG_PATH 注入（workflow 设置
+# 工厂拓扑烘焙：CI 经 EFFECTIVE_CONFIG_PATH 注入（workflow 设置
 # configs/landscape_init.toml），无配置时跳过——缺此步骤 landscape 首启无
 # /usr/share/landscape/landscape_init.toml → 走 --auto 不配数据面 → eth0 down
-# → bootstrap 通道不通（CI 33546790127 readiness dump 实证）
+# → bootstrap 通道不通
 if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
     [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
     install -Dm644 "${EFFECTIVE_CONFIG_PATH}" "${STAGED_CONFIG}"
@@ -152,9 +151,8 @@ MKOSI_ARGS=(
 #     同版本同源（任意可启动 UKI 的镜像必然同版本存在）
 MKOSI_ARGS+=(
     --kernel-command-line "root=/dev/disk/by-partlabel/var"
-    # 显式 rw：systemd 对无 rw/ro 的 rootflags 实测挂载为 ro（33537131152 取证：
-    # @os 子卷 ro=false 且 cmdline 无 ro，但 /sysroot 挂载含 ro → overlay upper
-    # 只读 → 组装失败）。@os 是 overlay upper 宿主，必须可写。
+    # 显式 rw：systemd 缺 rw/ro 时挂载为 ro，@os 是 overlay upper 宿主必须可写
+    # （与 fstab @os 条目同源）
     --kernel-command-line "rootflags=subvol=@os,compress=zstd:1,noatime,rw"
     --kernel-command-line "basalt.image=${IMAGE_ID}_${VER}.erofs"
 )
@@ -169,9 +167,6 @@ if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
         --kernel-command-line "systemd.log_target=console"
         --kernel-command-line "udev.log_level=debug"
         --kernel-command-line "systemd.journald.forward_to_console=1"
-        # 触发 diag-dump.service（ConditionKernelCommandLine=diag）：
-        # 运行期网络/端口/应用日志快照上串口
-        --kernel-command-line "diag"
     )
 fi
 # APT 镜像直通（mkosi 原生 --mirror，单源无 failover 候选链）
@@ -298,8 +293,8 @@ fi
 # 扩展名恒为 .raw；全盘产物弃用）。partitions 由 CLI 追加（主配置
 # SplitArtifacts 保持 uki,initrd，终盘不拆分区工件）。
 # Minimize=guess 必需：repart 按实测内容（CopyFiles 填充后的 erofs）
-# 定分区尺寸；缺省时该分区不参与尺寸推导，实测被分到 4K →
-# "contents don't fit"（CI run 33337902596 实证）
+# 定分区尺寸；缺省时该分区不参与尺寸推导，内容会被分到极小尺寸 →
+# "contents don't fit"
 cat > "${PASS1_ROOT_CONF}" <<EOF
 [Partition]
 Type=root
@@ -324,8 +319,8 @@ KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
 # EROFS 种子：pass2 经 CopyFiles=/@os-staging:/@images 写入 @images 子卷根
 # （0444 与 70-root.transfer 的 Target Mode= 对齐）。路径契约：@images 子卷根
 # = 70-root.transfer Target /var/lib/basalt/images（fstab @images 条目同源）
-# = initrd-root-overlay 的 /sysroot/images（@images 子卷挂载点；33532141777
-# 实证：种子不在查找路径根导致 loop mount ENOENT ×15 → emergency）
+# = initrd-root-overlay 的 /sysroot/images（@images 子卷挂载点；种子不在
+# 查找路径根会 loop mount ENOENT → emergency）
 install -D -m 0444 "${EROFS_FILE}" "${STAGED_OS_DIR}/${IMAGE_ID}_${VER}.erofs"
 
 # ── rescue UKI（Phase 1：同 kernel+initrd，cmdline 追加只读根分支）──
@@ -389,8 +384,7 @@ EOF
 rm -f "${PASS1_ROOT_CONF}"
 
 # 渲染 3/3：var 增补种子 CopyFiles（.orig 备份由通用暂存-恢复机制承载）
-# 前导空行：防御目标文件末尾无换行时注释被拼接（CI 33544443433 实证
-# Minimize=guess# build.sh pass2 渲染 解析失败）
+# 前导空行：防御目标文件末尾无换行时注释被拼接
 cat >> "${REPART_DIR}/30-var.conf" <<EOF
 
 # build.sh pass2 渲染：EROFS 种子入 @images

@@ -5,7 +5,7 @@
 # 出的 EROFS 根镜像安装到本机/测试机的 /var/lib/basalt/images。
 # 与设备侧（mkosi.extra/usr/lib/sysupdate.d/70-root.transfer）同一
 # regular-file 目标模型；Source 用 regular-file（本地文件源，sysupdate.d(5)
-# 合法源类型；旧 Type=file 非文档列举类型，一并修正）。
+# 合法源类型）。
 # 本地实测路径：构建后
 #   systemd-sysupdate --transfer-source=<构建输出目录> update
 # （目标机 @images 默认 ro：先 mount -o remount,rw /var/lib/basalt/images，
