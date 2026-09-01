@@ -9,8 +9,12 @@ PARTLABEL=var /var/lib/basalt btrfs subvol=@os,compress=zstd:1,noatime,rw 0 0
 # （usr/lib/systemd/system/systemd-sysupdate.service.d/10-images-rw.conf）。
 # 手动 sysupdate update/vacuum 须先 mount -o remount,rw 本挂载点。
 PARTLABEL=var /var/lib/basalt/images btrfs subvol=@images,ro,compress=zstd:1,noatime 0 0
-# /var（@data）条目由 mkosi.repart/30-var.conf 的 MountPoint= 自动生成（勿在此重复）：
-#   /var:"subvol=@data,compress=zstd:1,noatime,x-systemd.growfs"
+# /var（@data）：手写 PARTLABEL=var（与其余条目统一），刻意不用 repart
+# MountPoint= 自动生成的 fs UUID 段——两阶段构建（pass1 EROFS 固化 fstab /
+# pass2 最终盘 mkfs）产生两次独立 fs UUID，fstab 固化值与盘上实际失配导致
+# fsck 等不到设备（CI 33543082784 实证）。growfs 由本条目 x-systemd.growfs
+# 触发，分区级 grow 由 initrd 92-var-grow.conf 承担。
+PARTLABEL=var /var btrfs subvol=@data,compress=zstd:1,noatime,x-systemd.growfs 0 0
 # / 的 overlay 组装在 initrd 完成（见 mkosi.images/initrd/.../initrd-root-overlay.service）：
 #   fstab-generator 对 / 只做 remount 语义，真实根阶段无法换 fstype ——
 #   此处刻意无 / 条目（systemd-remount-fs 因此对 overlay 根零操作，干净）。
