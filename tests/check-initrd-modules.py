@@ -422,6 +422,8 @@ def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str
         return False, f"dump.erofs --ls /boot 失败（exit {ls.returncode}）：{detail[:200]}"
     entries = []
     for line in ls.stdout.splitlines():
+        if not line.strip():
+            continue
         name = line.split()[-1].rsplit("/", 1)[-1]
         entries.append(name)
         if name == f"System.map-{kver}":
