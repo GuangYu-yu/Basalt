@@ -88,14 +88,11 @@ auto_overlay_root_check() {
     # mkosi 管线契约（文件轮转）：/ 为全根 overlay（lower=@images 子卷内
     # 版本化 EROFS 文件 loop 只读挂载，upper/work=btrfs @os overlay/）。
     # overlay 组装失败进 initrd emergency（组装服务无回退分支），
-    # rescue UKI（basalt.ro=1）的 erofs 形态不经本检查路径。
+    # 只读 EROFS 根继续启动仅 rescue UKI（basalt.ro=1）形态成立——
+    # 本测试路径下 / 非 overlay 即组装失败，必须判 FAIL。
     local fstype=""
     fstype="$(guest_run "findmnt -n -o FSTYPE /" 2>/dev/null || true)"
-    case "$fstype" in
-        overlay) return 0 ;;
-        erofs)   echo "  (warn: / 为只读根，overlay 未挂载 —— nofail 回退生效)" ; return 0 ;;
-        *)       return 1 ;;
-    esac
+    [[ "$fstype" == "overlay" ]]
 }
 
 run_smoke_checks() {
@@ -151,7 +148,11 @@ run_smoke_checks() {
         run_skip "Docker image is functional" "Docker not expected for include_docker=${LANDSCAPE_TEST_INCLUDE_DOCKER:-unknown}"
     fi
 
-    run_check "Root writable (overlay; read-only fallback allowed)" auto_overlay_root_check
+    run_check "Root assembled as overlayfs" auto_overlay_root_check
+    # ProtectVersion=%A 运行期契约：sysupdate vacuum 按 /etc/os-release 的
+    # IMAGE_VERSION= 保护当前版本（构建期 UKI .osrel 断言的 guest 侧兜底）
+    run_check "IMAGE_VERSION contract in /etc/os-release" \
+        guest_run "grep -q '^IMAGE_VERSION=' /etc/os-release"
 
     echo ""
     echo "============================================================"

@@ -1,0 +1,12 @@
+# 行尾规范：仓库在 Windows 侧编辑、Linux（容器/CI）侧构建执行。
+# mkosi 构建脚本遇 CRLF 即 shebang 解析失败（'sh\r' not found，
+# systemd/mkosi#4153 同根因），故强制 LF。
+* text=auto eol=lf
+
+# 二进制产物不参与行尾转换
+*.png binary
+*.jpg binary
+*.img binary
+*.efi binary
+*.xz binary
+*.zip binary

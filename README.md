@@ -17,8 +17,10 @@
 
 ## 环境要求
 
-- Linux 宿主（mkosi 管线不支持 Windows/macOS 原生运行）
-- `mkosi >= 26`、`qemu-img`、`xz`、`python3`、`curl`、`ukify`（systemd-ukify）+ PE stub（systemd-boot-efi）、`objcopy`（binutils）、`sfdisk`（util-linux）
+- Linux 宿主 + Docker（构建流程完全容器化；mkosi 需 root 执行 mount/loop/chroot，容器必须 `--privileged` 运行）
+- 测试套件（QEMU）仍在宿主执行，依赖 `qemu-system-x86`、`ovmf`、`sshpass`、`socat`、`jq` 等（见 `tests/` 各脚本 preflight）
+
+原生构建（不依赖 Docker）需自行满足：`mkosi >= 26`、`qemu-img`、`xz`、`python3`、`curl`、`ukify`（systemd-ukify）+ PE stub（systemd-boot-efi）、`objcopy`（binutils）：
 
 ```bash
 sudo apt install mkosi qemu-utils xz-utils python3 curl \
@@ -29,6 +31,17 @@ python3 -m pip install --break-system-packages \
 ```
 
 ## 快速开始
+
+### 容器化构建（推荐）
+
+```bash
+docker build -t basalt-builder .
+docker run --rm --privileged -v "${PWD}:/src" -w /src basalt-builder ./build.sh
+```
+
+容器以 root 构建，产物落在挂载的 `output/`（Linux 宿主上为 root 属主，需要时 `sudo chown -R "$(id -u):$(id -g)" output/ work/`）。
+
+### 原生构建
 
 ```bash
 ./build.sh
@@ -99,14 +112,16 @@ overlay 组装失败进 initrd 紧急模式（无回退分支），由 rescue UK
 ```bash
 RUN_TEST=readiness ./build.sh --no-compress           # 启动 + 控制面就绪契约
 RUN_TEST=readiness,dataplane ./build.sh --no-compress # 附加 LAN 内客户端 E2E
+RUN_TEST=ota ./build.sh --no-compress                 # OTA 文件轮转矩阵（设计文档 §10 矩阵 2-7）
 ```
 
 `tests/` 目录：
 
 | 脚本 | 覆盖 |
 |---|---|
-| `test-readiness.sh` | SSH 可达、API 登录、网口/服务就绪契约 |
+| `test-readiness.sh` | SSH 可达、API 登录、网口/服务就绪契约、IMAGE_VERSION 运行期契约 |
 | `test-dataplane.sh` | 客户端 VM DHCP、租约入 API、LAN 互通 |
+| `test-ota.sh` | OTA 成对落盘与 bless、坏版本 tries 耗尽自动回退、`@data` 满盘降级、rescue 入口、vacuum 淘汰 |
 | `check-initrd-modules.py` | 两套工件（initrd + 裸 EROFS 根镜像）× 三态模块契约 |
 
 ## CI
@@ -123,6 +138,7 @@ GitHub Actions 与本地共用同一入口 `build.sh`：
 
 ```
 build.sh / build.env     构建入口与参数默认值（两遍 mkosi 管线编排）
+Dockerfile               构建容器（依赖与 build.sh require 断言同构）
 lib/export.sh            img/vmdk/ova 导出
 mkosi/
   mkosi.conf             主配置（发行版/包/模块三层分治/引导）

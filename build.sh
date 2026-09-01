@@ -332,6 +332,17 @@ UKI_FILE_PASS1="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.efi | head -1)"
 [[ -n "${UKI_FILE_PASS1}" ]] || die "未找到 pass1 UKI（cmdline 提取源）"
 UKI_CMDLINE="$(objcopy -O binary --only-section=.cmdline "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
 [[ -n "${UKI_CMDLINE}" ]] || die "从 pass1 UKI 提取 .cmdline 失败（objcopy）"
+
+# IMAGE_VERSION 契约断言（§5.1）：mkosi 将 --image-id/--image-version 写入
+# 镜像 os-release 的 IMAGE_ID=/IMAGE_VERSION=（mkosi.news 官方变更记录），
+# UKI 的 .osrel PE 段源自同一 os-release。ProtectVersion=%A 展开取
+# /etc/os-release 的 IMAGE_VERSION= —— 缺失时 vacuum 保护静默失效，
+# 故在构建期即硬性断言（运行期契约由 readiness 的 guest 侧检查兜底）
+UKI_OSREL="$(objcopy -O binary --only-section=.osrel "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
+grep -q "^IMAGE_VERSION=${VER}\$" <<<"${UKI_OSREL}" \
+    || die "UKI .osrel 缺少 IMAGE_VERSION=${VER}（ProtectVersion=%A 契约破坏）"
+grep -q "^IMAGE_ID=${IMAGE_ID}\$" <<<"${UKI_OSREL}" \
+    || die "UKI .osrel 缺少 IMAGE_ID=${IMAGE_ID}"
 # UKI 内实际 initrd = 子镜像 initrd + kernel-modules initrd 的拼接流
 # （SplitArtifacts=initrd 只拆出前者）；rescue UKI 原料与模块门禁工件
 # 一律取 pass1 UKI 的 .initrd PE 段——与主 UKI 同源，消除工件分裂
@@ -467,12 +478,16 @@ if [[ "${RUN_TEST}" != "none" ]]; then
         case "$t" in
             readiness) tests+=("test-readiness.sh") ;;
             dataplane) tests+=("test-dataplane.sh") ;;
-            *) die "未知 RUN_TEST 项 '${t}'（支持 none|readiness|dataplane）" ;;
+            ota)       tests+=("test-ota.sh") ;;
+            *) die "未知 RUN_TEST 项 '${t}'（支持 none|readiness|dataplane|ota）" ;;
         esac
     done
     for t in "${tests[@]}"; do
         [[ -f "${SCRIPT_DIR}/tests/${t}" ]] || die "RUN_TEST=${RUN_TEST} 但 ${SCRIPT_DIR}/tests/${t} 不存在"
-        timeout --foreground 20m \
+        # OTA 矩阵含多轮重启/硬复位/tries 耗尽，时长远超其余套件
+        tmo=20m
+        [[ "${t}" == "test-ota.sh" ]] && tmo=80m
+        timeout --foreground "${tmo}" \
             "${SCRIPT_DIR}/tests/${t}" "${IMAGE_RAW_FILE}" || die "${t} 测试失败"
     done
 fi

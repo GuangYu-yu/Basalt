@@ -1,6 +1,6 @@
 # =============================================================================
 # 构建并校验镜像（可复用子工作流，入口见 ci.yml）
-# 流水线：构建 → 模块门禁 → readiness → dataplane → 日志合并
+# 流水线：容器化构建 → 模块门禁 → readiness → dataplane → OTA 矩阵 → 日志合并
 # =============================================================================
 
 name: 构建并校验镜像
@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
       run_test:
-        description: "测试选择，可选值：none / readiness / readiness,dataplane"
+        description: "测试选择，可选值：none / readiness / readiness,dataplane / readiness,ota"
         required: false
         type: string
         default: "readiness"
@@ -49,6 +49,8 @@ on:
         value: ${{ jobs.build_image.outputs.run_readiness }}
       run_dataplane:
         value: ${{ jobs.build_image.outputs.run_dataplane }}
+      run_ota:
+        value: ${{ jobs.build_image.outputs.run_ota }}
 
 env:
   TEST_LOG_DIR: output/test-logs
@@ -65,6 +67,7 @@ jobs:
       log_artifact: ${{ steps.tests.outputs.log_artifact }}
       run_readiness: ${{ steps.tests.outputs.run_readiness }}
       run_dataplane: ${{ steps.tests.outputs.run_dataplane }}
+      run_ota: ${{ steps.tests.outputs.run_ota }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -91,12 +94,19 @@ jobs:
               run_readiness=true
               # dataplane 使用 default 变体（无 docker）；docker 变体跳过
               if [[ "${INCLUDE_DOCKER}" == "true" ]]; then run_dataplane=false; else run_dataplane=true; fi ;;
+            readiness,ota)
+              run_readiness=true; run_ota=true ;;
+            ota)
+              # OTA 矩阵内含初始就绪检查，独立跑不附加 readiness job
+              run_ota=true ;;
             *) echo "不支持的 run_test 值: $requested" >&2; exit 1 ;;
           esac
+          # 三开关统一显式兜底：set -u 下未赋值分支直接报错而非静默空
           {
             echo "run_test=$normalized"
-            echo "run_readiness=$run_readiness"
-            echo "run_dataplane=$run_dataplane"
+            echo "run_readiness=${run_readiness:-false}"
+            echo "run_dataplane=${run_dataplane:-false}"
+            echo "run_ota=${run_ota:-false}"
           } >> "$GITHUB_OUTPUT"
 
       - name: 缓存 APT 包下载
@@ -105,33 +115,21 @@ jobs:
           path: work/aptcache
           key: basalt-aptcache-v1
 
-      - name: 安装构建依赖
+      - name: 构建构建容器
+        # 构建流程容器化：依赖清单封装进 Dockerfile（与 build.sh require
+        # 断言同构），宿主仅保留 QEMU 测试栈
         timeout-minutes: 15
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          # mkosi 不发布 PyPI 包，从 GitHub tag 源码包安装；
-          # erofs/btrfs mkfs 由 mkosi ToolsTree 自带
-          # systemd-ukify：rescue UKI 编排（build.sh 宿主侧 ukify）；
-          # systemd-boot-efi 提供 ukify 需要的 PE stub
-          # /usr/lib/systemd/boot/efi/linuxx64.efi.stub
-          # erofs-utils/fuse3/erofsfuse：模块门禁读取裸 EROFS 根镜像
-          # （erofsfuse 为独立包，非 root 门禁步骤；fusermount3 由 fuse3 提供）
-          sudo apt-get install -y systemd-repart qemu-utils xz-utils \
-            systemd-ukify systemd-boot-efi erofs-utils erofsfuse fuse3 \
-            python3-pip debian-archive-keyring
-          sudo python3 -m pip install --break-system-packages \
-            https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
-          mkosi --version
+        run: docker build -t basalt-builder:${{ github.sha }} .
 
       - name: 配置预检
         run: |
           set -euo pipefail
-          mkosi -C mkosi summary > /dev/null
           bash -n build.sh lib/export.sh mkosi/mkosi.finalize \
             mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
-            tests/test-readiness.sh tests/test-dataplane.sh
+            tests/test-readiness.sh tests/test-dataplane.sh tests/test-ota.sh
+          # mkosi 配置解析在容器内执行（宿主不再安装 mkosi）
+          docker run --rm -v "${PWD}:/src" -w /src \
+            basalt-builder:${{ github.sha }} mkosi -C mkosi summary > /dev/null
 
       - name: 构建镜像
         timeout-minutes: 60
@@ -142,9 +140,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_FORMATS: ${{ inputs.output_formats }}
           DIAG_CMDLINE: ${{ inputs.diag_cmdline == true && '1' || '0' }}
-          # 智能初始化拓扑注入：缺省时 webserver 走 --auto（Web 引导），无网络配置
-          # → CI 虚机 WAN 永无地址，SSH/API 就绪契约必然失败
-          EFFECTIVE_CONFIG_PATH: ${{ github.workspace }}/configs/landscape_init.toml
         shell: bash
         run: |
           set -euo pipefail
@@ -152,13 +147,19 @@ jobs:
             local args=(--output-format "${OUTPUT_FORMATS:-img}")
             [[ "${INCLUDE_DOCKER}" == "true" ]] && args+=(--include-docker true)
             [[ -n "${{ inputs.landscape_version }}" ]] && args+=(--version "${{ inputs.landscape_version }}")
-            sudo -E ./build.sh "${args[@]}"
+            # --privileged：mkosi 以 root 执行 mount/loop/chroot（CAP_SYS_ADMIN
+            # + /dev/loop*）；EFFECTIVE_CONFIG_PATH 映射容器内挂载路径 /src
+            docker run --rm --privileged \
+              -v "${PWD}:/src" -w /src \
+              -e COMPRESS_OUTPUT -e RUN_TEST -e GITHUB_TOKEN \
+              -e OUTPUT_FORMATS -e DIAG_CMDLINE \
+              -e EFFECTIVE_CONFIG_PATH="/src/configs/landscape_init.toml" \
+              basalt-builder:${{ github.sha }} ./build.sh "${args[@]}"
           }
           if ! build_once; then
             echo "首次构建失败，重置 work/ 后重试..." >&2
             sudo rm -rf work
-            sudo mkdir -p work output
-            sudo chown -R "$(id -u):$(id -g)" work output
+            mkdir -p work output
             build_once
           fi
 
@@ -183,10 +184,15 @@ jobs:
         run: |
           set -euo pipefail
           source build.env
+          # 门禁在宿主执行（非 root 的 erofsfuse 路径）：erofs-utils/erofsfuse/
+          # fuse3 原属构建依赖步骤，容器化后由本步骤自持
+          sudo apt-get update
+          sudo apt-get install -y erofs-utils erofsfuse fuse3 python3-pip
           python3 -m pip install --quiet --break-system-packages zstandard
           # 全量落盘 mkosi 合并后的有效配置（模块门禁失败时随 test-logs artifact 上传，
           # 用于判定 KernelInitrdModules= 等选项是否被识别）
-          mkosi cat-config > output/test-logs/mkosi-config.txt
+          docker run --rm -v "${PWD}:/src" -w /src \
+            basalt-builder:${{ github.sha }} mkosi -C mkosi cat-config > output/test-logs/mkosi-config.txt
           initrd="$(ls "output/${IMAGE_ID}"*.initrd | head -n1)"
           # ROOT 工件：裸 EROFS 根镜像（版本取自 build-metadata，与产物同源）
           ver="$(sed -n 's/^image_version=//p' output/metadata/build-metadata.txt)"
@@ -208,6 +214,17 @@ jobs:
             output/SHA256SUMS
             output/metadata/build-metadata.txt
           retention-days: 30
+
+      - name: 上传 OTA 测试原料
+        # test-ota.sh 物料契约：版本化 EROFS + UKI（preflight 硬校验存在性）
+        if: ${{ steps.tests.outputs.run_ota == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.tests.outputs.image_artifact }}-ota
+          path: |
+            output/*.erofs
+            output/*.efi
+          retention-days: 7
 
       - name: 上传构建日志片段
         if: always()
@@ -289,9 +306,49 @@ jobs:
           path: ${{ env.TEST_LOG_DIR }}/
           retention-days: 7
 
+  test_ota:
+    name: OTA 更新矩阵测试
+    needs: build_image
+    if: ${{ needs.build_image.outputs.run_ota == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载镜像构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.image_artifact }}
+          path: output/
+
+      - name: 下载 OTA 测试原料
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.image_artifact }}-ota
+          path: output/
+
+      - name: 准备测试镜像
+        timeout-minutes: 15
+        uses: ./.github/actions/prepare-test-image
+
+      - name: 运行 OTA 更新矩阵测试
+        env:
+          SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
+          SSH_TIMEOUT: '180'
+        run: timeout --foreground 80m ./tests/test-ota.sh "${IMAGE_PATH}"
+
+      - name: 上传 OTA 测试日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.log_artifact }}-ota
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7
+
   merge_validation_logs:
     name: 合并校验日志
-    needs: [build_image, test_readiness, test_dataplane]
+    needs: [build_image, test_readiness, test_dataplane, test_ota]
     if: ${{ always() && needs.build_image.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:

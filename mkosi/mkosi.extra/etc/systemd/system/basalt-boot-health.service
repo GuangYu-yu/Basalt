@@ -1,0 +1,20 @@
+# 启动健康门（Automatic Boot Assessment 业务成功判据）
+# API 监听器就绪（readiness 契约的第一跳）→ boot-complete.target 达成 →
+# systemd-bless-boot.service 去计数锁定新版本；超时失败 → boot-complete
+# 不达成 → bless 不触发 → 重启烧 tries → systemd-boot 自动回落旧版本。
+# 仅监听器探测（不内嵌 API 凭据）：landscape-router 为 Type=exec +
+# Restart=always，进程存活与监听器就绪强耦合，监听器超时即业务级故障。
+# 无 [Install]：由 boot-complete.target 的 Requires drop-in 拉起，仅当
+# 当前启动条目带 tries 计数（OTA 版本）时 systemd-bless-boot-generator
+# 拉起 bless → boot-complete → 本单元才进入启动事务（工厂首启不运行）。
+[Unit]
+Description=Basalt boot health gate (API listener) for bless
+After=landscape-router.service
+Before=boot-complete.target
+
+[Service]
+Type=oneshot
+# 60 × 3s = 180s 探测预算（TCG 软模拟首启实测 < 120s）；TimeoutStartSec
+# 兜底防 curl 挂死
+ExecStart=/bin/sh -ec 'i=0; while [ $i -lt 60 ]; do curl -skI --max-time 3 https://localhost:6443/ -o /dev/null && exit 0; i=$((i+1)); sleep 3; done; echo "API listener not ready after ${i} probes" >&2; exit 1'
+TimeoutStartSec=240

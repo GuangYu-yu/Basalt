@@ -1,0 +1,5 @@
+# 构建上下文最小化：Dockerfile 只 COPY 依赖清单本身不 COPY 任何源码
+# （源码经 -v 运行时挂载），排除大体积目录避免每次 docker build 白拷
+work/
+output/
+.git/

@@ -495,16 +495,12 @@ LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-1073
 landscape_expand_raw_image() {
     local image_path="$1"
     local expand_bytes="$2"
-    local current_size=""
-    local target_size=""
 
     if [[ -z "$expand_bytes" ]]; then
         return 0
     fi
 
-    current_size=$(stat -c '%s' "$image_path")
-    target_size=$((current_size + expand_bytes))
-    truncate -s "$target_size" "$image_path"
+    truncate -s "+${expand_bytes}" "$image_path"
 }
 
 
@@ -631,12 +627,26 @@ landscape_router_start_vm() {
     # bash 收到 TERM/INT 默认不执行 EXIT trap（CI 硬超时发送 TERM），各测试脚本入口
     # 将 TERM/INT 转发为 exit 触发清理；镜像副本放 TEST_LOG_DIR 之外：该目录是日志
     # artifact 上传路径，超时未清理的残留副本会以零填充形式被上传
-    LANDSCAPE_ROUTER_TEMP_DIR=$(mktemp -d \
-        "$(dirname "${LANDSCAPE_TEST_LOG_DIR}")/${LANDSCAPE_TEST_NAME}-router-img-XXXXXX")
-    LANDSCAPE_ROUTER_TEMP_IMAGE=$(mktemp \
-        "${LANDSCAPE_ROUTER_TEMP_DIR}/${LANDSCAPE_TEST_NAME}-router-XXXXXX.img")
-    cp "${image_path}" "${LANDSCAPE_ROUTER_TEMP_IMAGE}"
-    landscape_expand_raw_image "${LANDSCAPE_ROUTER_TEMP_IMAGE}" "${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES}"
+    #
+    # LANDSCAPE_ROUTER_PERSIST_IMAGE=1：跨启停复用同一临时镜像（OTA 类测试的
+    # guest 内状态——sysupdate 落盘的新版本/tries 计数——必须在重启与硬复位
+    # 后存活）。首次调用照常拷贝+扩容；后续调用（TEMP_IMAGE 已存在）跳过，
+    # 仅重建 pidfile/monitor 等每次启动的运行时资源
+    local reuse_image=0
+    if [[ "${LANDSCAPE_ROUTER_PERSIST_IMAGE:-0}" == "1" && -n "${LANDSCAPE_ROUTER_TEMP_IMAGE:-}" \
+          && -f "${LANDSCAPE_ROUTER_TEMP_IMAGE}" ]]; then
+        reuse_image=1
+    fi
+    if [[ ${reuse_image} -eq 0 ]]; then
+        LANDSCAPE_ROUTER_TEMP_DIR=$(mktemp -d \
+            "$(dirname "${LANDSCAPE_TEST_LOG_DIR}")/${LANDSCAPE_TEST_NAME}-router-img-XXXXXX")
+        LANDSCAPE_ROUTER_TEMP_IMAGE=$(mktemp \
+            "${LANDSCAPE_ROUTER_TEMP_DIR}/${LANDSCAPE_TEST_NAME}-router-XXXXXX.img")
+        cp "${image_path}" "${LANDSCAPE_ROUTER_TEMP_IMAGE}"
+        landscape_expand_raw_image "${LANDSCAPE_ROUTER_TEMP_IMAGE}" "${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES}"
+    else
+        info "Reusing persistent VM image ${LANDSCAPE_ROUTER_TEMP_IMAGE}"
+    fi
 
     LANDSCAPE_ROUTER_PIDFILE=$(mktemp "${LANDSCAPE_TEST_LOG_DIR}/${LANDSCAPE_TEST_NAME}-router-pid-XXXXXX")
     LANDSCAPE_ROUTER_MONITOR=$(mktemp -u "${LANDSCAPE_TEST_LOG_DIR}/${LANDSCAPE_TEST_NAME}-router-monitor-XXXXXX.sock")
@@ -844,12 +854,8 @@ landscape_router_write_readiness_snapshot() {
 landscape_router_dump_diagnostics() {
     local token="${1:-}"
 
-    # SSH 未建立时无 guest 内诊断可采集；管线镜像固定使用 systemd
-    local have_ssh=false
-    if [[ ${#SSH_ARGS[@]} -gt 0 ]]; then
-        have_ssh=true
-    fi
-
+    # guest_run 各字段统一 || true 容错：SSH 不可达时输出错误文本进
+    # 诊断文件（与空采集同为证据）；管线镜像固定使用 systemd
     {
         echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         echo "api_base=${API_BASE:-}"
@@ -878,14 +884,11 @@ landscape_router_dump_diagnostics() {
         echo "== guest ip_forward =="
         guest_run "cat /proc/sys/net/ipv4/ip_forward" 2>&1 || true
         echo ""
-
-        if [[ "${have_ssh}" == true ]]; then
-            echo "== systemd status: landscape-router =="
-            guest_run "systemctl status landscape-router --no-pager -l" 2>&1 || true
-            echo ""
-            echo "== journalctl: landscape-router =="
-            guest_run "journalctl -u landscape-router -n 100 --no-pager" 2>&1 || true
-        fi
+        echo "== systemd status: landscape-router =="
+        guest_run "systemctl status landscape-router --no-pager -l" 2>&1 || true
+        echo ""
+        echo "== journalctl: landscape-router =="
+        guest_run "journalctl -u landscape-router -n 100 --no-pager" 2>&1 || true
     } > "${LANDSCAPE_ROUTER_DIAGNOSTICS_FILE}"
 
     if [[ -n "$token" ]]; then
@@ -1207,22 +1210,18 @@ detect_landscape_api_layout() {
                 return 0
             fi
         done
-        info "  layout probes: v1=${iter_codes[v1]} src=${iter_codes[src]} (${elapsed}s)"
-
         sleep 3
         elapsed=$(( SECONDS - t0 ))
+        info "  layout probes: v1=${iter_codes[v1]} src=${iter_codes[src]} (${elapsed}s)"
         if ((elapsed % 15 < 3)); then
             info "  ...waiting for supported API layout (${elapsed}s)"
         fi
     done
 
-    # 失败取证先于返回，保证证据与快照按序落盘
+    # 失败取证先于返回：iter_codes 保留的即最后一轮探测结果，
+    # 无需重跑（与末轮值最多差一次 sleep，重跑拿不到新信息）
     for prefix in "${prefix_layouts[@]}"; do
-        prefix_code=$(guest_run "curl -sk --max-time ${LANDSCAPE_TEST_HTTP_TIMEOUT} \
-            -o /dev/null -w '%{http_code}' \
-            -H 'Authorization: Bearer ${token}' \
-            ${API_BASE}/api/${prefix}/services/dhcp_v4/status" 2>/dev/null) || prefix_code="curl_err"
-        error "layout probe evidence: prefix=${prefix} http_code=${prefix_code}"
+        error "layout probe evidence: prefix=${prefix} http_code=${iter_codes[${prefix}]:-none}"
     done
     error 'Unable to detect supported API layout'
     return 1

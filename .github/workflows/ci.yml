@@ -14,7 +14,7 @@ on:
         type: choice
         options: ['false', 'true']
       run_test:
-        description: "测试选择：none / readiness / readiness,dataplane"
+        description: "测试选择：none / readiness / readiness,dataplane / readiness,ota / ota"
         required: false
         default: "readiness"
       landscape_version:

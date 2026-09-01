@@ -37,5 +37,8 @@ runs:
       run: |
         set -euo pipefail
         sudo apt-get update
+        # systemd-ukify/binutils/xz-utils：OTA 测试伪造版本物料
+        # （objcopy 抽 PE 段 + ukify 重排 + xz 压缩 erofs）
         sudo apt-get install -y sshpass socat curl jq \
-          qemu-system-x86 ovmf qemu-utils
+          qemu-system-x86 ovmf qemu-utils \
+          systemd-ukify binutils xz-utils
