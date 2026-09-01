@@ -419,16 +419,17 @@ def kver_from_names(names: list[str]) -> str | None:
 
 
 def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str]:
-    """从根 EROFS 提取 System.map：挂载后读 /usr/lib/modules/<kver>/System.map。
+    """从根 EROFS 提取 System.map：挂载后读 /usr/share/landscape/System.map。
 
-    mkosi 构建期把 System.map 放该路径（initrd 子镜像 RemoveFiles=
-    /usr/lib/modules/*/System.map 为证），根镜像无对应删除规则 → 应保留。
-    挂载读取为事实验证：存在即拷贝使用，缺失即明确 FAIL。
+    mkosi.finalize（执行序 depmod→RemoveFiles→finalize→Generate UKI→output）
+    探测 /boot/System.map-<kver> 与 /usr/lib/modules/<kver>/System.map，命中即
+    复制到该路径（业务目录，UKI 生成不清理）；门禁读副本。缺失即明确 FAIL
+    （= finalize 两处候选都未命中）。kver 仅作诊断上下文。
     """
-    src = f"/usr/lib/modules/{kver}/System.map"
+    src = "/usr/share/landscape/System.map"
     try:
         with mounted_erofs(root_raw) as mnt:
-            p = Path(mnt) / "usr" / "lib" / "modules" / kver / "System.map"
+            p = Path(mnt) / "usr" / "share" / "landscape" / "System.map"
             if not p.is_file():
                 return False, f"{src} 不存在于根 EROFS"
             dest.write_bytes(p.read_bytes())
@@ -445,8 +446,8 @@ def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
     需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
     符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
     （不解析关键词，depmod 措辞无稳定契约）。System.map 从根镜像
-    EROFS 提取：挂载后读 /usr/lib/modules/<kver>/System.map（mkosi 构建期
-    放置路径），缺失即明确 FAIL（事实验证，不做 SplitArtifacts 假设）。
+    EROFS 提取：/usr/share/landscape/System.map（mkosi.finalize 在 UKI 生成
+    前从 /boot 或 /usr/lib/modules/<kver> 探测复制），缺失即明确 FAIL。
     """
     with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
         root = Path(tmp)
