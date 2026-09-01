@@ -46,29 +46,6 @@ find "${ROOT}/usr/bin" "${ROOT}/usr/sbin" "${ROOT}/usr/lib" \
     -type f \( -name '*.so*' -o -perm /111 \) \
     -exec strip --strip-unneeded {} + 2>/dev/null || true
 
-# ── System.map 探测导出（模块门禁 depmod -e -F 的符号表）──
-# mkosi 执行序：depmod → RemoveFiles → finalize → Generate UKI → output；
-# finalize 时镜像根内若仍有 System.map（/boot 或 /usr/lib/modules/<kver>），
-# 复制到 /usr/share/landscape/System.map（业务目录，后续 UKI 生成不清理），
-# 供 check-initrd-modules.py 挂载 EROFS 读取。两处候选都缺失仅打印诊断
-# （最终由门禁明确 FAIL，此处不阻断构建）。
-kver=""
-for d in "${ROOT}"/usr/lib/modules/*/; do
-    [[ -d "${d}" ]] || continue
-    kver="$(basename "${d}")"
-    break
-done
-smap=""
-[[ -n "${kver}" && -f "${ROOT}/usr/lib/modules/${kver}/System.map" ]] \
-    && smap="${ROOT}/usr/lib/modules/${kver}/System.map"
-[[ -z "${smap}" ]] && smap="$(ls "${ROOT}"/boot/System.map-* 2>/dev/null | head -1)"
-if [[ -n "${smap}" && -s "${smap}" ]]; then
-    install -D -m 0644 "${smap}" "${ROOT}/usr/share/landscape/System.map"
-    echo "[finalize] System.map 导出: ${smap}"
-else
-    echo "[finalize] WARN: System.map 两处候选均缺失（/boot 与 /usr/lib/modules/<kver>），符号门禁将 FAIL" >&2
-fi
-
 # ── 禁焙扫描：命中即构建失败 ──
 # 注意 find 的 -o 不改变起点，每个独立起点单独一条 find
 forbidden="$(find "${ROOT}/etc/ssh" -name 'ssh_host_*' 2>/dev/null; \

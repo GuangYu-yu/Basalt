@@ -139,6 +139,10 @@ run_smoke_checks() {
     ip_forward="$(guest_run "cat /proc/sys/net/ipv4/ip_forward" 2>/dev/null || true)"
     run_check "IP forwarding enabled" test "$ip_forward" = "1"
     run_check "Intel ixgbe driver loads" guest_run "modprobe ixgbe && grep -q '^ixgbe ' /proc/modules"
+    # initrd 能力组（mkosi.conf KernelInitrdModules= 白名单）在目标内核实际
+    # 可加载断言：modinfo 依赖闭包不含符号依赖（btrfs↔crc32c_generic 实例），
+    # 启动链未覆盖的模块在此显式加载，符号/依赖缺失立即暴露（modprobe 幂等）
+    run_check "initrd capability modules load" guest_run 'for m in nvme virtio_blk loop erofs overlay btrfs crc32c_generic; do modprobe "$m" || exit 1; done; for m in nvme virtio_blk loop erofs overlay btrfs crc32c_generic; do grep -q "^$m " /proc/modules || exit 1; done'
     run_check "PCI/NIC diagnostics tools installed" guest_run "command -v lspci >/dev/null 2>&1 && command -v ethtool >/dev/null 2>&1"
 
     if landscape_test_requires_docker; then

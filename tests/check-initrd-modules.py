@@ -24,7 +24,6 @@
   root 数据面    nf_conntrack tun veth bridge e1000 r8169
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
-import contextlib
 import os
 import re
 import shutil
@@ -284,12 +283,12 @@ def walk_modules(root: str) -> tuple[set[str], set[str]]:
     return paths, builtin
 
 
-@contextlib.contextmanager
-def mounted_erofs(erofs: Path):
-    """挂载裸 EROFS 供文件读取：root（loop 挂载）或 erofsfuse（非 root）。
+def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
+                       ) -> tuple[set[str], list[str], set[str]]:
+    """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
 
-    dump.erofs --cat 在 CI erofs-utils 版本不存在（exit 234），单文件
-    提取弃用；统一走挂载后读文件系统真实内容。
+    需要文件系统访问：root（loop 挂载）或 erofsfuse（非 root）。
+    返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
     """
     tmp = tempfile.mkdtemp(prefix="basalt-gate-")
     mnt = os.path.join(tmp, "root")
@@ -301,24 +300,14 @@ def mounted_erofs(erofs: Path):
             subprocess.run(["erofsfuse", str(erofs), mnt], check=True)
         else:
             sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
-        yield mnt
+        paths, builtin = walk_modules(mnt)
     finally:
         if os.geteuid() == 0:
             subprocess.run(["umount", mnt], check=True)
         else:
             unmount = shutil.which("fusermount3") or shutil.which("fusermount")
             subprocess.run([unmount, "-u", mnt], check=True)
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
-                       ) -> tuple[set[str], list[str], set[str]]:
-    """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
-
-    返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
-    """
-    with mounted_erofs(erofs) as mnt:
-        paths, builtin = walk_modules(mnt)
+    shutil.rmtree(tmp, ignore_errors=True)
     modules, violations = modules_from_paths(paths, builtin, forbidden)
     return modules, violations, paths
 
@@ -374,117 +363,6 @@ def audit_dirs(paths: set[str], label: str) -> None:
     print(f"[module-gate] {label} drivers/ 子目录：{' '.join(drv2)}")
 
 
-def extract_cpio(blob: bytes, dest: Path) -> None:
-    """把合并 cpio 流解包到目录（depmod 需要真实文件树；含 symlink/dir）。"""
-    off = 0
-    while True:
-        off = blob.find(NEWC_MAGIC, off)
-        if off < 0:
-            break
-        hdr = blob[off:off + 110]
-        try:
-            namesize = int(hdr[94:102], 16)
-            filesize = int(hdr[54:62], 16)
-            mode = int(hdr[14:22], 16)
-        except ValueError:
-            off += 1
-            continue
-        name = blob[off + 110:off + 110 + namesize - 1].decode("utf-8", "replace")
-        data_start = (off + 110 + namesize + 3) & ~3
-        body = blob[data_start:data_start + filesize]
-        off = (data_start + filesize + 3) & ~3
-        if name in ("", "TRAILER!!!"):
-            continue
-        target = dest / name.lstrip("/")
-        if mode & 0o170000 == 0o120000:  # symlink
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                target.symlink_to(body.decode("utf-8", "replace"))
-            except OSError:
-                pass
-        elif mode & 0o170000 == 0o040000:  # dir
-            target.mkdir(parents=True, exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(body)
-
-
-def kver_from_names(names: list[str]) -> str | None:
-    """从 cpio 名录提取内核版本目录（usr/lib/modules/<kver>/）。"""
-    for n in names:
-        m = re.match(r"usr/lib/modules/([^/]+)/", n)
-        if m:
-            return m.group(1)
-    return None
-
-
-def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str]:
-    """从根 EROFS 提取 System.map：挂载后读 /usr/share/landscape/System.map。
-
-    mkosi.finalize（执行序 depmod→RemoveFiles→finalize→Generate UKI→output）
-    探测 /boot/System.map-<kver> 与 /usr/lib/modules/<kver>/System.map，命中即
-    复制到该路径（业务目录，UKI 生成不清理）；门禁读副本。缺失即明确 FAIL
-    （= finalize 两处候选都未命中）。kver 仅作诊断上下文。
-    """
-    src = "/usr/share/landscape/System.map"
-    try:
-        with mounted_erofs(root_raw) as mnt:
-            p = Path(mnt) / "usr" / "share" / "landscape" / "System.map"
-            if not p.is_file():
-                return False, f"{src} 不存在于根 EROFS"
-            dest.write_bytes(p.read_bytes())
-    except subprocess.CalledProcessError as e:
-        return False, f"EROFS 挂载失败（{' '.join(e.cmd)}）：{(e.stderr or b'').decode('utf-8', 'replace').strip()[:200]}"
-    # 副本完整性校验：非空 + 标准 System.map 行格式（地址 类型 符号）
-    size = dest.stat().st_size
-    lines = dest.read_text("utf-8", "replace").splitlines()
-    if size == 0 or not lines:
-        return False, f"{src} 副本为空（{size}B）"
-    first = lines[0].split()
-    if len(first) != 3 or not re.fullmatch(r"[0-9a-fA-F]{8,16}", first[0]):
-        return False, f"{src} 副本非标准 System.map 格式（{size}B，首行：{lines[0][:80]!r}）"
-    return True, f"{size}B/{len(lines)}行"
-
-
-def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
-    """depmod -e -F 符号完整性门禁：initrd 模块集引用的符号必须由
-    模块集自身或内核（System.map）提供，否则启动链加载必然失败。
-
-    mkosi 的 modinfo 闭包不含符号依赖（33514287139 实证：btrfs→libcrc32c
-    需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
-    符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
-    （不解析关键词，depmod 措辞无稳定契约）。System.map 从根镜像
-    EROFS 提取：/usr/share/landscape/System.map（mkosi.finalize 在 UKI 生成
-    前从 /boot 或 /usr/lib/modules/<kver> 探测复制），缺失即明确 FAIL。
-    """
-    with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
-        root = Path(tmp)
-        extract_cpio(blob, root)
-        smap = root / "System.map"
-        ok, detail = extract_system_map(erofs, kver, smap)
-        if not ok:
-            return [f"System.map 不可用：{detail}"]
-        print(f"[module-gate] System.map 副本：{detail}")
-        p = subprocess.run(
-            ["depmod", "-b", str(root), "-e", "-F", str(smap), kver],
-            capture_output=True, text=True)
-        if p.returncode < 0:
-            return [f"depmod 执行失败（signal {p.returncode}）"]
-        if p.returncode != 0 and not p.stderr.strip():
-            return [f"depmod 退出码 {p.returncode} 且无诊断输出"]
-        issues = [ln.strip() for ln in p.stderr.splitlines() if ln.strip()]
-        # 诊断统计：unknown 符号/涉及模块去重，区分「副本或工具问题」与真实符号缺失
-        unknown = sorted({ln.rsplit(" ", 1)[-1] for ln in issues
-                          if "needs unknown symbol" in ln})
-        mods = sorted({ln.split("/kernel/")[-1].split(".ko", 1)[0] for ln in issues
-                       if "needs unknown symbol" in ln})
-        print(f"[module-gate] depmod 诊断 {len(issues)} 条；"
-              f"unknown 符号 {len(unknown)} 个；涉及模块 {len(mods)} 个")
-        print(f"[module-gate] unknown 符号样本：{'、'.join(unknown[:15])}")
-        print(f"[module-gate] 涉及模块样本：{'、'.join(mods[:15])}")
-        return issues
-
-
 def main() -> int:
     conf = Path(__file__).resolve().parent.parent / "mkosi" / "mkosi.conf"
     initrd_forbidden = forbidden_from_conf(conf, "KernelInitrdModules=")
@@ -501,23 +379,9 @@ def main() -> int:
     rc = check(blob, initrd_forbidden, initrd_retained)
 
     if len(sys.argv) > 2:
-        erofs = Path(sys.argv[2])
-        # 符号完整性门禁（depmod -e -F）：initrd 模块集引用符号必须自足
-        # （模块集内提供 或 内核导出），补齐 mkosi modinfo 闭包不含符号
-        # 依赖的盲区（33514287139：btrfs 符号依赖 crc32c 遗漏 → 启动失败）
-        kver = kver_from_names(cpio_names(blob))
-        if not kver:
-            sys.exit("initrd 未找到 usr/lib/modules/<kver>，符号门禁无法运行")
-        sym_issues = check_symbol_closure(blob, erofs, kver)
-        if sym_issues:
-            print(f"[module-gate] FAIL 符号完整性：{'；'.join(sym_issues[:20])}",
-                  file=sys.stderr)
-            return 1
-        print("[module-gate] symbol closure PASS")
-
         # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
         root_modules, root_violations, root_paths = \
-            root_erofs_modules(erofs, root_forbidden)
+            root_erofs_modules(Path(sys.argv[2]), root_forbidden)
         missing = check_artifact("root(EROFS)", root_modules,
                                  root_violations, REQUIRED_ROOT)
         for r in root_retained:
