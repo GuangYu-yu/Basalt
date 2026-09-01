@@ -37,8 +37,9 @@ import zstandard
 REQUIRED_INITRD = {
     "virtio_blk", "virtio_scsi", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
     "erofs", "overlay", "btrfs", "vfat", "loop",
-    # btrfs 符号依赖（libcrc32c 引用 crc32c 符号；modinfo 闭包不含，须显式）
-    "crc32c-intel", "crc32c_generic",
+    # btrfs 符号依赖（libcrc32c 引用 crc32c 符号；crc32c_generic 即满足，
+    # crc32c-intel 在 arch/x86/crypto 不在根树保留集，不可得）
+    "crc32c_generic",
     # 各平台存储控制器 / Hypervisor 半虚拟化：QEMU IDE / ESXi / Hyper-V / Xen
     "ata_piix", "vmw_pvscsi", "mptspi", "mpt3sas",
     "hv_vmbus", "hv_storvsc", "hv_netvsc", "xen_blkfront",
