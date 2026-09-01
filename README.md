@@ -113,9 +113,10 @@ RUN_TEST=readiness,dataplane ./build.sh --no-compress # 附加 LAN 内客户端 
 
 GitHub Actions 与本地共用同一入口 `build.sh`：
 
-- `ci.yml` — push / PR / 手动触发，默认跑 readiness
-- `custom-build.yml` — 自定义参数构建
-- `release.yml` — 发布版本化产物
+- `ci.yml` — PR / 手动触发，默认跑 readiness（无 push 触发）
+- `custom-build.yml` — 手动按参数构建专属镜像
+- `release.yml` — 版本 tag 推送 → 双变体构建 + 测试 + GitHub Release
+- `test.yml` — 镜像复测（对历史 CI 构建产物重测，不重建）
 - 本地测试复用 `tests/`，无 CI 专属路径
 
 ## 目录结构

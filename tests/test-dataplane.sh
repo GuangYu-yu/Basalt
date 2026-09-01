@@ -94,12 +94,12 @@ preflight() {
     info "Preflight checks..."
 
     ensure_image_exists "${IMAGE_PATH}" || {
-        error "Run 'make build' first."
+        error "Build first: ./build.sh --no-compress"
         exit 2
     }
 
     if ! require_commands qemu-system-x86_64 qemu-img sshpass curl socat jq awk md5sum; then
-        error "Run 'make deps-test' to install test dependencies."
+        error "Install test dependencies: sudo apt install qemu-system-x86 ovmf qemu-utils sshpass socat jq"
         exit 2
     fi
 
