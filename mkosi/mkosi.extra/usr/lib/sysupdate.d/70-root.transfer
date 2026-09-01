@@ -12,6 +12,10 @@
 #   - InstancesMax 与 80-uki.transfer 保持一致（sysupdate.d(5) 明示建议各
 #     transfer 一致，否则残留不完整组合；两资源同版本号成对安装、成对 vacuum）。
 #   - /var/lib/basalt 为固定路径（fstab @os 条目同源），非 IMAGE_ID 派生。
+#   - @images 默认 ro（fstab subvol=@images,ro）：本定义的定时消费走
+#     systemd-sysupdate.service 的 rw wrapper drop-in
+#     （usr/lib/systemd/system/systemd-sysupdate.service.d/10-images-rw.conf）；
+#     手动 sysupdate update/vacuum 须先 mount -o remount,rw /var/lib/basalt/images。
 # url-file 源要求发布目录提供 SHA256SUMS 清单（sysupdate.d(5) 的版本枚举
 # 与完整性校验机制）；清单由 build.sh 生成（erofs.xz + 版本化 UKI），
 # 占位 URL 保持占位。

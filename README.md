@@ -6,7 +6,7 @@
 
 ## 特性
 
-- **不可变根**：系统本体为 EROFS 镜像文件（lz4hc 压缩，存于 btrfs `@os` 子卷），运行期改动经 overlayfs 落入共享增量层，重启即知哪些是系统、哪些是增量
+- **不可变根**：系统本体为 EROFS 镜像文件（lz4hc 压缩，存于 btrfs `@images` 子卷，运行期只读），运行期改动经 overlayfs 落入共享增量层，重启即知哪些是系统、哪些是增量
 - **文件轮转原子更新**：systemd-sysupdate 按版本号成对安装「EROFS 镜像 + UKI」两种资源（SHA256SUMS 清单枚举版本），中断最坏只留无入口的孤儿镜像，下次更新自动清理；无需 A/B 双 root 分区，稳态只占 1 份根镜像
 - **版本配对构建期固化**：每个 UKI 的 cmdline 内嵌 `basalt.image=<版本化镜像名>`，任意可启动 UKI 的根镜像必然同版本存在——零运行期胶水守护
 - **UKI 引导**：内核 + initrd + cmdline 打包为单一 PE；systemd-boot 按 UKI 文件名版本排序自动切换启动项，旧版本条目保留在菜单中即回滚路径；tries 计数耗尽自动落回次新版本
@@ -60,21 +60,24 @@ python3 -m pip install --break-system-packages \
 | 分区 | 文件系统 | 内容 |
 |---|---|---|
 | ESP | vfat | systemd-boot + 各版本 UKI + 常驻 rescue UKI |
-| var | btrfs | 唯一数据分区（`@os` 系统卷 + `@data` 数据卷） |
+| var | btrfs | 唯一数据分区（`@os` 增量层卷 + `@images` 镜像卷 + `@data` 数据卷） |
 
 - **ESP**：systemd-boot + 版本化 UKI（带 `+3-0` tries 计数）+ rescue UKI；尺寸 = max(UKI) × (INSTANCES_MAX+1) + rescue 实测（+1 为更新瞬态，下限 64M）
 - **var**（btrfs，zstd:1 / noatime）：
-  - `@os` 子卷：`images/` 各版本 EROFS 镜像（0444）+ `overlay/` 全根增量层 upper/work（跨版本共享）；initrd 期即 sysroot
+  - `@os` 子卷：`overlay/` 全根增量层 upper/work（跨版本共享）；initrd 期即 sysroot
+  - `@images` 子卷：各版本 EROFS 镜像（0444），运行期默认 ro（误删不可能；仅 sysupdate 更新窗口 rw）
   - `@data` 子卷（默认卷）：journald 日志、landscape 状态等持久数据；首启扩满剩余空间
 
 运行期挂载（fstab 单一事实）：
 
 ```
-/                 overlayfs 全根（lower=版本化 EROFS 文件 loop 只读挂载，
-                                    upper/work=@os overlay/，initrd 期组装）
-/var              btrfs @data
-/var/lib/basalt   btrfs @os（sysupdate 目标目录与运维访问）
-/efi              ESP
+/                       overlayfs 全根（lower=版本化 EROFS 文件 loop 只读挂载，
+                                            upper/work=@os overlay/，initrd 期组装）
+/var                    btrfs @data
+/var/lib/basalt         btrfs @os（overlay 层宿主与运维访问）
+/var/lib/basalt/images  btrfs @images,ro（sysupdate 目标目录；rw 窗口见
+                        systemd-sysupdate.service.d/10-images-rw.conf）
+/efi                    ESP
 ```
 
 overlay 组装失败进 initrd 紧急模式（无回退分支），由 rescue UKI / 串口 console 承接排障；rescue 形态（`basalt.ro=1`）跳过 overlay，纯只读 EROFS 根。
@@ -84,10 +87,10 @@ overlay 组装失败进 initrd 紧急模式（无回退分支），由 rescue UK
 设备侧 `systemd-sysupdate.timer` 定时消费 `/usr/lib/sysupdate.d/` 定义：
 
 1. 从发布 URL（`updates.example.com/basalt/`，需按部署环境修改）拉取 `SHA256SUMS` 枚举可用版本
-2. 按共同版本号成对安装：EROFS 镜像 → `/var/lib/basalt/images`（`@os`），UKI → ESP（入口点最后写，字母序保证）；各保留 `INSTANCES_MAX`（默认 3）份，当前运行版本受 `ProtectVersion=%A` 保护永不被清理
+2. 按共同版本号成对安装：EROFS 镜像 → `/var/lib/basalt/images`（`@images`，更新窗口内临时 remount rw），UKI → ESP（入口点最后写，字母序保证）；各保留 `INSTANCES_MAX`（默认 3）份，当前运行版本受 `ProtectVersion=%A` 保护永不被清理
 3. systemd-boot 按版本排序，下次启动自动进入新版（tries 计数 + `systemd-bless-boot` 健康确认）；更新中断的残留由下次调用自动清除
 
-回滚 = 启动菜单选旧版本 UKI（其 cmdline 指向仍在 `@os` 的同版本镜像）。增量层跨版本共享（`/etc` 是当前状态而非版本属性），回滚后系统状态保持最新版本的累积结果。
+回滚 = 启动菜单选旧版本 UKI（其 cmdline 指向仍在 `@images` 的同版本镜像）。增量层跨版本共享（`/etc` 是当前状态而非版本属性），回滚后系统状态保持最新版本的累积结果；注意自动回滚只切换镜像层，共享增量层的语义污染（新版写坏 /etc 状态）须走 rescue 人工介入。
 
 工厂镜像（`latest` 构建，镜像版本恒为 `1`）仅供 dd 部署；版本化构建（`--version vX`）产出的 `basalt_<v>.erofs.xz` / `basalt_<v>.efi` 为 OTA 发布物。
 

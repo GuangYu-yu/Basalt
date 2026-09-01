@@ -10,15 +10,19 @@ DefaultDependencies=no
 After=sysroot.mount systemd-repart.service dev-disk-by\x2dpartlabel-var.device
 
 # 挂载编排（顺序敏感）：
-#   1. sysroot.mount（@os）由 root=/rootflags 生成——btrfs 上既有 images/ 又
-#      承接 overlay upper/work（跨版本共享：/etc 等系统状态是"当前状态"而非
-#      版本属性，回滚只切换 EROFS lower）
-#   2. loop 只读挂 /sysroot/images/basalt_<v>.erofs → /run/root-image
-#   3. overlay 叠到 /sysroot：lowerdir=loop 镜像，upper/work=@os/overlay/*
+#   1. sysroot.mount（@os）由 root=/rootflags 生成——btrfs 上承接 overlay
+#      upper/work（跨版本共享：/etc 等系统状态是"当前状态"而非版本属性，
+#      回滚只切换 EROFS lower）
+#   2. @images 子卷只读挂到 /sysroot/images（同 var 设备第二挂载；
+#      sysroot.mount 已成功意味着设备节点稳定，无需重试）。@os 内的
+#      images/ 仅为挂载点占位目录，真实镜像在 @images 子卷根
+#   3. loop 只读挂 /sysroot/images/basalt_<v>.erofs → /run/root-image
+#   4. overlay 叠到 /sysroot：lowerdir=loop 镜像，upper/work=@os/overlay/*
 #      （挂载瞬间解析，overlayfs pin 底层挂载）
-#   4. switch_root 后：/ = overlay；/var 由真实根 fstab 以 subvol=@data 挂
-#      同一 btrfs；/var/lib/basalt 再以 subvol=@os 挂载，供运行期 sysupdate
-#      写入与运维访问
+#   5. switch_root 后：/ = overlay；/var 由真实根 fstab 以 subvol=@data 挂
+#      同一 btrfs；/var/lib/basalt 再以 subvol=@os 挂载，/var/lib/basalt/
+#      images 以 subvol=@images,ro 挂载（默认 ro，sysupdate rw wrapper 窗口
+#      外不可写）
 # basalt.ro=1（rescue UKI）：跳过 overlay，双 move 得纯只读 EROFS 根
 [Service]
 Type=oneshot
@@ -29,5 +33,5 @@ Type=oneshot
 # repart + udev 稳定时间
 # 临时诊断：[debug] 段取证 /sysroot 只读根因（overlay upper 报 read-only）：
 # 实际挂载选项 / 写测试 / btrfs 子卷 ro 属性；用后即删。
-ExecStart=/bin/sh -ec 'exec >/dev/console 2>&1; echo "[debug] cmdline:"; cat /proc/cmdline; echo "[debug] sysroot mount:"; findmnt -no SOURCE,FSTYPE,OPTIONS /sysroot 2>&1 || true; grep -a " /sysroot " /proc/mounts 2>&1 || true; echo "[debug] sysroot write test:"; if touch /sysroot/.rw-test 2>&1; then echo "[debug] WRITE-OK"; rm -f /sysroot/.rw-test; else echo "[debug] WRITE-FAIL"; fi; echo "[debug] btrfs subvolume ro:"; btrfs property get /sysroot ro 2>&1 || true; btrfs property get -t btrfs /sysroot ro 2>&1 || true; echo "[debug] rootflags:"; tr " " "\n" < /proc/cmdline | grep -aE "^(ro|rw|rootflags|systemd.volatile|roothash)" 2>&1 || true; img="$(sed -n "s/.*basalt.image=\([^ ]*\).*/\1/p" /proc/cmdline)"; [ -n "$img" ] || { echo "basalt.image= missing on cmdline"; exit 1; }; mkdir -p /run/root-image; i=0; until mount -o ro,loop /sysroot/images/"$img" /run/root-image; do i=$((i+1)); [ $i -ge 15 ] && echo "erofs loop mount failed after $i attempts: $img" && exit 1; sleep 2; done; if grep -q "basalt.ro=1" /proc/cmdline; then mkdir -p /run/osroot; mount --move /sysroot /run/osroot; mount --move /run/root-image /sysroot; else mkdir -p /sysroot/overlay/upper /sysroot/overlay/work; mount -t overlay -o lowerdir=/run/root-image,upperdir=/sysroot/overlay/upper,workdir=/sysroot/overlay/work overlay /sysroot; fi'
+ExecStart=/bin/sh -ec 'exec >/dev/console 2>&1; echo "[debug] cmdline:"; cat /proc/cmdline; echo "[debug] sysroot mount:"; findmnt -no SOURCE,FSTYPE,OPTIONS /sysroot 2>&1 || true; grep -a " /sysroot " /proc/mounts 2>&1 || true; echo "[debug] sysroot write test:"; if touch /sysroot/.rw-test 2>&1; then echo "[debug] WRITE-OK"; rm -f /sysroot/.rw-test; else echo "[debug] WRITE-FAIL"; fi; echo "[debug] btrfs subvolume ro:"; btrfs property get /sysroot ro 2>&1 || true; btrfs property get -t btrfs /sysroot ro 2>&1 || true; echo "[debug] rootflags:"; tr " " "\n" < /proc/cmdline | grep -aE "^(ro|rw|rootflags|systemd.volatile|roothash)" 2>&1 || true; img="$(sed -n "s/.*basalt.image=\([^ ]*\).*/\1/p" /proc/cmdline)"; [ -n "$img" ] || { echo "basalt.image= missing on cmdline"; exit 1; }; mkdir -p /sysroot/images; mount -o ro,subvol=@images /dev/disk/by-partlabel/var /sysroot/images; mkdir -p /run/root-image; i=0; until mount -o ro,loop /sysroot/images/"$img" /run/root-image; do i=$((i+1)); [ $i -ge 15 ] && echo "erofs loop mount failed after $i attempts: $img" && exit 1; sleep 2; done; if grep -q "basalt.ro=1" /proc/cmdline; then mkdir -p /run/osroot; mount --move /sysroot /run/osroot; mount --move /run/root-image /sysroot; else mkdir -p /sysroot/overlay/upper /sysroot/overlay/work; mount -t overlay -o lowerdir=/run/root-image,upperdir=/sysroot/overlay/upper,workdir=/sysroot/overlay/work overlay /sysroot; fi'
 RemainAfterExit=yes

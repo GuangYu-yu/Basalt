@@ -85,8 +85,8 @@ preflight() {
 }
 
 auto_overlay_root_check() {
-    # mkosi 管线契约（文件轮转）：/ 为全根 overlay（lower=@os 内版本化
-    # EROFS 文件 loop 只读挂载，upper/work=btrfs @os overlay/）。
+    # mkosi 管线契约（文件轮转）：/ 为全根 overlay（lower=@images 子卷内
+    # 版本化 EROFS 文件 loop 只读挂载，upper/work=btrfs @os overlay/）。
     # overlay 组装失败进 initrd emergency（组装服务无回退分支），
     # rescue UKI（basalt.ro=1）的 erofs 形态不经本检查路径。
     local fstype=""

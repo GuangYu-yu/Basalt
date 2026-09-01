@@ -8,6 +8,9 @@
 # 合法源类型；旧 Type=file 非文档列举类型，一并修正）。
 # 本地实测路径：构建后
 #   systemd-sysupdate --transfer-source=<构建输出目录> update
+# （目标机 @images 默认 ro：先 mount -o remount,rw /var/lib/basalt/images，
+#   更新后恢复 ro——ro 语义见设备侧 fstab 与
+#   systemd-sysupdate.service.d/10-images-rw.conf）
 # 生产 OTA 发布通道（更新服务器/CDN、签名分发）属部署方责任，不在本项目范围；
 # 设备侧 Source 仍为占位 URL。
 # =============================================================================

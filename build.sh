@@ -11,10 +11,11 @@
 #   pass1  以临时 root 分区定义 + --split-artifacts partitions 拆出裸 EROFS
 #          根镜像工件（<主输出名>.root-x86-64.raw），同时产出 kernel/initrd/
 #          UKI（rescue UKI 的原料与 ESP 定稿实测）
-#   pass2  移除 root 分区定义，将 EROFS 种子进 var 分区 @os 子卷
-#          （CopyFiles=/@os-staging:/@os），终盘 = ESP + var(btrfs)
+#   pass2  移除 root 分区定义，将 EROFS 种子进 var 分区 @images 子卷
+#          （CopyFiles=/@os-staging:/@images），终盘 = ESP + var(btrfs)
 #   运行期 systemd-sysupdate 按版本号成对更新 EROFS 文件 + UKI
-#   （mkosi.extra/usr/lib/sysupdate.d/），当前版本 ProtectVersion=%A 保护
+#   （mkosi.extra/usr/lib/sysupdate.d/），当前版本 ProtectVersion=%A 保护；
+#   @images 运行期默认 ro，rw 窗口由 systemd-sysupdate.service.d/ 承载
 # =============================================================================
 set -euo pipefail
 
@@ -135,7 +136,7 @@ MKOSI_ARGS=(
 # UKI 自描述根（文件轮转契约；mkosi CLI 的 KernelCommandLine 为追加语义，
 # 基础行见 mkosi.conf）：
 #   root=/dev/disk/by-partlabel/var + rootflags=subvol=@os → initrd 的
-#     fstab-generator 生成 sysroot.mount（btrfs @os：镜像与 overlay 层宿主；
+#     fstab-generator 生成 sysroot.mount（btrfs @os：overlay 层宿主；
 #     root= 采用 man 明示的设备节点路径形态）
 #   basalt.image=<文件名> → initrd-root-overlay.service 解析，相对
 #     /sysroot/images/；与 sysupdate 70-root.transfer 的 Target MatchPattern
@@ -144,7 +145,7 @@ MKOSI_ARGS+=(
     --kernel-command-line "root=/dev/disk/by-partlabel/var"
     # 显式 rw：systemd 对无 rw/ro 的 rootflags 实测挂载为 ro（33537131152 取证：
     # @os 子卷 ro=false 且 cmdline 无 ro，但 /sysroot 挂载含 ro → overlay upper
-    # 只读 → 组装失败）。@os 是 overlay upper/images 宿主，必须可写。
+    # 只读 → 组装失败）。@os 是 overlay upper 宿主，必须可写。
     --kernel-command-line "rootflags=subvol=@os,compress=zstd:1,noatime,rw"
     --kernel-command-line "basalt.image=${IMAGE_ID}_${VER}.erofs"
 )
@@ -205,7 +206,8 @@ sed -i -e "s/basalt_/${IMAGE_ID}_/g" \
     -e "s/TriesLeft=3/TriesLeft=${INSTANCES_MAX}/g" \
     "${STAGED_SYSUPDATE_D[@]}"
 # 文件轮转新增暂存路径：
-#   @os-staging/  —— pass1 EROFS 工件种子（pass2 CopyFiles=/@os-staging:/@os）
+#   @os-staging/  —— pass1 EROFS 工件种子（pass2 CopyFiles=/@os-staging:/@images；
+#                   staging 根即镜像文件，无 images/ 子目录层级）
 #   rescue UKI    —— mkosi.extra/efi/EFI/Linux/，经 ESP CopyFiles=/efi:/ 带入
 #   20-root.conf  —— pass1 临时 root 分区定义（pass2 删除）
 STAGED_OS_DIR="${SCRIPT_DIR}/mkosi/mkosi.extra/@os-staging"
@@ -310,12 +312,12 @@ mv -f "${EROFS_SPLIT}" "${EROFS_FILE}"
 KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
 [[ -n "${KERNEL_FILE}" ]] || die "未找到 pass1 kernel 工件（rescue UKI 原料，${IMAGE_ID}*.vmlinuz）"
 
-# EROFS 种子：pass2 经 CopyFiles=/@os-staging:/@os 写入 @os 子卷
-# （0444 与 70-root.transfer 的 Target Mode= 对齐）。路径契约：images/
-# 子目录 = 70-root.transfer Target /var/lib/basalt/images（@os 子卷同源），
-# initrd-root-overlay 从 /sysroot/images/ 查找（33532141777 实证：种子落
-# @os 根导致 loop mount ENOENT ×15 → emergency）
-install -D -m 0444 "${EROFS_FILE}" "${STAGED_OS_DIR}/images/${IMAGE_ID}_${VER}.erofs"
+# EROFS 种子：pass2 经 CopyFiles=/@os-staging:/@images 写入 @images 子卷根
+# （0444 与 70-root.transfer 的 Target Mode= 对齐）。路径契约：@images 子卷根
+# = 70-root.transfer Target /var/lib/basalt/images（fstab @images 条目同源）
+# = initrd-root-overlay 的 /sysroot/images（@images 子卷挂载点；33532141777
+# 实证：种子不在查找路径根导致 loop mount ENOENT ×15 → emergency）
+install -D -m 0444 "${EROFS_FILE}" "${STAGED_OS_DIR}/${IMAGE_ID}_${VER}.erofs"
 
 # ── rescue UKI（Phase 1：同 kernel+initrd，cmdline 追加只读根分支）──
 # 手工 ukify 独立 UKI 是必要路线：mkosi v26 UnifiedKernelImageProfiles=
@@ -346,7 +348,7 @@ ukify build \
 # 派生关系（文件轮转）：
 #   ESP 目标  = max(单 UKI 实测) × (InstancesMax+1) + rescue UKI 实测
 #               （+1 = 更新过程瞬态；≥ 64MiB vfat 实用下限）
-#   名义盘    = ESP + var 静息（@data 种子 + @os 1 份镜像 + overlay 目录）
+#   名义盘    = ESP + var 静息（@data 种子 + @images 1 份镜像 + @os overlay 目录）
 #               × IMAGE_HEADROOM + (InstancesMax-1) 份额外镜像 + ROOT_MARGIN_MB
 #               （IMAGE_SIZE_MB 显式设置时优先于计算值）
 ukis=("${WORK_DIR}"/${IMAGE_ID}*.efi)
@@ -379,8 +381,8 @@ rm -f "${PASS1_ROOT_CONF}"
 
 # 渲染 3/3：var 增补种子 CopyFiles（.orig 备份由通用暂存-恢复机制承载）
 cat >> "${REPART_DIR}/30-var.conf" <<EOF
-# build.sh pass2 渲染：EROFS 种子入 @os
-CopyFiles=/@os-staging:/@os
+# build.sh pass2 渲染：EROFS 种子入 @images
+CopyFiles=/@os-staging:/@images
 EOF
 
 info "mkosi -f build（pass 2/2：终盘 = ESP + var；包缓存/增量缓存仍生效）..."
@@ -408,7 +410,7 @@ cp -f "${EROFS_FILE}" "${OUTPUT_DIR}/"
 # BUILT_RAW 已是最终产物名（显式版本恒注入，与 RAW_FILE 同名）
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
 
-# ── 分区实测：var 静息尺寸（@data 种子 + @os 1 份镜像 + overlay 目录）──
+# ── 分区实测：var 静息尺寸（@data 种子 + @images 1 份镜像 + @os overlay 目录）──
 erofs_bytes=$(stat -c %s "${EROFS_FILE}")
 read -r var_bytes < <(sfdisk -J "${RAW_FILE}" | python3 -c '
 import json, sys
