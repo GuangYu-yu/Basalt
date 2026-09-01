@@ -35,7 +35,6 @@ source "${SCRIPT_DIR}/build.env"
 MB=$(( 1024 * 1024 ))                      # 字节算术统一单位，杜绝裸字面量
 SMOKE=false
 INSTANCES_MAX="${INSTANCES_MAX:-3}"        # 兜底默认（正源在 build.env）
-ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-128}"    # overlay 增长 + btrfs 元数据余量
 
 CLI_FORMATS=()
 while [[ $# -gt 0 ]]; do
@@ -348,13 +347,13 @@ ukify build \
     --cmdline="${UKI_CMDLINE} basalt.ro=1 systemd.unit=rescue.target" \
     --output="${STAGED_RESCUE_UKI}"
 
-# ── 自适应定稿（pass2 派生全部尺寸）──
-# 派生关系（文件轮转）：
-#   ESP 目标  = max(单 UKI 实测) × (InstancesMax+1) + rescue UKI 实测
-#               （+1 = 更新过程瞬态；≥ 64MiB vfat 实用下限）
-#   名义盘    = ESP + var 静息（@data 种子 + @images 1 份镜像 + @os overlay 目录）
-#               × IMAGE_HEADROOM + (InstancesMax-1) 份额外镜像 + ROOT_MARGIN_MB
-#               （IMAGE_SIZE_MB 显式设置时优先于计算值）
+# ── ESP 自适应定稿（唯一需要预算的固定尺寸）──
+#   ESP 目标 = max(单 UKI 实测) × (InstancesMax+1) + rescue UKI 实测
+#              （+1 = 更新过程瞬态；≥ 64MiB vfat 实用下限）
+# var 保持 Minimize=guess 紧凑尺寸；盘尾增长空间不烘焙进镜像——真实部署盘
+# / 测试 expand（LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES）提供，首启
+# systemd-repart（92-var-grow.conf Weight=100）+ x-systemd.growfs 吃掉。
+# 显式 IMAGE_SIZE_MB 时仍可按指定总尺寸 truncate（罕见场景）。
 ukis=("${WORK_DIR}"/${IMAGE_ID}*.efi)
 [[ -e "${ukis[0]}" ]] || die "未找到 UKI 产物，自适应定稿失败（构建输出异常）"
 uki_bytes=0
@@ -416,33 +415,13 @@ cp -f "${EROFS_FILE}" "${OUTPUT_DIR}/"
 # BUILT_RAW 已是最终产物名（显式版本恒注入，与 RAW_FILE 同名）
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
 
-# ── 分区实测：var 静息尺寸（@data 种子 + @images 1 份镜像 + @os overlay 目录）──
-erofs_bytes=$(stat -c %s "${EROFS_FILE}")
-read -r var_bytes < <(sfdisk -J "${RAW_FILE}" | python3 -c '
-import json, sys
-t = json.load(sys.stdin)["partitiontable"]
-ss = int(t.get("sectorsize", 512))
-# DPS（Discoverable Partition Specification）标准类型：var
-VAR = "4d21b016-b534-45c2-a9fb-5c16e091fd2d"
-var = next((p for p in t["partitions"] if p.get("type", "").lower() == VAR), None)
-print((var["size"] * ss) if var else 0)
-')
-# var 实测失败时转储分区表 JSON 供诊断（type 匹配依赖 sfdisk 输出格式）
-[[ -n "${var_bytes:-}" && "${var_bytes}" -gt 0 ]] || {
-    sfdisk -J "${RAW_FILE}" >&2 || true
-    die "var 分区实测失败（上方为 sfdisk -J 原始输出）"
-}
-nominal_mb=$(( ( esp_target + var_bytes * IMAGE_HEADROOM
-                 + erofs_bytes * ( INSTANCES_MAX - 1 )
-                 + ROOT_MARGIN_MB * MB + MB - 1 ) / MB ))
-info "自适应: UKI=${uki_bytes}B → ESP=${esp_target}B；erofs=${erofs_bytes}B 保留${INSTANCES_MAX}份；名义=${nominal_mb}MB（var 余量 ×${IMAGE_HEADROOM}）"
-
-# 名义尺寸：显式 IMAGE_SIZE_MB 优先，否则用自适应计算值；
-# 不得小于 mkosi 实际产出（否则 truncate 切掉 var 尾部与 GPT 备份头）
-raw_mb=$(( ($(stat -c %s "${RAW_FILE}") + MB - 1) / MB ))
-(( nominal_mb < raw_mb )) && nominal_mb=${raw_mb}
-IMAGE_SIZE_MB="${IMAGE_SIZE_MB:-${nominal_mb}}"
-truncate -s "${IMAGE_SIZE_MB}M" "${RAW_FILE}"
+# 显式 IMAGE_SIZE_MB：按指定总尺寸 truncate（罕见场景）；
+# 默认留空 = 紧凑产物（mkosi pass2 产出，ESP 定稿 + var 内容实测）
+if [[ -n "${IMAGE_SIZE_MB}" ]]; then
+    raw_mb=$(( ($(stat -c %s "${RAW_FILE}") + MB - 1) / MB ))
+    (( IMAGE_SIZE_MB < raw_mb )) && IMAGE_SIZE_MB=${raw_mb}
+    truncate -s "${IMAGE_SIZE_MB}M" "${RAW_FILE}"
+fi
 
 # ── 冒烟 ──
 if [[ "${SMOKE}" == "true" ]]; then
