@@ -6,6 +6,8 @@ enable ssh.service
 enable networking.service
 enable chrony.service
 enable systemd-sysupdate.timer
+# 临时诊断：readiness dump（boot 后自动取证，用后即删，见 readiness-dump.sh 头注释）
+enable readiness-dump.service
 # 双网络栈/双 NTP 防护：即使上游包默认启用也强制关闭
 disable systemd-resolved.service
 disable NetworkManager.service
