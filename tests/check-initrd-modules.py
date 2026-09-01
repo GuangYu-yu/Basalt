@@ -408,34 +408,22 @@ def kver_from_names(names: list[str]) -> str | None:
 
 
 def extract_system_map(root_raw: Path, kver: str, dest: Path) -> tuple[bool, str]:
-    """从根 EROFS 提取 System.map：先探测后提取，不假设路径存在。
+    """从根 EROFS 提取 System.map：/usr/lib/modules/<kver>/System.map。
 
-    探测：dump.erofs --ls --path=/boot，命中 System.map-<kver> 才 --cat；
-    不存在即明确 FAIL（不猜测其它路径）。--cat 失败只依赖非零退出码
-    判定，不匹配 stderr 文本（dump.erofs 措辞无稳定契约）。
+    mkosi 构建期把 System.map 放该路径（initrd 子镜像 RemoveFiles=
+    /usr/lib/modules/*/System.map 为证），根镜像无对应删除规则 → 应保留。
+    以提取命令作事实验证：存在即 --cat 使用，失败即明确 FAIL；
+    只依赖非零退出码/空产物判定，不匹配 stderr 文本。
     """
-    ls = subprocess.run(
-        ["dump.erofs", "--ls", "--path=/boot", str(root_raw)],
-        capture_output=True, text=True)
-    if ls.returncode != 0:
-        detail = (ls.stderr or ls.stdout or "").strip()
-        return False, f"dump.erofs --ls /boot 失败（exit {ls.returncode}）：{detail[:200]}"
-    entries = []
-    for line in ls.stdout.splitlines():
-        if not line.strip():
-            continue
-        name = line.split()[-1].rsplit("/", 1)[-1]
-        entries.append(name)
-        if name == f"System.map-{kver}":
-            with open(dest, "wb") as f:
-                p = subprocess.run(
-                    ["dump.erofs", f"--path=/boot/{name}", "--cat", str(root_raw)],
-                    stdout=f, stderr=subprocess.PIPE)
-            if p.returncode != 0 or dest.stat().st_size == 0:
-                detail = (p.stderr or b"").decode("utf-8", "replace").strip()
-                return False, f"--cat /boot/{name} 失败（exit {p.returncode}）：{detail[:200]}"
-            return True, ""
-    return False, "未找到 System.map-<kver>；/boot 条目：" + "、".join(entries[:30])
+    path = f"/usr/lib/modules/{kver}/System.map"
+    with open(dest, "wb") as f:
+        p = subprocess.run(
+            ["dump.erofs", f"--path={path}", "--cat", str(root_raw)],
+            stdout=f, stderr=subprocess.PIPE)
+    if p.returncode != 0 or dest.stat().st_size == 0:
+        detail = (p.stderr or b"").decode("utf-8", "replace").strip()
+        return False, f"--cat {path} 失败（exit {p.returncode}）：{detail[:200]}"
+    return True, ""
 
 
 def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
@@ -446,8 +434,8 @@ def check_symbol_closure(blob: bytes, erofs: Path, kver: str) -> list[str]:
     需 crc32c 符号提供者，遗漏导致 modprobe ENOENT）。此处以 depmod 的
     符号解析（dep 级 + -F 内核符号）补齐该盲区。诊断输出非空即失败
     （不解析关键词，depmod 措辞无稳定契约）。System.map 从根镜像
-    EROFS 提取：先 dump.erofs --ls 探测 /boot，命中 System.map-<kver>
-    才 --cat，不存在即明确 FAIL（不假设 linux-image 一定装到 /boot）。
+    EROFS 提取：--cat /usr/lib/modules/<kver>/System.map（mkosi 构建期
+    放置路径），失败即明确 FAIL（事实验证，不做 SplitArtifacts 假设）。
     """
     with tempfile.TemporaryDirectory(prefix="basalt-sym-") as tmp:
         root = Path(tmp)
