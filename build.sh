@@ -343,7 +343,7 @@ UKI_CMDLINE="$(objcopy -O binary --only-section=.cmdline "${UKI_FILE_PASS1}" /de
 # 故在构建期即硬性断言（运行期契约由 readiness 的 guest 侧检查兜底）
 UKI_OSREL="$(objcopy -O binary --only-section=.osrel "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
 grep -q "^IMAGE_VERSION=${VER}\$" <<<"${UKI_OSREL}" \
-    || die "UKI .osrel 缺少 IMAGE_VERSION=${VER}（ProtectVersion=%A 契约破坏）"
+    || die "UKI .osrel 缺少 IMAGE_VERSION=${VER}（ProtectVersion=%A 契约破坏）; .osrel 实际=[$(echo "${UKI_OSREL}" | tr '\n' ' ')]"
 grep -q "^IMAGE_ID=${IMAGE_ID}\$" <<<"${UKI_OSREL}" \
     || die "UKI .osrel 缺少 IMAGE_ID=${IMAGE_ID}"
 # UKI 内实际 initrd = 子镜像 initrd + kernel-modules initrd 的拼接流
