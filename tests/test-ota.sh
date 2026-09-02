@@ -260,6 +260,11 @@ phase_vacuum() {
     echo "============================================================"
     # 种子 4 个新版本（内容无关紧要：vacuum 只按文件名版本计数；不被启动）
     guest_run "mount -o remount,rw /var/lib/basalt/images"
+    # ── 临时取证（CI 绿后撤）：工厂 v1 UKI 在 ESP 的真实文件名 ──
+    # mkosi 未配置 KernelName=，默认命名 $e-$k（不保证 basalt_1.efi），
+    # 探测真实名以校正 seed 源（见 L287 同源断言）
+    guest_run "ls -la /efi/EFI/Linux"
+    guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -printf '%f\n'"
     for v in 2 3 4 5; do
         guest_run "cp /var/lib/basalt/images/${IMAGE_ID}_${V1}.erofs /var/lib/basalt/images/${IMAGE_ID}_${v}.erofs"
         guest_run "cp /efi/EFI/Linux/${IMAGE_ID}_${V1}.efi /efi/EFI/Linux/${IMAGE_ID}_${v}.efi"
