@@ -306,8 +306,10 @@ phase_vacuum() {
 
     ota_check "vacuum 后当前（受保护）版本镜像存在" \
         grep -q "^${IMAGE_ID}_${V1}\.erofs\$" <<<"${imgs}"
-    ota_check "vacuum 淘汰最旧非保护版本（v2）" \
-        ! grep -q "^${IMAGE_ID}_2\.erofs\$" <<<"${imgs}"
+    # ota_check 经 "$@" 执行命令，无法承载 shell 否定前缀 `!`（被当命令名）；
+    # "v2 已淘汰" = grep v2 必须失败 → 用 ota_check_fails 承载
+    ota_check_fails "vacuum 淘汰最旧非保护版本（v2）" \
+        grep -q "^${IMAGE_ID}_2\.erofs\$" <<<"${imgs}"
     local n_erofs
     n_erofs="$(grep -c "^${IMAGE_ID}_[0-9].*\.erofs\$" <<<"${imgs}" || true)"
     ota_check "EROFS 实例数 ≤ InstancesMax+1（保护版本可额外保留，n=${n_erofs}）" \
