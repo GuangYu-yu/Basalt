@@ -39,6 +39,8 @@ runs:
         sudo apt-get update
         # systemd-ukify/binutils/xz-utils：OTA 测试伪造版本物料
         # （objcopy 抽 PE 段 + ukify 重排 + xz 压缩 erofs）
+        # systemd-boot-efi：ukify 的 PE stub（/usr/lib/systemd/boot/efi/linuxx64.efi.stub），
+        # 缺包时 ukify 报 FileNotFoundError（与 build.sh 宿主侧校验同源）
         sudo apt-get install -y sshpass socat curl jq \
           qemu-system-x86 ovmf qemu-utils \
-          systemd-ukify binutils xz-utils
+          systemd-ukify systemd-boot-efi binutils xz-utils
