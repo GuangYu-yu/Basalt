@@ -258,11 +258,17 @@ phase_vacuum() {
     echo "============================================================"
     echo "Phase: 矩阵 7 — vacuum（运行 v${V1}，ProtectVersion 一致）"
     echo "============================================================"
+    # boot 收敛校验：每次 boot 由 images-lock.service 强制 @images 子卷属性
+    # ro=true（fstab 挂载保持 rw，只读在 btrfs 属性层）。此前首窗口已锁。
+    ota_check "boot 收敛 @images ro=true（images-lock.service）" \
+        guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
     # seed 源双重保障：erofs 与当前镜像同命名；工厂主 UKI 契约校验——
     # ESP 中唯一非 boot-count 的主 UKI（rescue 为连字符名，underscore 模式
     # 天然排除）必须恰为 ${IMAGE_ID}_${V1}.efi（sysupdate MatchPattern=@v 同源，
     # 构建侧 UnifiedKernelImageFormat=%i_%v.efi 保证）。不符则 dump 清单并失败。
-    guest_run "mount -o remount,rw /var/lib/basalt/images"
+    # 解锁（btrfs 子卷属性 ro=false；remount,rw 已被属性方案取代——同 superblock
+    # 下 remount,ro 必 EBUSY，见 fstab 注释）。
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro false"
     factory_uki="${IMAGE_ID}_${V1}.efi"
     found_uki="$(guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -name '${IMAGE_ID}_*.efi' ! -name '*+*' -printf '%f\n'")"
     if [[ "${found_uki}" != "${factory_uki}" ]]; then
@@ -276,71 +282,22 @@ phase_vacuum() {
         guest_run "cp /var/lib/basalt/images/${IMAGE_ID}_${V1}.erofs /var/lib/basalt/images/${IMAGE_ID}_${v}.erofs"
         guest_run "cp /efi/EFI/Linux/${IMAGE_ID}_${V1}.efi /efi/EFI/Linux/${IMAGE_ID}_${v}.efi"
     done
-    # cp 种子后 remount,ro。若失败（实测 mount busy 即发生于此，非下述 rw 窗口），
-    # set -e 会直接退出且取证不执行——故此处同样前置基线+显式捕获 rc 取证。
-    guest_run "echo '=== RO-BASELINE ==='; mount | grep images; df -h /var/lib/basalt/images" >&2 || true
-    set +e
-    guest_run "mount -o remount,ro /var/lib/basalt/images"
-    rc=$?
-    set -e
-    if (( rc != 0 )); then
-        echo "[FAIL] 种子后 @images remount,ro 失败 (rc=${rc})" >&2
-        # /proc 无依赖取证：fuser 在 guest 缺失。SSH 参数含 -n（stdin 禁传），
-        # 故先把远端脚本读入 host 变量，再作单参数传给 guest_run，绕开 -n。
-        # 列出 mountinfo + 所有指向 images 的 FD 及其打开 flags/PID/cmdline，
-        # 区分"确有可写 FD"与"子挂载/命名空间"。
-        local diag
-        diag="$(cat <<'ROF'
-echo "=== FULL MOUNTINFO: /dev/vda2 (all subvols) ==="
-awk '$3 ~ /vda2/ {print}' /proc/self/mountinfo || true
-echo "=== PROPAGATION GROUP shared:92 members ==="
-grep -F 'shared:92' /proc/self/mountinfo || true
-echo "=== OVERLAY MOUNTS ==="
-grep -i overlay /proc/self/mountinfo || true
-echo "=== MOUNT TREE (findmnt -R) ==="
-findmnt -R / 2>/dev/null || true
-echo "=== ALL MOUNTS ==="
-findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS,PROPAGATION 2>/dev/null || true
-echo "=== FDS UNDER IMAGES (with open flags) ==="
-for p in /proc/[0-9]*; do
-    pid=${p#/proc/}
-    [ -r "$p/cmdline" ] || continue
-    for fd in "$p"/fd/*; do
-        [ -e "$fd" ] || continue
-        target=$(readlink "$fd" 2>/dev/null || true)
-        case "$target" in
-            /var/lib/basalt/images/*|/var/lib/basalt/images)
-                flags=$(tr '\0' ' ' <"$p/fdinfo/${fd##*/}" 2>/dev/null | sed -n 's/^flags:\t//p')
-                cmd=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)
-                printf 'PID=%s FD=%s TARGET=%s FLAGS=%s CMD=[%s]\n' "$pid" "${fd##*/}" "$target" "$flags" "$cmd"
-                ;;
-        esac
-    done
-done
-ROF
-)" || true
-        guest_run "$diag" >&2 || true
-        guest_run "systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
-        return 1
-    fi
+    # cp 种子后锁回 @images（btrfs 子卷属性 ro=true；原 mount remount,ro 在
+    # 共享 superblock 下必 EBUSY，已弃用——见 fstab/10-images-rw.conf 注释）。
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro true"
 
-    # vacuum 的 @images rw 窗口。此前首窗口 + 种子已成功；若此处 remount 报
-    # "mount point is busy"（首见，临时取证）：失败即 dump 挂载/占用/容量，退出
-    # 显式捕获退出码（set -e 下 if ! 不可靠）；取证命令各自 || true 防 set -e 中断
-    # 前置基线 dump：若 busy 来自 guest 内 systemd-sysupdate.service 而非本命令，
-    # 则"失败后取证"链会失效，故此先记录一次当前挂载/占用/容量实况。
-    guest_run "echo '=== BASELINE ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images" >&2 || true
+    # vacuum 的 @images rw 窗口：临时解锁属性 → vacuum → 恢复加锁。
+    # 显式捕获退出码（set -e 下 if ! 不可靠）；加锁恢复置于判失败前，成败皆锁。
     set +e
-    guest_run "mount -o remount,rw /var/lib/basalt/images && systemd-sysupdate vacuum"
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro false && systemd-sysupdate vacuum"
     rc=$?
     set -e
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro true" || true
     if (( rc != 0 )); then
-        echo "[FAIL] vacuum 前 @images rw 窗口 remount/sysupdate 失败 (rc=${rc})" >&2
-        guest_run "echo '=== FORENSIC ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images" >&2 || true
+        echo "[FAIL] vacuum 前 @images rw 窗口解锁/vacuum 失败 (rc=${rc})" >&2
         guest_run "systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
         return 1
     fi
-    guest_run "mount -o remount,ro /var/lib/basalt/images" || true
 
     local imgs ukis
     imgs="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
@@ -360,9 +317,9 @@ ROF
         grep -q "^${IMAGE_ID}_${V1}\.efi\$" <<<"${ukis}"
 
     # 清理种子残留：避免污染后续 OTA 阶段的版本枚举与 sd-boot 最新版选择
-    guest_run "mount -o remount,rw /var/lib/basalt/images"
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro false"
     guest_run "sh -c 'cd /var/lib/basalt/images && ls | grep -v \"^${IMAGE_ID}_${V1}\\.erofs\$\" | xargs -r rm -f'"
-    guest_run "mount -o remount,ro /var/lib/basalt/images"
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro true"
     guest_run "sh -c 'cd /efi/EFI/Linux && ls | grep -E \"^${IMAGE_ID}_[0-9]\" | xargs -r rm -f'"
 }
 
@@ -379,8 +336,8 @@ phase_ota_update() {
     local result
     result="$(ota_run_update)"
     ota_check "sysupdate 更新安装成功（Result=${result}）" test "${result}" = "success"
-    ota_check "@images wrapper 恢复 ro（V12）" \
-        guest_run "findmnt -no OPTIONS /var/lib/basalt/images | grep -qw ro"
+    ota_check "@images wrapper 恢复 ro=true（V12，btrfs 属性）" \
+        guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
     ota_check "EROFS 成对落盘（${IMAGE_ID}_${ver}.erofs）" \
         guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
     ota_check "UKI 落盘带 tries 计数（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \

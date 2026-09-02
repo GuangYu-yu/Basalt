@@ -78,7 +78,7 @@ docker run --rm --privileged -v "${PWD}:/src" -w /src basalt-builder ./build.sh
 - **ESP**：systemd-boot + 版本化 UKI（带 `+3-0` tries 计数）+ rescue UKI；尺寸 = max(UKI) × (INSTANCES_MAX+1) + rescue 实测（+1 为更新瞬态，下限 64M）
 - **var**（btrfs，zstd:1 / noatime）：
   - `@os` 子卷：`overlay/` 全根增量层 upper/work（跨版本共享）；initrd 期即 sysroot
-  - `@images` 子卷：各版本 EROFS 镜像（0444），运行期默认 ro（误删不可能；仅 sysupdate 更新窗口 rw）
+  - `@images` 子卷：各版本 EROFS 镜像（0444），只读保护为 btrfs 子卷属性（ro=true，images-lock.service 每次 boot 收敛；误删不可能；仅 sysupdate 更新窗口内临时属性解锁）
   - `@data` 子卷（默认卷）：journald 日志、landscape 状态等持久数据；首启扩满剩余空间
 
 运行期挂载（fstab 单一事实）：
@@ -88,7 +88,9 @@ docker run --rm --privileged -v "${PWD}:/src" -w /src basalt-builder ./build.sh
                                             upper/work=@os overlay/，initrd 期组装）
 /var                    btrfs @data
 /var/lib/basalt         btrfs @os（overlay 层宿主与运维访问）
-/var/lib/basalt/images  btrfs @images,ro（sysupdate 目标目录；rw 窗口见
+/var/lib/basalt/images  btrfs @images（sysupdate 目标目录；VFS 保持 rw，
+                        只读在 btrfs 属性层：images-lock.service 收敛
+                        ro=true，rw 窗口见
                         systemd-sysupdate.service.d/10-images-rw.conf）
 /efi                    ESP
 ```
@@ -100,7 +102,7 @@ overlay 组装失败进 initrd 紧急模式（无回退分支），由 rescue UK
 设备侧 `systemd-sysupdate.timer` 定时消费 `/usr/lib/sysupdate.d/` 定义：
 
 1. 从发布 URL（`updates.example.com/basalt/`，需按部署环境修改）拉取 `SHA256SUMS` 枚举可用版本
-2. 按共同版本号成对安装：EROFS 镜像 → `/var/lib/basalt/images`（`@images`，更新窗口内临时 remount rw），UKI → ESP（入口点最后写，字母序保证）；各保留 `INSTANCES_MAX`（默认 3）份，当前运行版本受 `ProtectVersion=%A` 保护永不被清理
+2. 按共同版本号成对安装：EROFS 镜像 → `/var/lib/basalt/images`（`@images`，更新窗口内 wrapper 临时解锁子卷属性 ro=false），UKI → ESP（入口点最后写，字母序保证）；各保留 `INSTANCES_MAX`（默认 3）份，当前运行版本受 `ProtectVersion=%A` 保护永不被清理
 3. systemd-boot 按版本排序，下次启动自动进入新版（tries 计数 + `systemd-bless-boot` 健康确认）；更新中断的残留由下次调用自动清除
 
 回滚 = 启动菜单选旧版本 UKI（其 cmdline 指向仍在 `@images` 的同版本镜像）。增量层跨版本共享（`/etc` 是当前状态而非版本属性），回滚后系统状态保持最新版本的累积结果；注意自动回滚只切换镜像层，共享增量层的语义污染（新版写坏 /etc 状态）须走 rescue 人工介入。

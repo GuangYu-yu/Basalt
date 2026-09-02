@@ -21,8 +21,8 @@ After=sysroot.mount systemd-repart.service dev-disk-by\x2dpartlabel-var.device
 #      （挂载瞬间解析，overlayfs pin 底层挂载）
 #   5. switch_root 后：/ = overlay；/var 由真实根 fstab 以 subvol=@data 挂
 #      同一 btrfs；/var/lib/basalt 再以 subvol=@os 挂载，/var/lib/basalt/
-#      images 以 subvol=@images,ro 挂载（默认 ro，sysupdate rw wrapper 窗口
-#      外不可写）
+#      images 以 subvol=@images 挂载（只读保护在 btrfs 属性层 ro=true，
+#      images-lock.service 每次 boot 收敛；sysupdate wrapper 窗口外不可写）
 # basalt.ro=1（rescue UKI）：跳过 overlay，双 move 得纯只读 EROFS 根
 #   move 前须 make-private：/sysroot（@os）与 /run/root-image 传播属性为
 #   shared，mount --move 跨传播域移动不被支持

@@ -1,0 +1,21 @@
+# @images 只读收敛（boot 期强制）
+# 每次 boot 无条件把 @images 子卷属性收敛为 ro=true。只读保护在 btrfs 属性层
+# （fstab 挂载保持 rw；mount remount,ro 在同 superblock 其他 rw 挂载下必 EBUSY，
+# 见 fstab 注释）——OTA wrapper（systemd-sysupdate.service.d/10-images-rw.conf）
+# 临时 ro=false → 写 → trap 恢复 true；若中途断电/崩溃残留 ro=false，本单元
+# 在下次 boot 收敛，消除持久可写窗口。
+# After=var-lib-basalt-images.mount：fstab 生成的 @images 挂载（local-fs 段），
+# 属性操作须挂载就绪。Before=systemd-sysupdate.service + multi-user.target：
+# sysupdate 是唯一运行期写者，boot 序确保收敛先于任何写。
+[Unit]
+Description=Lock basalt @images subvolume read-only
+After=var-lib-basalt-images.mount
+Before=systemd-sysupdate.service multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=btrfs property set -ts /var/lib/basalt/images ro true
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

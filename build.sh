@@ -15,7 +15,8 @@
 #          （CopyFiles=/@os-staging:/@images），终盘 = ESP + var(btrfs)
 #   运行期 systemd-sysupdate 按版本号成对更新 EROFS 文件 + UKI
 #   （mkosi.extra/usr/lib/sysupdate.d/），当前版本 ProtectVersion=%A 保护；
-#   @images 运行期默认 ro，rw 窗口由 systemd-sysupdate.service.d/ 承载
+#   @images 运行期默认 ro（btrfs 属性 ro=true，images-lock 收敛），rw 窗口
+#   由 systemd-sysupdate.service.d/10-images-rw.conf 承载
 # =============================================================================
 set -euo pipefail
 
