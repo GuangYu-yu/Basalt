@@ -355,6 +355,13 @@ phase_ota_update() {
     guest_run "mkdir -p /etc/repart.d && printf '[Partition]\nType=var\nWeight=100\n' > /etc/repart.d/92-var-grow.conf" || true
     guest_run "systemd-repart --definitions=/etc/repart.d --dry-run=no /dev/disk/by-partlabel/var 2>&1 | tail -n 20; echo RC=\$?" || true
     guest_run "lsblk /dev/vda; df -h /var" || true
+    echo "=== [probe] 真实根 repart 服务状态 ==="
+    guest_run "systemctl is-enabled systemd-repart.service; systemctl status systemd-repart.service --no-pager -l | tail -n 12" || true
+    guest_run "journalctl -b -u systemd-repart.service --no-pager | tail -n 25" || true
+    guest_run "cat /etc/systemd/system/systemd-repart.service.d/10-var-grow.conf; ls -la /etc/repart.d" || true
+    # 分区已长而 fs 未长：growfs 窗口已过，直接扩展 btrfs 解锁后续矩阵
+    guest_run "btrfs filesystem resize max /var" || true
+    guest_run "df -h /var" || true
 
     local result
     result="$(ota_run_update)"
