@@ -276,7 +276,18 @@ phase_vacuum() {
         guest_run "cp /var/lib/basalt/images/${IMAGE_ID}_${V1}.erofs /var/lib/basalt/images/${IMAGE_ID}_${v}.erofs"
         guest_run "cp /efi/EFI/Linux/${IMAGE_ID}_${V1}.efi /efi/EFI/Linux/${IMAGE_ID}_${v}.efi"
     done
+    # cp 种子后 remount,ro。若失败（实测 mount busy 即发生于此，非下述 rw 窗口），
+    # set -e 会直接退出且取证不执行——故此处同样前置基线+显式捕获 rc 取证。
+    guest_run "echo '=== RO-BASELINE ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images" >&2 || true
+    set +e
     guest_run "mount -o remount,ro /var/lib/basalt/images"
+    rc=$?
+    set -e
+    if (( rc != 0 )); then
+        echo "[FAIL] 种子后 @images remount,ro 失败 (rc=${rc})" >&2
+        guest_run "echo '=== RO-FORENSIC ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images; systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
+        return 1
+    fi
 
     # vacuum 的 @images rw 窗口。此前首窗口 + 种子已成功；若此处 remount 报
     # "mount point is busy"（首见，临时取证）：失败即 dump 挂载/占用/容量，退出
