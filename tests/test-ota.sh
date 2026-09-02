@@ -324,7 +324,9 @@ phase_vacuum() {
     guest_run "btrfs property set -ts /var/lib/basalt/images ro false"
     guest_run "sh -c 'cd /var/lib/basalt/images && ls | grep -v \"^${IMAGE_ID}_${V1}\\.erofs\$\" | xargs -r rm -f'"
     guest_run "btrfs property set -ts /var/lib/basalt/images ro true"
-    guest_run "sh -c 'cd /efi/EFI/Linux && ls | grep -E \"^${IMAGE_ID}_[0-9]\" | xargs -r rm -f'"
+    # ESP 侧清理同样必须排除 v1（^basalt_[0-9] 会同时匹配工厂主 UKI
+    # basalt_1.efi——曾实测误删导致 v1 判 incomplete、后续 update no-op）
+    guest_run "sh -c 'cd /efi/EFI/Linux && ls | grep -E \"^${IMAGE_ID}_[0-9]\" | grep -v \"^${IMAGE_ID}_${V1}\\.efi\$\" | xargs -r rm -f'"
 }
 
 phase_ota_update() {
