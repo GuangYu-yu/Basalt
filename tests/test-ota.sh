@@ -286,10 +286,11 @@ phase_vacuum() {
     # 共享 superblock 下必 EBUSY，已弃用——见 fstab/10-images-rw.conf 注释）。
     guest_run "btrfs property set -ts /var/lib/basalt/images ro true"
 
+    # systemd-sysupdate bin 在 /usr/lib/systemd/（不在 PATH），须全路径调用；
     # vacuum 的 @images rw 窗口：临时解锁属性 → vacuum → 恢复加锁。
     # 显式捕获退出码（set -e 下 if ! 不可靠）；加锁恢复置于判失败前，成败皆锁。
     set +e
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro false && systemd-sysupdate vacuum"
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro false && /usr/lib/systemd/systemd-sysupdate vacuum"
     rc=$?
     set -e
     guest_run "btrfs property set -ts /var/lib/basalt/images ro true" || true
