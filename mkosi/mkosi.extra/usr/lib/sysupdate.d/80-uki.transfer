@@ -12,6 +12,9 @@
 # directory——sysupdate.d(5) 资源类型矩阵），Path= 为容纳多版本文件的目录，
 # MatchPattern= 定目录内文件命名（boot counting 文件名，@d/@l 三段式）。
 [Transfer]
+# 运行版本 UKI 同受 ProtectVersion=%A 保护（与 70-root 一致）：vacuum 不删
+# 当前启动的 UKI——缺此字段时 basalt_1.efi 会被当旧实例清掉（实测）。
+ProtectVersion=%A
 
 [Source]
 Type=url-file

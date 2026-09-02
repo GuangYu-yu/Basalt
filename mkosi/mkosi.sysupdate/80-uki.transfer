@@ -9,6 +9,8 @@
 # Path= 为容纳多版本文件的目录，与设备侧 70-root/80-uki 同构。
 # =============================================================================
 [Transfer]
+# 运行版本 UKI 同受 ProtectVersion=%A 保护（与构建侧 70-root 一致）
+ProtectVersion=%A
 
 [Source]
 Type=regular-file

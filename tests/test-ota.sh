@@ -218,6 +218,7 @@ EOF
 )"
     uki_b64="$(base64 -w0 <<EOF
 [Transfer]
+ProtectVersion=%A
 Verify=no
 
 [Source]
