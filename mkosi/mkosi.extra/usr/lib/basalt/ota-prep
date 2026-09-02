@@ -1,0 +1,18 @@
+# OTA 前置空间就绪（由 systemd-sysupdate.service wrapper 调用）：
+#   1. repart 增长 var 分区。启动早期（约头 2 分钟）repart 对离线扩盘的
+#      usable 视图陈旧——实测 PADDING=0B 静默 "No changes"，数分钟后同一
+#      命令即可见全部空闲；故轮询重试直至 vda2 尺寸变化或超时。
+#   2. 分区增长后 btrfs resize 扩展文件系统（x-systemd.growfs 只在挂载
+#      窗口运行一次，错过则分区已长而 fs 未长）。
+# 实测 v2 更新需瞬态 ~197M，var 紧凑态仅 ~66M 可用，不足即 EIO。
+before=$(cat /sys/block/vda/vda2/size)
+i=0
+while :; do
+    /usr/bin/systemd-repart --definitions=/etc/repart.d /dev/disk/by-partlabel/var || true
+    after=$(cat /sys/block/vda/vda2/size)
+    [ "$after" != "$before" ] && break
+    i=$((i + 1))
+    [ $i -ge 18 ] && break
+    sleep 10
+done
+btrfs filesystem resize max /var
