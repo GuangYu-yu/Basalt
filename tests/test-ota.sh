@@ -285,15 +285,18 @@ phase_vacuum() {
     set -e
     if (( rc != 0 )); then
         echo "[FAIL] 种子后 @images remount,ro 失败 (rc=${rc})" >&2
-        # /proc 无依赖取证：fuser 在 guest 缺失；列出 mountinfo + 所有指向
-        # images 的 FD 及其打开 flags/PID/cmdline，区分"确有可写 FD"与"子挂载/命名空间"。
-        guest_run "bash -s" >&2 <<'ROF' || true
-echo '=== MOUNTINFO ==='
+        # /proc 无依赖取证：fuser 在 guest 缺失。SSH 参数含 -n（stdin 禁传），
+        # 故先把远端脚本读入 host 变量，再作单参数传给 guest_run，绕开 -n。
+        # 列出 mountinfo + 所有指向 images 的 FD 及其打开 flags/PID/cmdline，
+        # 区分"确有可写 FD"与"子挂载/命名空间"。
+        local diag
+        diag="$(cat <<'ROF'
+echo "=== MOUNTINFO ==="
 findmnt -R /var/lib/basalt/images || true
-grep -F '/var/lib/basalt/images' /proc/self/mountinfo || true
-echo '=== MOUNT TREE /proc/self/mounts ==='
-grep -F '/var/lib/basalt/images' /proc/self/mounts || true
-echo '=== FDS UNDER IMAGES (with open flags) ==='
+grep -F "/var/lib/basalt/images" /proc/self/mountinfo || true
+echo "=== MOUNT TREE /proc/self/mounts ==="
+grep -F "/var/lib/basalt/images" /proc/self/mounts || true
+echo "=== FDS UNDER IMAGES (with open flags) ==="
 for p in /proc/[0-9]*; do
     pid=${p#/proc/}
     [ -r "$p/cmdline" ] || continue
@@ -310,6 +313,8 @@ for p in /proc/[0-9]*; do
     done
 done
 ROF
+)" || true
+        guest_run "$diag" >&2 || true
         guest_run "systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
         return 1
     fi
