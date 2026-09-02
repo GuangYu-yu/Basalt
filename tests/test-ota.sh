@@ -243,10 +243,14 @@ EOF
 # 经 systemd-sysupdate.service（rw wrapper 窗口）执行更新；输出 service Result
 ota_run_update() {
     # 临时取证：service journal 为空（update 真实输出从未被捕获），改为前台
-    # 直跑与 ExecStart 完全相同的 wrapper 命令，完整捕获 sysupdate 的决策输出
-    echo "=== [probe] 前台直跑 sysupdate update（与 service ExecStart 等价）==="
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro false && /usr/lib/systemd/systemd-sysupdate update 2>&1; echo RC=\$?"
+    # 直跑与 ExecStart 完全相同的 wrapper 命令；输出 tee 到 stderr——调用方
+    # 以 $( ) 捕获 stdout，不落 stderr 则日志不可见（实测教训）
+    local out
+    out="$(guest_run "btrfs property set -ts /var/lib/basalt/images ro false && /usr/lib/systemd/systemd-sysupdate update 2>&1; echo RC=\$?")"
     guest_run "btrfs property set -ts /var/lib/basalt/images ro true" || true
+    echo "=== [probe] sysupdate update 完整输出 ===" >&2
+    echo "${out}" >&2
+    printf '%s' "${out}"
 }
 
 # ── 各阶段 ──
