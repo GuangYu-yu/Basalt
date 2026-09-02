@@ -280,14 +280,19 @@ phase_vacuum() {
 
     # vacuum 的 @images rw 窗口。此前首窗口 + 种子已成功；若此处 remount 报
     # "mount point is busy"（首见，临时取证）：失败即 dump 挂载/占用/容量，退出
-    if ! guest_run "mount -o remount,rw /var/lib/basalt/images && systemd-sysupdate vacuum"; then
-        echo "[FAIL] vacuum 前 @images rw 窗口 remount/sysupdate 失败" >&2
-        guest_run "mount | grep images" >&2
-        guest_run "df -h /var/lib/basalt/images" >&2
-        guest_run "fuser -vm /var/lib/basalt/images" >&2
+    # 显式捕获退出码（set -e 下 if ! 不可靠）；取证命令各自 || true 防 set -e 中断
+    set +e
+    guest_run "mount -o remount,rw /var/lib/basalt/images && systemd-sysupdate vacuum"
+    rc=$?
+    set -e
+    if (( rc != 0 )); then
+        echo "[FAIL] vacuum 前 @images rw 窗口 remount/sysupdate 失败 (rc=${rc})" >&2
+        guest_run "mount | grep images" >&2 || true
+        guest_run "df -h /var/lib/basalt/images" >&2 || true
+        guest_run "fuser -vm /var/lib/basalt/images" >&2 || true
         return 1
     fi
-    guest_run "mount -o remount,ro /var/lib/basalt/images"
+    guest_run "mount -o remount,ro /var/lib/basalt/images" || true
 
     local imgs ukis
     imgs="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
