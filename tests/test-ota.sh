@@ -278,14 +278,39 @@ phase_vacuum() {
     done
     # cp 种子后 remount,ro。若失败（实测 mount busy 即发生于此，非下述 rw 窗口），
     # set -e 会直接退出且取证不执行——故此处同样前置基线+显式捕获 rc 取证。
-    guest_run "echo '=== RO-BASELINE ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images" >&2 || true
+    guest_run "echo '=== RO-BASELINE ==='; mount | grep images; df -h /var/lib/basalt/images" >&2 || true
     set +e
     guest_run "mount -o remount,ro /var/lib/basalt/images"
     rc=$?
     set -e
     if (( rc != 0 )); then
         echo "[FAIL] 种子后 @images remount,ro 失败 (rc=${rc})" >&2
-        guest_run "echo '=== RO-FORENSIC ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images; systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
+        # /proc 无依赖取证：fuser 在 guest 缺失；列出 mountinfo + 所有指向
+        # images 的 FD 及其打开 flags/PID/cmdline，区分"确有可写 FD"与"子挂载/命名空间"。
+        guest_run "bash -s" >&2 <<'ROF' || true
+echo '=== MOUNTINFO ==='
+findmnt -R /var/lib/basalt/images || true
+grep -F '/var/lib/basalt/images' /proc/self/mountinfo || true
+echo '=== MOUNT TREE /proc/self/mounts ==='
+grep -F '/var/lib/basalt/images' /proc/self/mounts || true
+echo '=== FDS UNDER IMAGES (with open flags) ==='
+for p in /proc/[0-9]*; do
+    pid=${p#/proc/}
+    [ -r "$p/cmdline" ] || continue
+    for fd in "$p"/fd/*; do
+        [ -e "$fd" ] || continue
+        target=$(readlink "$fd" 2>/dev/null || true)
+        case "$target" in
+            /var/lib/basalt/images/*|/var/lib/basalt/images)
+                flags=$(tr '\0' ' ' <"$p/fdinfo/${fd##*/}" 2>/dev/null | sed -n 's/^flags:\t//p')
+                cmd=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)
+                printf 'PID=%s FD=%s TARGET=%s FLAGS=%s CMD=[%s]\n' "$pid" "${fd##*/}" "$target" "$flags" "$cmd"
+                ;;
+        esac
+    done
+done
+ROF
+        guest_run "systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
         return 1
     fi
 
