@@ -347,6 +347,8 @@ phase_ota_update() {
     guest_run "cat /proc/cmdline" || true
     echo "=== [probe] journal 中 ESP 文件删除痕迹 ==="
     guest_run "journalctl --no-pager | grep -iE 'basalt_1|EFI/Linux|unlink' | tail -n 40" || true
+    echo "=== [probe] var 分区扩容状态（df + lsblk + ro 属性）==="
+    guest_run "df -h /var/lib/basalt/images /var; lsblk /dev/vda; btrfs property get -ts /var/lib/basalt/images ro" || true
 
     local result
     result="$(ota_run_update)"
