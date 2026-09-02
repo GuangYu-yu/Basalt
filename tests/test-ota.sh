@@ -337,6 +337,15 @@ phase_ota_update() {
         "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
         "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
 
+    # 临时取证（A/B 终审）：update 前 ESP 状态——若 basalt_1.efi 已缺失则为
+    # 首启丢失（A）；若存在且 update 后消失则为 sysupdate 行为（B）
+    echo "=== [probe] update 前 ESP 清单 ==="
+    guest_run "ls -la /efi/EFI/Linux" || true
+    echo "=== [probe] /proc/cmdline（当前启动的 UKI 分支）==="
+    guest_run "cat /proc/cmdline" || true
+    echo "=== [probe] journal 中 ESP 文件删除痕迹 ==="
+    guest_run "journalctl --no-pager | grep -iE 'basalt_1|EFI/Linux|unlink' | tail -n 40" || true
+
     local result
     result="$(ota_run_update)"
     ota_check "sysupdate 更新安装成功（Result=${result}）" test "${result}" = "success"
