@@ -343,19 +343,25 @@ phase_ota_update() {
     ota_check "@images wrapper 恢复 ro=true（V12，btrfs 属性）" \
         guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
     # EROFS 成对落盘（资源级取证）：Result=success 是服务级结果，不保证 root
-    # transfer 安装了 v2——可能 no-op/未枚举/装错路径。失败即 dump 4 层：
-    #   ① journal（服务真实执行序列）② sysupdate list（可用/已装版本判定）
-    #   ③ images 目录实际内容 ④ 注入的 70-root.transfer（Type/Path/MatchPattern）
+    # transfer 安装了 v2——可能 no-op/未枚举/装错路径。失败即 dump：
+    #   journal（真实执行序列）+ list 总表 + list <v> 逐 transfer 逐文件详情
+    #   （incomplete 定位到具体 transfer/文件）+ 目录清单 + 注入定义
     if ! guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"; then
         echo "[FAIL] EROFS 成对落盘（${IMAGE_ID}_${ver}.erofs）" >&2
         echo "=== journalctl systemd-sysupdate ===" >&2
         guest_run "journalctl -u systemd-sysupdate.service --no-pager -n 80" >&2 || true
-        echo "=== sysupdate list（可用/已装版本判定）===" >&2
+        echo "=== sysupdate list 总表 ===" >&2
         guest_run "/usr/lib/systemd/systemd-sysupdate list --no-pager" >&2 || true
+        echo "=== sysupdate list ${V1}（current 逐 transfer 文件详情）===" >&2
+        guest_run "/usr/lib/systemd/systemd-sysupdate list ${V1} --no-pager" >&2 || true
+        echo "=== sysupdate list ${ver}（candidate 逐 transfer 文件详情）===" >&2
+        guest_run "/usr/lib/systemd/systemd-sysupdate list ${ver} --no-pager" >&2 || true
         echo "=== images 目录清单 ===" >&2
         guest_run "ls -la /var/lib/basalt/images" >&2 || true
-        echo "=== /etc/sysupdate.d/70-root.transfer（注入定义）===" >&2
-        guest_run "cat /etc/sysupdate.d/70-root.transfer" >&2 || true
+        echo "=== /efi/EFI/Linux 目录清单 ===" >&2
+        guest_run "ls -la /efi/EFI/Linux" >&2 || true
+        echo "=== /etc/sysupdate.d 定义（70-root + 80-uki）===" >&2
+        guest_run "cat /etc/sysupdate.d/70-root.transfer; echo '---'; cat /etc/sysupdate.d/80-uki.transfer" >&2 || true
         landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"
         return 1
     fi
