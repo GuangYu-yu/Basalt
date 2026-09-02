@@ -264,6 +264,10 @@ ota_run_update() {
         fi
         sleep 3
     done
+    if [[ "${result}" != "success" ]]; then
+        echo "=== [probe] systemd-sysupdate.service journal（失败取证）===" >&2
+        guest_run "journalctl -u systemd-sysupdate.service --no-pager | tail -n 60" >&2 || true
+    fi
     printf '%s' "${result}"
 }
 
