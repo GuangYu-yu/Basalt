@@ -7,6 +7,10 @@
 # InstancesMax=3 与 70-root.transfer 一致（保留深度相同）；rescue UKI
 # （basalt-rescue.efi）不匹配 MatchPattern，vacuum 不动。
 # ESP 挂载点由 fstab PARTLABEL=ESP 条目固定（/efi）。
+# 资源模型 = 版本化单个文件（regular-file）：Target Type=regular-file 与
+# 70-root 同构（url-file source 兼容 target 仅 regular-file/partition，不含
+# directory——sysupdate.d(5) 资源类型矩阵），Path= 为容纳多版本文件的目录，
+# MatchPattern= 定目录内文件命名（boot counting 文件名，@d/@l 三段式）。
 [Transfer]
 
 [Source]
@@ -15,7 +19,7 @@ Path=https://updates.example.com/basalt/
 MatchPattern=basalt_@v.efi
 
 [Target]
-Type=directory
+Type=regular-file
 Path=/efi/EFI/Linux
 # tries 三段式（BLS #boot-counting）：写入后重命名为 @v+3-0
 # （TriesLeft/TriesDone），systemd-boot 据此做启动尝试计数 —— 连续失败

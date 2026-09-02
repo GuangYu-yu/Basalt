@@ -226,7 +226,7 @@ Path=${url}
 MatchPattern=${IMAGE_ID}_@v.efi
 
 [Target]
-Type=directory
+Type=regular-file
 Path=/efi/EFI/Linux
 MatchPattern=${IMAGE_ID}_@v+${OTA_TRIES}-0.efi ${IMAGE_ID}_@v+${OTA_TRIES}.efi ${IMAGE_ID}_@v.efi
 TriesLeft=${OTA_TRIES}
@@ -573,6 +573,12 @@ main() {
     # 失败取证由 wait_ready 内部完成（readiness_fail 含快照+诊断）；
     # 外层仅终止
     landscape_router_wait_ready "Router" || exit 1
+
+    # 注入测试 override 到 /etc/sysupdate.d/（覆盖 /usr/lib 占位定义：指向本地
+    # OTA server + 与 build.env 同源的 Tries/InstancesMax）。所有 sysupdate
+    # 调用（含矩阵 7 的 vacuum 与后续 update）必须加载本地定义，故在首个
+    # phase 前注入一次（/etc 持久，跨重启有效）。
+    ota_inject_sysupdate_overrides
 
     # 顺序敏感：矩阵 7 先行（运行版本 os-release 与 ProtectVersion 一致）；
     # 其后 2 → 3 → 4 → 5 → 6（每阶段依赖前序落盘状态）
