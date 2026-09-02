@@ -36,7 +36,3 @@ ln -sfn /var/lib/landscape /root/.landscape-router
 # 本文件的 symlink（Debian 布局），运行期 %A 展开与构建期断言同源命中。
 sed -i "/^IMAGE_ID=/d;/^IMAGE_VERSION=/d" /usr/lib/os-release
 printf 'IMAGE_ID=%s\nIMAGE_VERSION=%s\n' "${IMAGE_ID}" "${IMAGE_VERSION}" >> /usr/lib/os-release
-# ── 临时取证（CI 绿后撤）：确认 env 值 / 写入结果 / os-release 文件关系 ──
-echo "[osrel-inject] IMAGE_ID=${IMAGE_ID:-unset} IMAGE_VERSION=${IMAGE_VERSION:-unset}" >&2
-ls -l /etc/os-release /usr/lib/os-release >&2 2>&1 || true
-grep -E '^(IMAGE_ID|IMAGE_VERSION)=' /usr/lib/os-release /etc/os-release >&2 2>&1 || true

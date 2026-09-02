@@ -342,10 +342,13 @@ UKI_CMDLINE="$(objcopy -O binary --only-section=.cmdline "${UKI_FILE_PASS1}" /de
 # /etc/os-release 的 IMAGE_VERSION= —— 缺失时 vacuum 保护静默失效，
 # 故在构建期即硬性断言（运行期契约由 readiness 的 guest 侧检查兜底）
 UKI_OSREL="$(objcopy -O binary --only-section=.osrel "${UKI_FILE_PASS1}" /dev/stdout | tr -d '\0')"
-grep -q "^IMAGE_VERSION=${VER}\$" <<<"${UKI_OSREL}" \
-    || die "UKI .osrel 缺少 IMAGE_VERSION=${VER}（ProtectVersion=%A 契约破坏）; .osrel 实际=[$(echo "${UKI_OSREL}" | tr '\n' ' ')]"
-grep -q "^IMAGE_ID=${IMAGE_ID}\$" <<<"${UKI_OSREL}" \
-    || die "UKI .osrel 缺少 IMAGE_ID=${IMAGE_ID}"
+# .osrel 是 os-release KEY="VALUE" 语法，ukify 会把值用引号包裹；
+# 不能用行尾锚点去配原始串（=`1"` 结尾），须解析出值再精确 eq
+osrel_val() { awk -F= -v k="$1" '$1==k{gsub(/^"|"$/, "", $2); print $2; exit}' <<<"${UKI_OSREL}"; }
+[[ "$(osrel_val IMAGE_VERSION)" == "${VER}" ]] \
+    || die "UKI .osrel IMAGE_VERSION=$(osrel_val IMAGE_VERSION) != ${VER}（ProtectVersion=%A 契约破坏）; .osrel 实际=[$(echo "${UKI_OSREL}" | tr '\n' ' ')]"
+[[ "$(osrel_val IMAGE_ID)" == "${IMAGE_ID}" ]] \
+    || die "UKI .osrel IMAGE_ID=$(osrel_val IMAGE_ID) != ${IMAGE_ID}"
 # UKI 内实际 initrd = 子镜像 initrd + kernel-modules initrd 的拼接流
 # （SplitArtifacts=initrd 只拆出前者）；rescue UKI 原料与模块门禁工件
 # 一律取 pass1 UKI 的 .initrd PE 段——与主 UKI 同源，消除工件分裂
