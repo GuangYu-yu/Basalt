@@ -242,15 +242,11 @@ EOF
 
 # 经 systemd-sysupdate.service（rw wrapper 窗口）执行更新；输出 service Result
 ota_run_update() {
-    guest_run "systemctl start --no-block systemd-sysupdate.service"
-    local t0=${SECONDS} state=""
-    while (( SECONDS - t0 < 1200 )); do
-        state="$(guest_run "systemctl is-active systemd-sysupdate.service" 2>/dev/null || true)"
-        state="${state//$'\n'/}"
-        [[ "${state}" == "activating" || "${state}" == "active" ]] || break
-        sleep 5
-    done
-    guest_run "systemctl show -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]'
+    # 临时取证：service journal 为空（update 真实输出从未被捕获），改为前台
+    # 直跑与 ExecStart 完全相同的 wrapper 命令，完整捕获 sysupdate 的决策输出
+    echo "=== [probe] 前台直跑 sysupdate update（与 service ExecStart 等价）==="
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro false && /usr/lib/systemd/systemd-sysupdate update 2>&1; echo RC=\$?"
+    guest_run "btrfs property set -ts /var/lib/basalt/images ro true" || true
 }
 
 # ── 各阶段 ──
@@ -350,7 +346,9 @@ phase_ota_update() {
 
     local result
     result="$(ota_run_update)"
-    ota_check "sysupdate 更新安装成功（Result=${result}）" test "${result}" = "success"
+    # 临时取证版：ota_run_update 直跑输出完整 sysupdate 日志，末行 RC=<n>
+    ota_check "sysupdate 更新退出码为 0（RC=0）" \
+        grep -q "RC=0" <<<"${result}"
     ota_check "@images wrapper 恢复 ro=true（V12，btrfs 属性）" \
         guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
     # EROFS 成对落盘（资源级取证）：Result=success 是服务级结果，不保证 root
@@ -414,7 +412,7 @@ phase_boot_level_bad() {
 
     local result
     result="$(ota_run_update)"
-    ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
+    ota_check "坏版本安装成功（损坏在内容，不在安装）" grep -q "RC=0" <<<"${result}"
 
     local attempt
     for attempt in 1 2 3; do
@@ -501,14 +499,14 @@ phase_data_full() {
         "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
     local result
     result="$(ota_run_update)"
-    ota_check "盘满时 sysupdate 失败（ENOSPC 半状态）" test "${result}" != "success"
+    ota_check_fails "盘满时 sysupdate 失败（ENOSPC 半状态）" grep -q "RC=0" <<<"${result}"
     ota_check "失败后半状态不伤运行（API 在线）" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 
     # 释放空间 → 重试成功
     guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-probe /run/ota-fill-done; sync; sleep 3"
     result="$(ota_run_update)"
-    ota_check "空间恢复后更新重试成功" test "${result}" = "success"
+    ota_check "空间恢复后更新重试成功" grep -q "RC=0" <<<"${result}"
     ota_check "v${ver} 成对落盘" \
         guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs -a -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
 }
