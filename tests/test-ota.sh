@@ -258,13 +258,20 @@ phase_vacuum() {
     echo "============================================================"
     echo "Phase: 矩阵 7 — vacuum（运行 v${V1}，ProtectVersion 一致）"
     echo "============================================================"
-    # 种子 4 个新版本（内容无关紧要：vacuum 只按文件名版本计数；不被启动）
+    # seed 源双重保障：erofs 与当前镜像同命名；工厂主 UKI 契约校验——
+    # ESP 中唯一非 boot-count 的主 UKI（rescue 为连字符名，underscore 模式
+    # 天然排除）必须恰为 ${IMAGE_ID}_${V1}.efi（sysupdate MatchPattern=@v 同源，
+    # 构建侧 UnifiedKernelImageFormat=%i_%v.efi 保证）。不符则 dump 清单并失败。
     guest_run "mount -o remount,rw /var/lib/basalt/images"
-    # ── 临时取证（CI 绿后撤）：工厂 v1 UKI 在 ESP 的真实文件名 ──
-    # mkosi 未配置 KernelName=，默认命名 $e-$k（不保证 basalt_1.efi），
-    # 探测真实名以校正 seed 源（见 L287 同源断言）
-    guest_run "ls -la /efi/EFI/Linux"
-    guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -printf '%f\n'"
+    factory_uki="${IMAGE_ID}_${V1}.efi"
+    found_uki="$(guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -name '${IMAGE_ID}_*.efi' ! -name '*+*' -printf '%f\n'")"
+    if [[ "${found_uki}" != "${factory_uki}" ]]; then
+        echo "[FAIL] 工厂主 UKI 契约不符：期望=${factory_uki} 实际=[${found_uki}]" >&2
+        guest_run "ls -la /efi/EFI/Linux" >&2
+        guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -printf '%f\n'" >&2
+        return 1
+    fi
+    echo "[PASS] 工厂主 UKI 契约校验：${factory_uki}"
     for v in 2 3 4 5; do
         guest_run "cp /var/lib/basalt/images/${IMAGE_ID}_${V1}.erofs /var/lib/basalt/images/${IMAGE_ID}_${v}.erofs"
         guest_run "cp /efi/EFI/Linux/${IMAGE_ID}_${V1}.efi /efi/EFI/Linux/${IMAGE_ID}_${v}.efi"
