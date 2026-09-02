@@ -291,11 +291,16 @@ phase_vacuum() {
         # 区分"确有可写 FD"与"子挂载/命名空间"。
         local diag
         diag="$(cat <<'ROF'
-echo "=== MOUNTINFO ==="
-findmnt -R /var/lib/basalt/images || true
-grep -F "/var/lib/basalt/images" /proc/self/mountinfo || true
-echo "=== MOUNT TREE /proc/self/mounts ==="
-grep -F "/var/lib/basalt/images" /proc/self/mounts || true
+echo "=== FULL MOUNTINFO: /dev/vda2 (all subvols) ==="
+awk '$3 ~ /vda2/ {print}' /proc/self/mountinfo || true
+echo "=== PROPAGATION GROUP shared:92 members ==="
+grep -F 'shared:92' /proc/self/mountinfo || true
+echo "=== OVERLAY MOUNTS ==="
+grep -i overlay /proc/self/mountinfo || true
+echo "=== MOUNT TREE (findmnt -R) ==="
+findmnt -R / 2>/dev/null || true
+echo "=== ALL MOUNTS ==="
+findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS,PROPAGATION 2>/dev/null || true
 echo "=== FDS UNDER IMAGES (with open flags) ==="
 for p in /proc/[0-9]*; do
     pid=${p#/proc/}
