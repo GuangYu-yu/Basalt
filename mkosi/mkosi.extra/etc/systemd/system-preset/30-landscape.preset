@@ -7,6 +7,8 @@ enable ssh.service
 enable networking.service
 enable chrony.service
 enable systemd-sysupdate.timer
+# var 分区首启增长（/etc/repart.d/92-var-grow.conf + dropin 显式设备）
+enable systemd-repart.service
 # 双网络栈/双 NTP 防护：即使上游包默认启用也强制关闭
 disable systemd-resolved.service
 disable NetworkManager.service
