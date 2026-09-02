@@ -281,15 +281,17 @@ phase_vacuum() {
     # vacuum 的 @images rw 窗口。此前首窗口 + 种子已成功；若此处 remount 报
     # "mount point is busy"（首见，临时取证）：失败即 dump 挂载/占用/容量，退出
     # 显式捕获退出码（set -e 下 if ! 不可靠）；取证命令各自 || true 防 set -e 中断
+    # 前置基线 dump：若 busy 来自 guest 内 systemd-sysupdate.service 而非本命令，
+    # 则"失败后取证"链会失效，故此先记录一次当前挂载/占用/容量实况。
+    guest_run "echo '=== BASELINE ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images" >&2 || true
     set +e
     guest_run "mount -o remount,rw /var/lib/basalt/images && systemd-sysupdate vacuum"
     rc=$?
     set -e
     if (( rc != 0 )); then
         echo "[FAIL] vacuum 前 @images rw 窗口 remount/sysupdate 失败 (rc=${rc})" >&2
-        guest_run "mount | grep images" >&2 || true
-        guest_run "df -h /var/lib/basalt/images" >&2 || true
-        guest_run "fuser -vm /var/lib/basalt/images" >&2 || true
+        guest_run "echo '=== FORENSIC ==='; mount | grep images; df -h /var/lib/basalt/images; fuser -vm /var/lib/basalt/images" >&2 || true
+        guest_run "systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
         return 1
     fi
     guest_run "mount -o remount,ro /var/lib/basalt/images" || true
