@@ -240,17 +240,19 @@ EOF
     guest_run "echo ${uki_b64} | base64 -d > /etc/sysupdate.d/80-uki.transfer"
 }
 
-# 经 systemd-sysupdate.service（rw wrapper 窗口）执行更新；输出 service Result
+# 经 systemd-sysupdate.service（rw wrapper 窗口）执行更新；输出 service Result。
+# wrapper 内含 repart + btrfs resize（空间就绪）+ sysupdate；service 不受
+# guest_run 的 15s SSH 超时约束（前台直跑在 TCG 下下载必超时，实测教训）。
 ota_run_update() {
-    # 临时取证：service journal 为空（update 真实输出从未被捕获），改为前台
-    # 直跑与 ExecStart 完全相同的 wrapper 命令；输出 tee 到 stderr——调用方
-    # 以 $( ) 捕获 stdout，不落 stderr 则日志不可见（实测教训）
-    local out
-    out="$(guest_run "btrfs property set -ts /var/lib/basalt/images ro false && /usr/lib/systemd/systemd-sysupdate update 2>&1; echo RC=\$?")"
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro true" || true
-    echo "=== [probe] sysupdate update 完整输出 ===" >&2
-    echo "${out}" >&2
-    printf '%s' "${out}"
+    guest_run "systemctl start --no-block systemd-sysupdate.service"
+    local t0=${SECONDS} state=""
+    while (( SECONDS - t0 < 1200 )); do
+        state="$(guest_run "systemctl is-active systemd-sysupdate.service" 2>/dev/null || true)"
+        state="${state//$'\n'/}"
+        [[ "${state}" == "activating" || "${state}" == "active" ]] || break
+        sleep 5
+    done
+    guest_run "systemctl show -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]'
 }
 
 # ── 各阶段 ──
@@ -339,35 +341,17 @@ phase_ota_update() {
         "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
         "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
 
-    # 临时取证（A/B 终审）：update 前 ESP 状态——若 basalt_1.efi 已缺失则为
-    # 首启丢失（A）；若存在且 update 后消失则为 sysupdate 行为（B）
+    # 临时取证（var 扩容链路验证）：update 前 ESP 与 var 状态
     echo "=== [probe] update 前 ESP 清单 ==="
     guest_run "ls -la /efi/EFI/Linux" || true
     echo "=== [probe] /proc/cmdline（当前启动的 UKI 分支）==="
     guest_run "cat /proc/cmdline" || true
-    echo "=== [probe] journal 中 ESP 文件删除痕迹 ==="
-    guest_run "journalctl --no-pager | grep -iE 'basalt_1|EFI/Linux|unlink' | tail -n 40" || true
     echo "=== [probe] var 分区扩容状态（df + lsblk + ro 属性）==="
     guest_run "df -h /var/lib/basalt/images /var; lsblk /dev/vda; btrfs property get -ts /var/lib/basalt/images ro" || true
-    echo "=== [probe] guest 串口（当前 boot）：repart/sysroot 相关行 ==="
-    grep -aiE "repart|sizing|growing|grew|backing|determine|sysroot|Succ" "${LANDSCAPE_ROUTER_SERIAL_LOG}" | tail -n 60 || true
-    echo "=== [probe] 手动 repart（显式设备，验证定义+bit59 增长路径）==="
-    guest_run "mkdir -p /etc/repart.d && printf '[Partition]\nType=var\nWeight=100\n' > /etc/repart.d/92-var-grow.conf" || true
-    guest_run "systemd-repart --definitions=/etc/repart.d --dry-run=no /dev/disk/by-partlabel/var 2>&1 | tail -n 20; echo RC=\$?" || true
-    guest_run "lsblk /dev/vda; df -h /var" || true
-    echo "=== [probe] 真实根 repart 服务状态 ==="
-    guest_run "systemctl is-enabled systemd-repart.service; systemctl status systemd-repart.service --no-pager -l | tail -n 12" || true
-    guest_run "journalctl -b -u systemd-repart.service --no-pager | tail -n 25" || true
-    guest_run "cat /etc/systemd/system/systemd-repart.service.d/10-var-grow.conf; ls -la /etc/repart.d" || true
-    # 分区已长而 fs 未长：growfs 窗口已过，直接扩展 btrfs 解锁后续矩阵
-    guest_run "btrfs filesystem resize max /var" || true
-    guest_run "df -h /var" || true
 
     local result
     result="$(ota_run_update)"
-    # 临时取证版：ota_run_update 直跑输出完整 sysupdate 日志，末行 RC=<n>
-    ota_check "sysupdate 更新退出码为 0（RC=0）" \
-        grep -q "RC=0" <<<"${result}"
+    ota_check "sysupdate 更新安装成功（Result=${result}）" test "${result}" = "success"
     ota_check "@images wrapper 恢复 ro=true（V12，btrfs 属性）" \
         guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
     # EROFS 成对落盘（资源级取证）：Result=success 是服务级结果，不保证 root
@@ -431,7 +415,7 @@ phase_boot_level_bad() {
 
     local result
     result="$(ota_run_update)"
-    ota_check "坏版本安装成功（损坏在内容，不在安装）" grep -q "RC=0" <<<"${result}"
+    ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
 
     local attempt
     for attempt in 1 2 3; do
@@ -518,14 +502,14 @@ phase_data_full() {
         "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
     local result
     result="$(ota_run_update)"
-    ota_check_fails "盘满时 sysupdate 失败（ENOSPC 半状态）" grep -q "RC=0" <<<"${result}"
+    ota_check "盘满时 sysupdate 失败（ENOSPC 半状态）" test "${result}" != "success"
     ota_check "失败后半状态不伤运行（API 在线）" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 
     # 释放空间 → 重试成功
     guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-probe /run/ota-fill-done; sync; sleep 3"
     result="$(ota_run_update)"
-    ota_check "空间恢复后更新重试成功" grep -q "RC=0" <<<"${result}"
+    ota_check "空间恢复后更新重试成功" test "${result}" = "success"
     ota_check "v${ver} 成对落盘" \
         guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs -a -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
 }
