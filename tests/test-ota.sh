@@ -351,9 +351,10 @@ phase_ota_update() {
     guest_run "df -h /var/lib/basalt/images /var; lsblk /dev/vda; btrfs property get -ts /var/lib/basalt/images ro" || true
     echo "=== [probe] guest 串口（当前 boot）：repart/sysroot 相关行 ==="
     grep -aiE "repart|sizing|growing|grew|backing|determine|sysroot|Succ" "${LANDSCAPE_ROUTER_SERIAL_LOG}" | tail -n 60 || true
-    echo "=== [probe] 手动 repart（显式 /dev/vda，验证定义文件有效性）==="
-    guest_run "systemd-repart --definitions=/etc/repart.d --dry-run=no /dev/vda 2>&1 | tail -n 30; echo RC=\$?" || true
-    guest_run "lsblk /dev/vda" || true
+    echo "=== [probe] 手动 repart（显式设备，验证定义+bit59 增长路径）==="
+    guest_run "mkdir -p /etc/repart.d && printf '[Partition]\nType=var\nWeight=100\n' > /etc/repart.d/92-var-grow.conf" || true
+    guest_run "systemd-repart --definitions=/etc/repart.d --dry-run=no /dev/disk/by-partlabel/var 2>&1 | tail -n 20; echo RC=\$?" || true
+    guest_run "lsblk /dev/vda; df -h /var" || true
 
     local result
     result="$(ota_run_update)"
