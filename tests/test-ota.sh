@@ -244,15 +244,27 @@ EOF
 # wrapper 内含 repart + btrfs resize（空间就绪）+ sysupdate；service 不受
 # guest_run 的 15s SSH 超时约束（前台直跑在 TCG 下下载必超时，实测教训）。
 ota_run_update() {
+    # 基线必须在 start 之前取（否则瞬间完成的更新会与基线相同导致死等）
+    local pre
+    pre="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
     guest_run "systemctl start --no-block systemd-sysupdate.service"
-    local t0=${SECONDS} state=""
+    # 完成判定：ExecMainExitTimestampMonotonic 相对启动前基线发生变化且
+    # ActiveState 离开 active/activating。仅凭 is-active 会与 --no-block
+    # 的任务入队竞态——单元尚未启动即返回 inactive，而从未运行的单元
+    # Result 默认 success（实测假 PASS 根因）。
+    local t0=${SECONDS} cur="" mono="" state="" result=""
     while (( SECONDS - t0 < 1200 )); do
-        state="$(guest_run "systemctl is-active systemd-sysupdate.service" 2>/dev/null || true)"
-        state="${state//$'\n'/}"
-        [[ "${state}" == "activating" || "${state}" == "active" ]] || break
-        sleep 5
+        cur="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic -p ActiveState -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '\r')"
+        mono="${cur%%$'\n'*}"
+        state="$(sed -n 2p <<<"${cur}")"
+        result="$(sed -n 3p <<<"${cur}")"
+        if [[ -n "${mono}" && "${mono}" != "0" && "${mono}" != "${pre}" \
+              && ( "${state}" == "inactive" || "${state}" == "failed" ) ]]; then
+            break
+        fi
+        sleep 3
     done
-    guest_run "systemctl show -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]'
+    printf '%s' "${result}"
 }
 
 # ── 各阶段 ──
@@ -348,6 +360,8 @@ phase_ota_update() {
     guest_run "cat /proc/cmdline" || true
     echo "=== [probe] var 分区扩容状态（df + lsblk + ro 属性）==="
     guest_run "df -h /var/lib/basalt/images /var; lsblk /dev/vda; btrfs property get -ts /var/lib/basalt/images ro" || true
+    echo "=== [probe] sysupdate 单元存在性 ==="
+    guest_run "systemctl cat systemd-sysupdate.service 2>&1 | head -n 20" || true
 
     local result
     result="$(ota_run_update)"
