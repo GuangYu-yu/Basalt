@@ -24,11 +24,11 @@ MatchPattern=basalt_@v.efi
 [Target]
 Type=regular-file
 Path=/efi/EFI/Linux
-# tries 三段式（BLS #boot-counting）：写入后重命名为 @v+3-0
-# （TriesLeft/TriesDone），systemd-boot 据此做启动尝试计数 —— 连续失败
-# 自动回落旧版本
-MatchPattern=basalt_@v+3-0.efi \
-             basalt_@v+3.efi \
+# @l/@d 通配（sysupdate.d(5)）：安装时展开为 TriesLeft/TriesDone；枚举时匹配
+# 任意计数状态（+3-0 全新 / +2-1 / +0-3 bad）。字面量 +3-0/+3 形态是实测过的
+# 严重错误——中间态/bad 态实例对 sysupdate 不可见 → 版本集合账目错乱 →
+# "腾位置"裁掉正在运行的 bless 版本（实测 basalt_2.efi 被裁 → 回退落 v1）
+MatchPattern=basalt_@v+@l-@d.efi \
              basalt_@v.efi
 TriesLeft=3
 TriesDone=0

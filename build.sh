@@ -237,8 +237,6 @@ sed -i -e "s/basalt_/${IMAGE_ID}_/g" \
     -e "s#updates.example.com/basalt/#updates.example.com/${IMAGE_ID}/#g" \
     -e "s/InstancesMax=3/InstancesMax=${INSTANCES_MAX}/g" \
     -e "s/TriesLeft=3/TriesLeft=${INSTANCES_MAX}/g" \
-    -e "s/@v+3-0/@v+${INSTANCES_MAX}-0/g" \
-    -e "s/@v+3\.efi/@v+${INSTANCES_MAX}.efi/g" \
     "${STAGED_SYSUPDATE_D[@]}"
 # OTA 发布源渲染：占位域名 → GitHub Releases latest/download（ota_base_url 为
 # 空时保留占位符并已警告）。replacement 中的 & 需转义（sed 替换段特殊字符）
@@ -279,8 +277,11 @@ if [[ "${IMAGE_ID}" != "basalt" ]] && \
     die "IMAGE_ID 渲染不完整：渲染后的定义文件仍残留 basalt_"
 fi
 if [[ "${INSTANCES_MAX}" != "3" ]] && \
-   grep -qE '@v\+3(-0)?\.efi' "${STAGED_SYSUPDATE_D[@]}"; then
-    die "tries 渲染不完整：渲染后的定义文件仍残留 +3 字面量"
+   grep -qE 'TriesLeft=3\b' "${STAGED_SYSUPDATE_D[@]}"; then
+    die "tries 渲染不完整：渲染后的定义文件仍残留 TriesLeft=3"
+fi
+if grep -qE '@v\+3(-0)?\.efi' "${STAGED_SYSUPDATE_D[@]}"; then
+    die "MatchPattern 残留字面量 tries 形态（应为 @l/@d 通配）"
 fi
 if [[ -n "${ota_base_url}" ]] && \
    grep -q 'updates.example.com' "${STAGED_SYSUPDATE_D[@]}"; then

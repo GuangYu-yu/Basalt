@@ -277,7 +277,9 @@ MatchPattern=${IMAGE_ID}_@v.efi
 [Target]
 Type=regular-file
 Path=/efi/EFI/Linux
-MatchPattern=${IMAGE_ID}_@v+${OTA_TRIES}-0.efi ${IMAGE_ID}_@v+${OTA_TRIES}.efi ${IMAGE_ID}_@v.efi
+# @l/@d 通配：枚举时匹配任意计数状态（+3-0 全新 / 中间态 / +0-3 bad），
+# 字面量形态曾致实例不可见 → 账目错乱 → 裁掉运行中版本（实测）
+MatchPattern=${IMAGE_ID}_@v+@l-@d.efi ${IMAGE_ID}_@v.efi
 TriesLeft=${OTA_TRIES}
 TriesDone=0
 InstancesMax=${INSTANCES_MAX}
