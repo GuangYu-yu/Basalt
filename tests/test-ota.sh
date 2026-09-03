@@ -471,6 +471,15 @@ phase_boot_level_bad() {
     local result
     result="$(ota_run_update)"
     ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
+    # 落盘断言 + 刷盘：Result=success 不保证资源落盘（已知陷阱）；文件断言
+    # 让"假安装"当场失败而非数轮之后。硬复位 = kill -9 QEMU（断电语义），
+    # 安装后的页缓存必须先 sync，否则新版本文件在复位中丢失（实测：install
+    # 后立即硬复位 → v3 在磁盘上从未存在 → 每轮都引导 v2）
+    ota_check "坏版本 EROFS 落盘（${IMAGE_ID}_${ver}.erofs）" \
+        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
+    ota_check "坏版本 UKI 落盘带 tries（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \
+        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
+    guest_run "sync"
 
     local attempt
     for attempt in 1 2 3; do
