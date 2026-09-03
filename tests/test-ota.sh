@@ -1,40 +1,44 @@
 #!/bin/bash
 # =============================================================================
-# Basalt - OTA / 文件轮转更新矩阵测试（设计文档 §10 矩阵 2-7）
+# Basalt — OTA / 文件轮转更新端到端状态机测试
 # =============================================================================
 #
-# 覆盖：
-#   矩阵 2  OTA v1→v2：成对落盘（erofs+UKI 带 +3-0）、重启后 cmdline 一致、
-#           bless 去计数、@images rw wrapper 恢复 ro
-#   矩阵 3  引导级坏版本：v3 EROFS 截断 1M（超级块保留，可挂载、内容损坏）
-#           → 启动无法完成 → 3 次 tries 耗尽 → 自动回 v2（测试机硬复位承载
-#           "失败的启动尝试"语义——真实部署为硬件看门狗）。判定契约是
-#           "坏版本不被 bless、boot counting 最终回退"，不绑定失败发生在
-#           哪个阶段（initrd 挂载失败 / switch_root 无 init 均为合法失败
-#           形态，串口仅取证）；sd-boot 对损坏 UKI 二进制的行为无文档保证，
-#           不作依赖，故用 EROFS 损坏而非 UKI 损坏承载同一机制
-#   矩阵 4  业务级坏版本：v4 UKI cmdline 追加 systemd.mask=landscape-router
-#           → 引导成功但 API_READY 超时 → bless 不触发 → tries 耗尽 → 回 v2
-#           （mask 是 cmdline 级、版本内在的故障，不污染共享 overlay upper，
-#           回滚后业务即恢复——规避 §2 声明的共享状态污染边界）。注意 mask
-#           同时杀死全部接口配置（eth 由 landscape-router 运行期管理），
-#           v4 内 SSH 不可用：硬复位承载失败尝试，串口取证健康门失败消息
-#   矩阵 5  @data 塞满：系统存活 + API 在线；sysupdate 更新 ENOSPC 失败
-#           （无害半状态）；清空间后重试成功
-#   矩阵 6  rescue：boot-loader-entry 选 basalt-rescue.efi → 只读根 +
-#           rescue shell（无 sshd；经串口日志取证 sulogin 提示）
-#   矩阵 7  vacuum：运行 v1（os-release 与 ProtectVersion=%A 一致）时种子
-#           5 个版本 → 裁至 InstancesMax、当前版本永在、rescue UKI 不动
+# 显式状态机（每阶段：前置状态 → 操作 → 后置契约）：
 #
-# 伪造版本物料（host 侧）：erofs = v1 工件副本（矩阵 3 为截断副本）；UKI =
-# objcopy 抽取 pass1 UKI 的 .linux/.initrd/.osrel/.uname/.cmdline 段后经
-# ukify 重排（cmdline 换绑 basalt_<v>.erofs）。矩阵 7 先行（此时运行版本
-# 的 os-release 与文件版本一致，ProtectVersion 语义才真实），随后清理种子
-# 避免污染后续 OTA 阶段的版本枚举与 sd-boot 选择。
+#   stage_v2_install   前置: 工厂 v1 运行中（cmdline/ro 属性/主 UKI 契约）
+#                      操作: sysupdate 安装 v2
+#                      契约: 成对落盘 + @images ro 恢复
+#   stage_v2_boot      操作: 重启进 v2
+#                      契约: cmdline 绑定 + overlay 根 + bless 去计数 + 健康门
+#   stage_v3_exhaust   操作: 安装引导级坏版本（EROFS 截断 1M）→ 硬复位承载
+#                      失败启动
+#                      契约: tries 耗尽 → 自动回退 v2 + bad 态 + API 恢复
+#   stage_v4_exhaust   操作: 安装业务级坏版本（mask landscape-router）→ 同上
+#                      契约: 同 v3 + 回退后健康门成功
+#   stage_v5_enospc    操作: @data 塞满 → sysupdate 更新 → 清理重试
+#                      契约: 系统存活/半状态无害/重试成功
+#   stage_vacuum       操作: vacuum（破坏性，收尾——消费前面自然形成的
+#                      多版本状态，不 seed、不再销毁后续阶段的状态）
+#                      契约: 发生裁剪 + 受保护版本（运行版本）永在 +
+#                            实例数 ≤ InstancesMax+1 + rescue 不动
+#   stage_rescue       操作: boot-loader-entry 选 rescue（破坏性，最后）
+#                      契约: 只读根 + rescue shell（sulogin 上串口）+ SSH 关闭
 #
-# 更新源：宿主 python3 http.server（SHA256SUMS + 版本化工件），guest 经
-# WAN slirp 网关 10.0.2.2 访问；设备侧定义以 /etc/sysupdate.d/ 同名覆盖
-# （sysupdate.d(5)：/etc 优先于 /usr/lib，扩展名 .transfer）。
+# 断言哲学：只断言稳定契约（文件存在性 / cmdline / btrfs 属性 / bootctl 状态 /
+# API 就绪），不断言偶然日志。串口仅两类用途：取证（ota_lib）与 rescue 的
+# 唯一观察面（sulogin 是 rescue.target 的稳定产品行为）。
+#
+# 关键机制说明（详见 ota_lib.sh 实证教训）：
+#   - 失败启动尝试 = 硬复位承载（kill -9 QEMU，断电语义；真实部署为看门狗）。
+#     warm reboot 实测不可靠，禁用于失败路径
+#   - boot counting 回退的判定 = SSH 可达 + bad 态文件存在（稳定契约），
+#     不绑定失败发生在哪个阶段；串口签名仅取证
+#   - 统一失败出口：EXIT trap 按原始退出码一次性取证（bash ERR trap 有控制流
+#     例外，不作唯一兜底）
+#
+# 更新源：宿主 python3 http.server（SHA256SUMS + 版本化工件），guest 经 WAN
+# slirp 网关 10.0.2.2 访问；设备侧定义以 /etc/sysupdate.d/ 同名覆盖
+# （sysupdate.d(5)：/etc 优先于 /usr/lib）。
 # =============================================================================
 set -euo pipefail
 FAIL_FAST=1
@@ -43,588 +47,208 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 source "${SCRIPT_DIR}/local-runtime.sh"
+source "${SCRIPT_DIR}/ota_lib.sh"
 
 IMAGE_PATH="${1:-${PROJECT_DIR}/output/basalt.img}"
 QEMU_MEM="${QEMU_MEM:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-180}"
-SHUTDOWN_TIMEOUT=15
+SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-15}"
 LANDSCAPE_TEST_NAME="ota"
 LANDSCAPE_IMAGE_PATH="${IMAGE_PATH}"
 LANDSCAPE_ROUTER_PERSIST_IMAGE=1    # 跨重启/硬复位复用镜像（guest 状态存活）
 OTA_SERVER_PORT="${OTA_SERVER_PORT:-18080}"
-# 矩阵 3/4：tries=TriesLeft 耗尽需要 T 次失败尝试（+T-0 → +0-T）
-OTA_TRIES="${OTA_TRIES:-3}"
+OTA_TRIES="${OTA_TRIES:-3}"         # tries=TriesLeft 耗尽需要 T 次失败尝试
 
-cleanup() {
-    local exit_code=$?
-    if [[ -n "${OTA_HTTP_PID:-}" ]] && kill -0 "${OTA_HTTP_PID}" 2>/dev/null; then
-        kill "${OTA_HTTP_PID}" 2>/dev/null || true
-    fi
-    landscape_router_cleanup
-    exit $exit_code
-}
-trap cleanup EXIT
-trap landscape_dump_diagnostics_on_term TERM
-trap 'exit 130' INT
+OTA_HTTP_PID=""
+OTA_VM_STARTED=0
+OTA_RUNNING_VER=""                  # 状态机显式状态：当前运行的版本
 
-# ── 断言辅助（FAIL_FAST：任一断言失败即终止——后续阶段依赖前序状态）──
-ota_check() {
-    local desc="$1"
-    shift
-    if "$@"; then
-        echo "[PASS] ${desc}"
-    else
-        echo "[FAIL] ${desc}"
-        landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"
-        exit 1
-    fi
-}
+# ── Stage 1：v2 安装 ──
 
-ota_check_fails() {
-    # 断言命令必须失败（ENOSPC 探测等）；失败语义与 ota_check 一致
-    # （FAIL_FAST：意外成功同样终止——后续阶段依赖前序状态）
-    local desc="$1"
-    shift
-    if "$@" &>/dev/null; then
-        echo "[FAIL] ${desc}（命令意外成功）"
-        landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"
-        exit 1
-    fi
-    echo "[PASS] ${desc}"
-    return 0
-}
-
-# ── 串口日志（每轮 QEMU 启动轮转一个文件，规避 -serial file: 追加/截断
-#    语义差异导致的跨启动误匹配）──
-SERIAL_GEN=0
-ota_rotate_serial() {
-    if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]]; then
-        SERIAL_GEN=$((SERIAL_GEN + 1))
-        mv -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" "${LANDSCAPE_ROUTER_SERIAL_LOG}.boot${SERIAL_GEN}"
-    fi
-}
-
-ota_serial_wait_pattern() {
-    local pattern="$1" timeout="$2" offset="$3"
-    local t0=${SECONDS}
-    while (( SECONDS - t0 < timeout )); do
-        if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && \
-           tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -q "${pattern}"; then
-            return 0
-        fi
-        sleep 5
-    done
-    error "串口日志 ${SERIAL_GEN} 轮内未匹配: ${pattern}（${timeout}s）"
-    dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
-    return 1
-}
-
-# 引导失败取证（非判定）：等待已知失败签名之一；命中返回 0、超时返回 1
-# （仅在 if 上下文消费——返回值语义区分"已进入失败阶段"，不构成断言）；
-# 核心判定在 boot counting 最终回退，不绑定具体错误发生在哪个阶段
-ota_serial_wait_evidence() {
-    local pattern="$1" timeout="$2" offset="$3"
-    local t0=${SECONDS}
-    while (( SECONDS - t0 < timeout )); do
-        if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && \
-           tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -Eq "${pattern}"; then
-            echo "[INFO] 失败签名取证（尝试已进入失败阶段，可安全硬复位）"
-            return 0
-        fi
-        sleep 5
-    done
-    echo "[WARN] 未捕获已知失败签名（仅取证记录，不判定）"
-    dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
-    return 1
-}
-
-ota_serial_offset() {
-    [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && stat -c %s "${LANDSCAPE_ROUTER_SERIAL_LOG}" || echo 0
-}
-
-# ── VM 生命周期 ──
-ota_start_vm() {
-    ota_rotate_serial
-    landscape_router_start_vm "${IMAGE_PATH}"
-}
-
-ota_hard_reset() {
-    # 模拟看门狗硬复位：直接终止 QEMU（emergency 挂起时 ACPI 不被响应）
-    landscape_router_stop_vm
-    ota_start_vm
-}
-
-ota_wait_booted() {
-    # guest（重）启动后：bootstrap 口注入 eth2 → 主 SSH（mgmt 口）可用
-    landscape_router_bootstrap_mgmt "Router"
-    setup_ssh
-    wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "Router" "${SSH_TIMEOUT}"
-}
-
-ota_reboot_guest() {
-    guest_run "systemctl reboot" || true
-    sleep 5
-    ota_wait_booted
-}
-
-# ── OTA 物料伪造（host 侧）──
-FAB_DIR=""
-OTA_SERVE_DIR=""
-V1=""          # 工厂版本号（build-metadata image_version）
-
-ota_fabricate_uki() {
-    local ver="$1" extra_cmdline="${2:-}" out="$3"
-    local d="${FAB_DIR}/uki-${ver}"
-    mkdir -p "${d}"
-    local v1_uki="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.efi"
-    [[ -f "${v1_uki}" ]] || { error "缺少工厂 UKI 工件: ${v1_uki}"; return 1; }
-
-    objcopy -O binary --only-section=.linux   "${v1_uki}" "${d}/linux"
-    objcopy -O binary --only-section=.initrd  "${v1_uki}" "${d}/initrd"
-    local cmdline uname
-    cmdline="$(objcopy -O binary --only-section=.cmdline "${v1_uki}" /dev/stdout | tr -d '\0')"
-    uname="$(objcopy -O binary --only-section=.uname "${v1_uki}" /dev/stdout | tr -d '\0')"
-    [[ -s "${d}/linux" && -s "${d}/initrd" && -n "${cmdline}" ]] || { error "UKI PE 段提取失败"; return 1; }
-
-    # cmdline 换绑目标版本镜像（其余参数与工厂 UKI 逐字一致）
-    cmdline="$(sed "s/${IMAGE_ID}_${V1}\.erofs/${IMAGE_ID}_${ver}.erofs/" <<<"${cmdline}")"
-    [[ -n "${extra_cmdline}" ]] && cmdline="${cmdline} ${extra_cmdline}"
-
-    # .osrel 独立生成（与 build.sh rescue 同一契约）：VERSION_ID == IMAGE_VERSION
-    # == OTA 版本，是 systemd-boot Type 2 条目排序键。ukify --os-release=@PATH
-    # 读文件（缺省回退构建宿主机 /etc/os-release——实测曾嵌入 Ubuntu 身份）
-    cat > "${d}/osrel" <<EOF
-ID=basalt
-NAME="Basalt"
-PRETTY_NAME="Basalt ${ver}"
-VERSION_ID=${ver}
-IMAGE_ID=${IMAGE_ID}
-IMAGE_VERSION=${ver}
-EOF
-
-    ukify build \
-        --linux="${d}/linux" \
-        --initrd="${d}/initrd" \
-        --os-release=@"${d}/osrel" \
-        --uname="${uname}" \
-        --cmdline="${cmdline}" \
-        --output="${out}"
-}
-
-# 服务一个目标版本：清理服务目录 → 放入 erofs.xz + UKI → 重写 SHA256SUMS
-ota_serve_version() {
-    local ver="$1" erofs_src="$2" uki_file="$3"
-    rm -rf "${OTA_SERVE_DIR}"
-    mkdir -p "${OTA_SERVE_DIR}"
-    # 流式直压：无需中间未压缩副本（sysupdate 源只消费 .erofs.xz）
-    xz -T0 -c "${erofs_src}" > "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.erofs.xz"
-    cp -f "${uki_file}" "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.efi"
-    ( cd "${OTA_SERVE_DIR}" && sha256sum \
-        "${IMAGE_ID}_${ver}.erofs.xz" "${IMAGE_ID}_${ver}.efi" > SHA256SUMS )
-}
-
-# ── guest 侧操作 ──
-ota_inject_sysupdate_overrides() {
-    local url="http://10.0.2.2:${OTA_SERVER_PORT}/"
-    local root_b64 uki_b64
-    # 设备侧定义的本地镜像（URL + 显式 Verify=no：测试无 GPG 签名链路，
-    # 排除发行版 Verify= 默认值差异的干扰；TriesLeft/InstancesMax 与
-    # build.env 同源）
-    root_b64="$(base64 -w0 <<EOF
-[Transfer]
-ProtectVersion=%A
-Verify=no
-
-[Source]
-Type=url-file
-Path=${url}
-MatchPattern=${IMAGE_ID}_@v.erofs.xz
-
-[Target]
-Type=regular-file
-Path=/var/lib/basalt/images
-MatchPattern=${IMAGE_ID}_@v.erofs
-Mode=0444
-InstancesMax=${INSTANCES_MAX}
-EOF
-)"
-    uki_b64="$(base64 -w0 <<EOF
-[Transfer]
-ProtectVersion=%A
-Verify=no
-
-[Source]
-Type=url-file
-Path=${url}
-MatchPattern=${IMAGE_ID}_@v.efi
-
-[Target]
-Type=regular-file
-Path=/efi/EFI/Linux
-MatchPattern=${IMAGE_ID}_@v+${OTA_TRIES}-0.efi ${IMAGE_ID}_@v+${OTA_TRIES}.efi ${IMAGE_ID}_@v.efi
-TriesLeft=${OTA_TRIES}
-TriesDone=0
-InstancesMax=${INSTANCES_MAX}
-EOF
-)"
-    guest_run "mkdir -p /etc/sysupdate.d"
-    guest_run "echo ${root_b64} | base64 -d > /etc/sysupdate.d/70-root.transfer"
-    guest_run "echo ${uki_b64} | base64 -d > /etc/sysupdate.d/80-uki.transfer"
-}
-
-# 经 systemd-sysupdate.service（rw wrapper 窗口）执行更新；输出 service Result。
-# wrapper 内含 repart + btrfs resize（空间就绪）+ sysupdate；service 不受
-# guest_run 的 15s SSH 超时约束（前台直跑在 TCG 下下载必超时，实测教训）。
-ota_run_update() {
-    # 基线必须在 start 之前取（否则瞬间完成的更新会与基线相同导致死等）
-    local pre
-    pre="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
-    guest_run "systemctl start --no-block systemd-sysupdate.service"
-    # 完成判定：ExecMainExitTimestampMonotonic 相对启动前基线发生变化且
-    # ActiveState 离开 active/activating。仅凭 is-active 会与 --no-block
-    # 的任务入队竞态——单元尚未启动即返回 inactive，而从未运行的单元
-    # Result 默认 success（实测假 PASS 根因）。属性逐一查询（多 -p 合并
-    # 查询的输出顺序不可靠，实测错位）。
-    local t0=${SECONDS} mono="" state="" result=""
-    while (( SECONDS - t0 < 1800 )); do
-        mono="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
-        if [[ -n "${mono}" && "${mono}" != "0" && "${mono}" != "${pre}" ]]; then
-            state="$(guest_run "systemctl show -p ActiveState --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
-            [[ "${state}" == "inactive" || "${state}" == "failed" ]] && break
-        fi
-        sleep 3
-    done
-    result="$(guest_run "systemctl show -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
-    if [[ "${result}" != "success" ]]; then
-        echo "=== [probe] systemd-sysupdate.service journal（失败取证）===" >&2
-        guest_run "journalctl -u systemd-sysupdate.service --no-pager | tail -n 60" >&2 || true
-    fi
-    printf '%s' "${result}"
-}
-
-# ── 各阶段 ──
-
-phase_vacuum() {
-    echo "============================================================"
-    echo "Phase: 矩阵 7 — vacuum（运行 v${V1}，ProtectVersion 一致）"
-    echo "============================================================"
-    # boot 收敛校验：每次 boot 由 images-lock.service 强制 @images 子卷属性
-    # ro=true（fstab 挂载保持 rw，只读在 btrfs 属性层）。此前首窗口已锁。
-    ota_check "boot 收敛 @images ro=true（images-lock.service）" \
+stage_v2_install() {
+    echo "== stage: v2 安装 =="
+    # 前置状态：工厂 v1 运行中；@images 收敛 ro=true；工厂主 UKI 命名契约
+    # （ESP 中唯一非 boot-count 主 UKI 恰为 ${IMAGE_ID}_${V1}.efi——sysupdate
+    # MatchPattern=@v 同源，构建侧 UnifiedKernelImageFormat 保证。rescue 为
+    # 连字符名，underscore 模式天然排除）
+    ota_check "前置：工厂 v1 cmdline 绑定" \
+        guest_run "grep -q 'basalt.image=${IMAGE_ID}_${V1}.erofs' /proc/cmdline"
+    ota_check "前置：@images ro=true（images-lock 收敛）" \
         guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
-    # seed 源双重保障：erofs 与当前镜像同命名；工厂主 UKI 契约校验——
-    # ESP 中唯一非 boot-count 的主 UKI（rescue 为连字符名，underscore 模式
-    # 天然排除）必须恰为 ${IMAGE_ID}_${V1}.efi（sysupdate MatchPattern=@v 同源，
-    # 构建侧 UnifiedKernelImageFormat=%i_%v.efi 保证）。不符则 dump 清单并失败。
-    # 解锁（btrfs 子卷属性 ro=false；remount,rw 已被属性方案取代——同 superblock
-    # 下 remount,ro 必 EBUSY，见 fstab 注释）。
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro false"
-    factory_uki="${IMAGE_ID}_${V1}.efi"
+    local factory_uki="${IMAGE_ID}_${V1}.efi"
+    local found_uki
     found_uki="$(guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -name '${IMAGE_ID}_*.efi' ! -name '*+*' -printf '%f\n'")"
-    if [[ "${found_uki}" != "${factory_uki}" ]]; then
-        echo "[FAIL] 工厂主 UKI 契约不符：期望=${factory_uki} 实际=[${found_uki}]" >&2
-        guest_run "ls -la /efi/EFI/Linux" >&2
-        guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -printf '%f\n'" >&2
-        return 1
-    fi
-    echo "[PASS] 工厂主 UKI 契约校验：${factory_uki}"
-    for v in 2 3 4 5; do
-        guest_run "cp /var/lib/basalt/images/${IMAGE_ID}_${V1}.erofs /var/lib/basalt/images/${IMAGE_ID}_${v}.erofs"
-        guest_run "cp /efi/EFI/Linux/${IMAGE_ID}_${V1}.efi /efi/EFI/Linux/${IMAGE_ID}_${v}.efi"
-    done
-    # cp 种子后锁回 @images（btrfs 子卷属性 ro=true；原 mount remount,ro 在
-    # 共享 superblock 下必 EBUSY，已弃用——见 fstab/10-images-rw.conf 注释）。
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro true"
+    ota_check "前置：工厂主 UKI 契约（${factory_uki}）" \
+        test "${found_uki}" = "${factory_uki}"
 
-    # systemd-sysupdate bin 在 /usr/lib/systemd/（不在 PATH），须全路径调用；
-    # vacuum 的 @images rw 窗口：临时解锁属性 → vacuum → 恢复加锁。
-    # 显式捕获退出码（set -e 下 if ! 不可靠）；加锁恢复置于判失败前，成败皆锁。
-    set +e
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro false && /usr/lib/systemd/systemd-sysupdate vacuum"
-    rc=$?
-    set -e
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro true" || true
-    if (( rc != 0 )); then
-        echo "[FAIL] vacuum 前 @images rw 窗口解锁/vacuum 失败 (rc=${rc})" >&2
-        guest_run "systemctl status systemd-sysupdate.service --no-pager -l" >&2 || true
-        return 1
-    fi
-
-    local imgs ukis
-    imgs="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
-    ukis="$(guest_run "ls /efi/EFI/Linux" 2>/dev/null || true)"
-
-    ota_check "vacuum 后当前（受保护）版本镜像存在" \
-        grep -q "^${IMAGE_ID}_${V1}\.erofs\$" <<<"${imgs}"
-    # ota_check 经 "$@" 执行命令，无法承载 shell 否定前缀 `!`（被当命令名）；
-    # "v2 已淘汰" = grep v2 必须失败 → 用 ota_check_fails 承载
-    ota_check_fails "vacuum 淘汰最旧非保护版本（v2）" \
-        grep -q "^${IMAGE_ID}_2\.erofs\$" <<<"${imgs}"
-    local n_erofs
-    n_erofs="$(grep -c "^${IMAGE_ID}_[0-9].*\.erofs\$" <<<"${imgs}" || true)"
-    ota_check "EROFS 实例数 ≤ InstancesMax+1（保护版本可额外保留，n=${n_erofs}）" \
-        test "${n_erofs}" -le $(( INSTANCES_MAX + 1 ))
-    ota_check "vacuum 不动 rescue UKI" \
-        grep -q "${IMAGE_ID}-rescue.efi" <<<"${ukis}"
-    ota_check "vacuum 后当前（受保护）UKI 存在" \
-        grep -q "^${IMAGE_ID}_${V1}\.efi\$" <<<"${ukis}"
-
-    # 清理种子残留：避免污染后续 OTA 阶段的版本枚举与 sd-boot 最新版选择
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro false"
-    guest_run "sh -c 'cd /var/lib/basalt/images && ls | grep -v \"^${IMAGE_ID}_${V1}\\.erofs\$\" | xargs -r rm -f'"
-    guest_run "btrfs property set -ts /var/lib/basalt/images ro true"
-    # ESP 侧清理同样必须排除 v1（^basalt_[0-9] 会同时匹配工厂主 UKI
-    # basalt_1.efi——曾实测误删导致 v1 判 incomplete、后续 update no-op）
-    guest_run "sh -c 'cd /efi/EFI/Linux && ls | grep -E \"^${IMAGE_ID}_[0-9]\" | grep -v \"^${IMAGE_ID}_${V1}\\.efi\$\" | xargs -r rm -f'"
-}
-
-phase_ota_update() {
-    local ver="$1"
-    echo "============================================================"
-    echo "Phase: OTA v${V1}→v${ver}"
-    echo "============================================================"
-    ota_fabricate_uki "${ver}" "" "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
-    ota_serve_version "${ver}" \
+    # 操作：sysupdate 安装 v2（产品路径：service → wrapper → ota-prep/sysupdate/
+    # ota-select）
+    ota_fabricate_uki 2 "" "${FAB_DIR}/${IMAGE_ID}_2.efi"
+    ota_serve_version 2 \
         "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
-        "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
-
-    # 临时取证（var 扩容链路验证）：update 前 ESP 与 var 状态
-    echo "=== [probe] update 前 ESP 清单 ==="
-    guest_run "ls -la /efi/EFI/Linux" || true
-    echo "=== [probe] /proc/cmdline（当前启动的 UKI 分支）==="
-    guest_run "cat /proc/cmdline" || true
-    echo "=== [probe] var 分区扩容状态（df + lsblk + ro 属性）==="
-    guest_run "df -h /var/lib/basalt/images /var; lsblk /dev/vda; btrfs property get -ts /var/lib/basalt/images ro" || true
-    echo "=== [probe] sysupdate 单元存在性 ==="
-    guest_run "systemctl cat systemd-sysupdate.service 2>&1 | head -n 20" || true
-
+        "${FAB_DIR}/${IMAGE_ID}_2.efi"
     local result
     result="$(ota_run_update)"
-    ota_check "sysupdate 更新安装成功（Result=${result}）" test "${result}" = "success"
-    ota_check "@images wrapper 恢复 ro=true（V12，btrfs 属性）" \
+    ota_check "sysupdate 安装成功（Result=${result}）" test "${result}" = "success"
+
+    # 后置契约
+    ota_check "@images 恢复 ro=true（wrapper trap）" \
         guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
-    # EROFS 成对落盘（资源级取证）：Result=success 是服务级结果，不保证 root
-    # transfer 安装了 v2——可能 no-op/未枚举/装错路径。失败即 dump：
-    #   journal（真实执行序列）+ list 总表 + list <v> 逐 transfer 逐文件详情
-    #   （incomplete 定位到具体 transfer/文件）+ 目录清单 + 注入定义
-    if ! guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"; then
-        echo "[FAIL] EROFS 成对落盘（${IMAGE_ID}_${ver}.erofs）" >&2
-        echo "=== journalctl systemd-sysupdate ===" >&2
-        guest_run "journalctl -u systemd-sysupdate.service --no-pager -n 80" >&2 || true
-        echo "=== sysupdate list 总表 ===" >&2
-        guest_run "/usr/lib/systemd/systemd-sysupdate list --no-pager" >&2 || true
-        echo "=== sysupdate list ${V1}（current 逐 transfer 文件详情）===" >&2
-        guest_run "/usr/lib/systemd/systemd-sysupdate list ${V1} --no-pager" >&2 || true
-        echo "=== sysupdate list ${ver}（candidate 逐 transfer 文件详情）===" >&2
-        guest_run "/usr/lib/systemd/systemd-sysupdate list ${ver} --no-pager" >&2 || true
-        echo "=== images 目录清单 ===" >&2
-        guest_run "ls -la /var/lib/basalt/images" >&2 || true
-        echo "=== /efi/EFI/Linux 目录清单 ===" >&2
-        guest_run "ls -la /efi/EFI/Linux" >&2 || true
-        echo "=== /etc/sysupdate.d 定义（70-root + 80-uki）===" >&2
-        guest_run "cat /etc/sysupdate.d/70-root.transfer; echo '---'; cat /etc/sysupdate.d/80-uki.transfer" >&2 || true
-        landscape_router_dump_diagnostics "${LANDSCAPE_ROUTER_API_TOKEN:-}"
-        return 1
-    fi
-    ota_check "EROFS 成对落盘（${IMAGE_ID}_${ver}.erofs）" \
-        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
-    ota_check "UKI 落盘带 tries 计数（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
+    ota_assert_pair_landed 2
 }
 
-phase_ota_boot_bless() {
-    local ver="$1"
-    echo "---- 重启进入 v${ver} 并验证 bless ----"
+# ── Stage 2：v2 引导 + bless ──
+
+stage_v2_boot() {
+    echo "== stage: v2 引导 + bless =="
     ota_reboot_guest
-    echo "=== [probe] 重启后 cmdline 与 ESP ==="
-    guest_run "cat /proc/cmdline; ls -la /efi/EFI/Linux" || true
-    echo "=== [probe] boot 选择取证：loader.conf + bootctl 默认项 + EFI 变量 ==="
-    guest_run "cat /efi/loader/loader.conf" || true
-    guest_run "bootctl list --no-pager 2>&1 | head -n 30" || true
-    guest_run "bootctl status --no-pager 2>&1 | grep -A4 'Default Boot Loader Entry'" || true
-    guest_run "ls /sys/firmware/efi/efivars | grep -i LoaderEntry" || true
-    ota_check "v${ver} cmdline 镜像绑定一致" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_${ver}.erofs' /proc/cmdline"
+    ota_check "v2 cmdline 镜像绑定" \
+        guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
     ota_check "根为 overlay（EROFS lower + @os upper）" \
         test "$(guest_run "findmnt -n -o FSTYPE /" 2>/dev/null | tr -d '[:space:]')" = "overlay"
     # bless 在 boot-complete（= basalt-boot-health 成功）后去计数；轮询文件重命名
     wait_for_guest_command "bless 去计数" 240 5 \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}.efi"
-    ota_check "bless 去计数（${IMAGE_ID}_${ver}.efi，无 tries 后缀）" \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}.efi && ! ls /efi/EFI/Linux/ | grep -q '^${IMAGE_ID}_${ver}+.*\.efi\$'"
-    ota_check "basalt-boot-health 门通过（API 就绪）" \
+        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_2.efi"
+    ota_check "bless 去计数（basalt_2.efi，无 tries 后缀）" \
+        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_2.efi"
+    ota_check "健康门通过（API 就绪）" \
         guest_run "systemctl show -p Result --value basalt-boot-health.service | grep -qx success"
+    OTA_RUNNING_VER=2
 }
 
-phase_boot_level_bad() {
-    local ver=3
-    echo "============================================================"
-    echo "Phase: 矩阵 3 — 引导级坏版本（v${ver} EROFS 损坏 → tries 耗尽 → 回 v2）"
-    echo "============================================================"
-    # UKI 正常（cmdline 绑定 v3），EROFS 截断 → initrd loop mount 失败 → emergency
-    ota_fabricate_uki "${ver}" "" "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
-    cp -f "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" "${FAB_DIR}/${IMAGE_ID}_${ver}.erofs.corrupt"
-    truncate -s 1M "${FAB_DIR}/${IMAGE_ID}_${ver}.erofs.corrupt"
-    ota_serve_version "${ver}" \
-        "${FAB_DIR}/${IMAGE_ID}_${ver}.erofs.corrupt" \
-        "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
+# ── Stage 3：引导级坏版本 → tries 耗尽 → 回退 ──
 
+stage_v3_exhaust() {
+    echo "== stage: v3 引导级坏版本（EROFS 截断）→ tries 耗尽 → 回退 =="
+    # 损坏注入：截断 1M——超级块保留（可挂载），内容缺失 → 启动无法完成。
+    # 契约不绑定失败阶段（挂载失败 / switch_root 无 init 均为合法形态）。
+    # sd-boot 对损坏 UKI 二进制的行为无文档保证，不作依赖，故用 EROFS 损坏
+    # 而非 UKI 损坏承载同一机制
+    ota_fabricate_uki 3 "" "${FAB_DIR}/${IMAGE_ID}_3.efi"
+    cp -f "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" "${FAB_DIR}/${IMAGE_ID}_3.erofs.corrupt"
+    truncate -s 1M "${FAB_DIR}/${IMAGE_ID}_3.erofs.corrupt"
+    ota_serve_version 3 \
+        "${FAB_DIR}/${IMAGE_ID}_3.erofs.corrupt" \
+        "${FAB_DIR}/${IMAGE_ID}_3.efi"
     local result
     result="$(ota_run_update)"
     ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
-    # 落盘断言 + 刷盘：Result=success 不保证资源落盘（已知陷阱）；文件断言
-    # 让"假安装"当场失败而非数轮之后。硬复位 = kill -9 QEMU（断电语义），
-    # 安装后的页缓存必须先 sync，否则新版本文件在复位中丢失（实测：install
-    # 后立即硬复位 → v3 在磁盘上从未存在 → 每轮都引导 v2）
-    ota_check "坏版本 EROFS 落盘（${IMAGE_ID}_${ver}.erofs）" \
-        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
-    ota_check "坏版本 UKI 落盘带 tries（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
-    guest_run "sync"
+    ota_assert_pair_landed 3
 
-    local attempt
-    for attempt in 1 2 3; do
-        echo "---- 失败启动尝试 ${attempt}/${OTA_TRIES}（硬复位承载）----"
-        # 统一硬复位冷启动：实测 warm reboot（SSH systemctl reboot）不可靠——
-        # 本轮 reboot 命令未在 guest 执行（串口无第二次 Restarting system），
-        # 少一次失败尝试后"第 4 次启动"错位落在第 3 次 try；且 warm reboot
-        # 后新 boot 的串口输出丢失，取证依赖串口必须用 fresh boot（实测失败
-        # 签名必然落盘，~25s 内命中）
-        ota_hard_reset
-        local offset
-        offset="$(ota_serial_offset)"
-        ota_serial_wait_evidence \
-            "erofs loop mount failed|Switch root target contains no usable init" \
-            420 "${offset}" || true
-    done
-
-    echo "---- 第 4 次启动：tries 耗尽，自动回 v2 ----"
-    ota_hard_reset
-    ota_wait_booted
-    ota_check "自动回退到 v2（cmdline）" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
-    ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
-    # 轮询等待（TCG 下 landscape-webserver 启动 30s+，单发 curl 时序脆弱）
-    wait_for_guest_command "回退后 API 恢复在线" 120 5 \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
-    ota_check "回退后 API 恢复在线" \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+    # 操作：OTA_TRIES 次失败 boot（硬复位承载）→ 契约：回退 v2
+    ota_stage_exhaust 3 90 \
+        "erofs loop mount failed|Switch root target contains no usable init" \
+        || { echo "[FAIL] v3 tries 耗尽未收敛" >&2; return 1; }
+    ota_assert_fallback 3 2
 }
 
-phase_business_level_bad() {
-    local ver=4
-    echo "============================================================"
-    echo "Phase: 矩阵 4 — 业务级坏版本（v${ver} mask landscape → API_READY 超时 → 回 v2）"
-    echo "============================================================"
-    # EROFS 内容完好（v1 副本）；UKI cmdline 追加 systemd.mask= —— 版本内在
-    # 故障，不写共享 overlay upper，回滚后业务即恢复
-    ota_fabricate_uki "${ver}" "systemd.mask=landscape-router.service" "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
-    ota_serve_version "${ver}" \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
-        "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
+# ── Stage 4：业务级坏版本 → tries 耗尽 → 回退 ──
 
+stage_v4_exhaust() {
+    echo "== stage: v4 业务级坏版本（mask landscape-router）→ tries 耗尽 → 回退 =="
+    # mask 注入：cmdline 级、版本内在的业务故障（不污染共享 overlay upper，
+    # 回滚后业务即恢复）。注意 mask landscape-router 连带杀死全部接口配置
+    # （镜像内 /etc/network/interfaces 仅 lo，eth 由 landscape-router 运行期
+    # 管理）→ v4 内 SSH/网络全灭，失败形态的观察面只有串口（健康门失败消息
+    # journal+console）
+    ota_fabricate_uki 4 "systemd.mask=landscape-router.service" "${FAB_DIR}/${IMAGE_ID}_4.efi"
+    ota_serve_version 4 \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
+        "${FAB_DIR}/${IMAGE_ID}_4.efi"
     local result
     result="$(ota_run_update)"
-    ota_check "v${ver} 安装成功" test "${result}" = "success"
-    # 落盘断言 + 刷盘（同矩阵 3：Result=success 不保证落盘；硬复位断电语义）
-    ota_check "v${ver} EROFS 落盘（${IMAGE_ID}_${ver}.erofs）" \
-        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
-    ota_check "v${ver} UKI 落盘带 tries（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
-    guest_run "sync"
+    ota_check "v4 安装成功" test "${result}" = "success"
+    ota_assert_pair_landed 4
 
-    # 契约判定：恰好 OTA_TRIES 次"真 v4 失败 boot"（以串口签名为准）后回退。
-    # 实测 install 后首次冷启动的固件 selection 可能落在 v2（浪费 boot、
-    # tries 不消耗），根因待证——复位轮次只是手段，不与失败次数绑定；无签名
-    # boot 经 SSH 探测三分类：真回退（bad 态在列，收敛）/ 浪费 boot（取证后
-    # 继续复位）/ v4 取证丢失（继续复位）。6 轮上限防失控，真伪回退由末尾
-    # 断言仲裁。
-    local sig=0 attempt converged=0
-    for attempt in 1 2 3 4 5 6; do
-        echo "---- 硬复位轮次 ${attempt}（v4 失败 boot 取证：${sig}/${OTA_TRIES}）----"
-        ota_hard_reset
-        local offset
-        offset="$(ota_serial_offset)"
-        if ota_serial_wait_evidence "API listener not ready" 420 "${offset}" >/dev/null; then
-            sig=$((sig + 1))
-            if [[ ${sig} -ge ${OTA_TRIES} ]]; then
-                ota_hard_reset   # 第 OTA_TRIES+1 次启动：tries 耗尽 → v2
-                converged=1
-                break
-            fi
-            continue
-        fi
-        # 无签名：SSH 探测（eth2 配置持久于 overlay upper——v2 下直接可达；
-        # v4 下网络全灭不可达）
-        if wait_for_guest_command "SSH 探测（回退/浪费 boot 判别）" 120 10 \
-            guest_run "true"; then
-            # 首次 boot 偏差根因的直接取证：ESP 实况 + bootctl 视角
-            guest_run "ls -la /efi/EFI/Linux; bootctl list --no-pager 2>&1 | head -n 40" || true
-            if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
-                converged=1   # bad 态在列 = OTA_TRIES 次已消耗，本 boot 即回退
-                break
-            fi
-        fi
-    done
-    [[ ${converged} -eq 1 ]] || echo "[WARN] 矩阵 4 未按预期收敛（断言仲裁）"
-
-    echo "---- 回退验证：tries 耗尽，自动回 v2 ----"
-    ota_wait_booted
-    ota_check "自动回退到 v2（cmdline）" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
-    ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
-        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
-    # 轮询等待（TCG 下 landscape-webserver 启动 30s+，单发 curl 时序脆弱）
-    wait_for_guest_command "回退后 API 恢复在线（业务自愈）" 120 5 \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
-    ota_check "回退后 API 恢复在线（业务自愈）" \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+    ota_stage_exhaust 4 340 "API listener not ready" \
+        || { echo "[FAIL] v4 tries 耗尽未收敛" >&2; return 1; }
+    ota_assert_fallback 4 2
     ota_check "回退后健康门成功" \
         guest_run "systemctl show -p Result --value basalt-boot-health.service | grep -qx success"
 }
 
-phase_data_full() {
-    local ver=5
-    echo "============================================================"
-    echo "Phase: 矩阵 5 — @data 塞满（启动/运行不受阻；ENOSPC 半状态可恢复）"
-    echo "============================================================"
+# ── Stage 5：@data 塞满（ENOSPC 半状态可恢复）──
+
+stage_v5_enospc() {
+    echo "== stage: @data 塞满 → ENOSPC 半状态 → 清理重试 =="
     # 填满 /var（@data；btrfs 空间池与 @os/@images 共享 → 更新写入同样 ENOSPC）
     guest_run "nohup sh -c 'dd if=/dev/zero of=/var/lib/basalt-ota-fill bs=64M; echo done > /run/ota-fill-done' >/dev/null 2>&1 &" || true
     wait_for_guest_command "磁盘填满" 900 10 \
         guest_run "test -f /run/ota-fill-done"
 
+    # 后置契约：系统存活 + API 在线（@data 满不阻塞运行）
     ota_check "塞满后系统存活（SSH）" guest_run "echo ok"
-    ota_check "塞满后 API 在线（@data 满不阻塞运行）" \
+    ota_check "塞满后 API 在线" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
     ota_check_fails "盘满探测（@data 写入 ENOSPC）" \
         guest_run "dd if=/dev/zero of=/var/lib/basalt-ota-probe bs=1M count=1"
 
-    # 更新写入 ENOSPC → 无害半状态（失败可重试）
-    ota_fabricate_uki "${ver}" "" "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
-    ota_serve_version "${ver}" \
+    # 操作：更新写入 ENOSPC → 无害半状态（失败可重试）
+    ota_fabricate_uki 5 "" "${FAB_DIR}/${IMAGE_ID}_5.efi"
+    ota_serve_version 5 \
         "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
-        "${FAB_DIR}/${IMAGE_ID}_${ver}.efi"
+        "${FAB_DIR}/${IMAGE_ID}_5.efi"
     local result
     result="$(ota_run_update)"
     ota_check "盘满时 sysupdate 失败（ENOSPC 半状态）" test "${result}" != "success"
     ota_check "失败后半状态不伤运行（API 在线）" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 
-    # 释放空间 → 重试成功
+    # 操作：释放空间 → 重试；契约：成功 + 成对落盘
     guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-probe /run/ota-fill-done; sync; sleep 3"
     result="$(ota_run_update)"
     ota_check "空间恢复后更新重试成功" test "${result}" = "success"
-    ota_check "v${ver} 成对落盘" \
-        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs -a -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
+    ota_assert_pair_landed 5
 }
 
-phase_rescue() {
-    echo "============================================================"
-    echo "Phase: 矩阵 6 — rescue（手动选择 → 只读根 + rescue shell）"
-    echo "============================================================"
+# ── Stage 6：vacuum（破坏性，收尾）──
+
+stage_vacuum() {
+    echo "== stage: vacuum（裁剪保留深度 + ProtectVersion）=="
+    # 前置状态：自然形成的多版本——运行版本 v2（受 ProtectVersion=%A 保护）；
+    # 非保护：v1（工厂）、v3/v4（bad 态）、v5（candidate）。不再 seed 人工
+    # 版本（旧流程 vacuum 先行 + seed 5 版本，已弃——破坏性操作应消费前面
+    # 自然形成的状态）
+    ota_check "前置：运行版本仍为 v2" \
+        guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
+    local before n_before
+    before="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
+    n_before="$(grep -c "^${IMAGE_ID}_[0-9].*\.erofs\$" <<<"${before}" || true)"
+
+    # 操作：vacuum（@images rw 窗口：解锁属性 → vacuum → 恢复加锁，成败皆锁；
+    # systemd-sysupdate bin 不在 PATH，全路径调用）
+    ota_images_unlock
+    if ! guest_run "/usr/lib/systemd/systemd-sysupdate vacuum"; then
+        ota_images_lock || true
+        echo "[FAIL] vacuum 失败" >&2
+        return 1
+    fi
+    ota_images_lock
+
+    # 后置契约：发生裁剪 + 受保护版本（运行版本）永在 + 深度 ≤ InstancesMax+1
+    # + rescue UKI 不动
+    local after ukis n_after
+    after="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
+    ukis="$(guest_run "ls /efi/EFI/Linux" 2>/dev/null || true)"
+    n_after="$(grep -c "^${IMAGE_ID}_[0-9].*\.erofs\$" <<<"${after}" || true)"
+    ota_check "vacuum 发生裁剪（EROFS n=${n_before} → ${n_after}）" \
+        test "${n_after}" -lt "${n_before}"
+    ota_check "受保护版本镜像存在（运行版本 v${OTA_RUNNING_VER}）" \
+        grep -q "^${IMAGE_ID}_${OTA_RUNNING_VER}\.erofs\$" <<<"${after}"
+    ota_check "EROFS 实例数 ≤ InstancesMax+1（保护版本可额外保留）" \
+        test "${n_after}" -le $(( INSTANCES_MAX + 1 ))
+    ota_check "vacuum 不动 rescue UKI" \
+        grep -q "${IMAGE_ID}-rescue.efi" <<<"${ukis}"
+    ota_check "受保护版本 UKI 存在" \
+        grep -q "^${IMAGE_ID}_${OTA_RUNNING_VER}\.efi\$" <<<"${ukis}"
+}
+
+# ── Stage 7：rescue（破坏性，最后）──
+
+stage_rescue() {
+    echo "== stage: rescue（手动入口 → 只读根 + rescue shell）=="
     # 经 EFI Boot Loader Interface 枚举可用条目并锁定 rescue
     local entries rescue_id
     entries="$(guest_run "systemctl reboot --boot-loader-entry=help" 2>&1 || true)"
@@ -632,7 +256,7 @@ phase_rescue() {
     [[ -n "${rescue_id}" ]] || {
         error "boot-loader-entry 清单中未找到 rescue 条目："
         echo "${entries}" >&2
-        exit 1
+        return 1
     }
     info "rescue 条目: ${rescue_id}"
 
@@ -641,11 +265,11 @@ phase_rescue() {
     guest_run "systemctl reboot --boot-loader-entry=${rescue_id}" || true
     sleep 10
 
-    # rescue.target：无 sshd/网络 → SSH 不可达；sulogin 提示落在串口
+    # 契约：rescue.target 无 sshd/网络 → SSH 不可达；sulogin 提示上串口
+    # （串口是 rescue 的唯一观察面；sulogin 提示是稳定产品行为，非偶然日志）
     ota_check "rescue shell 就绪（串口 sulogin 提示）" \
-        ota_serial_wait_pattern "Give root password for maintenance|rescue" 420 "${offset}"
-    local t0=${SECONDS}
-    local ssh_up=0
+        ota_serial_expect "Give root password for maintenance|rescue" 420 "${offset}"
+    local t0=${SECONDS} ssh_up=0
     while (( SECONDS - t0 < 60 )); do
         if guest_run "echo ok" &>/dev/null; then ssh_up=1; break; fi
         sleep 5
@@ -689,6 +313,7 @@ preflight() {
         exit 2
     }
 
+    OTA_RUNNING_VER="${V1}"
     FAB_DIR="$(mktemp -d "${LANDSCAPE_TEST_TMP_ROOT}/basalt-ota-fab-XXXXXX")"
     OTA_SERVE_DIR="$(mktemp -d "${LANDSCAPE_TEST_TMP_ROOT}/basalt-ota-serve-XXXXXX")"
 
@@ -706,38 +331,36 @@ preflight() {
 main() {
     echo ""
     echo "============================================================"
-    echo "  Basalt — OTA / 文件轮转更新矩阵测试（矩阵 2-7）"
+    echo "  Basalt — OTA / 文件轮转更新状态机测试"
     echo "============================================================"
     info "Image: ${IMAGE_PATH}"
     echo ""
 
+    trap ota_exit_handler EXIT
     preflight
 
     ota_start_vm
+    OTA_VM_STARTED=1
     ota_wait_booted
-    # 失败取证由 wait_ready 内部完成（readiness_fail 含快照+诊断）；
-    # 外层仅终止
+    # 失败取证由 wait_ready 内部完成（readiness_fail 含快照+诊断）
     landscape_router_wait_ready "Router" || exit 1
 
-    # 注入测试 override 到 /etc/sysupdate.d/（覆盖 /usr/lib 占位定义：指向本地
-    # OTA server + 与 build.env 同源的 Tries/InstancesMax）。所有 sysupdate
-    # 调用（含矩阵 7 的 vacuum 与后续 update）必须加载本地定义，故在首个
-    # phase 前注入一次（/etc 持久，跨重启有效）。
+    # 注入测试 override（/etc 优先于 /usr/lib；持久，跨重启有效）
     ota_inject_sysupdate_overrides
 
-    # 顺序敏感：矩阵 7 先行（运行版本 os-release 与 ProtectVersion 一致）；
-    # 其后 2 → 3 → 4 → 5 → 6（每阶段依赖前序落盘状态）
-    phase_vacuum
-    phase_ota_update 2
-    phase_ota_boot_bless 2
-    phase_boot_level_bad
-    phase_business_level_bad
-    phase_data_full
-    phase_rescue
+    # 状态机：2 安装 → 2 引导 → v3 耗尽 → v4 耗尽 → ENOSPC → vacuum → rescue
+    # （vacuum/rescue 破坏性，收尾；vacuum 需 SSH，rescue 销毁会话）
+    stage_v2_install
+    stage_v2_boot
+    stage_v3_exhaust
+    stage_v4_exhaust
+    stage_v5_enospc
+    stage_vacuum
+    stage_rescue
 
     echo ""
     echo "============================================================"
-    echo "OTA 矩阵测试 2-7 全部通过"
+    echo "OTA 状态机测试全部通过"
     echo "============================================================"
 }
 

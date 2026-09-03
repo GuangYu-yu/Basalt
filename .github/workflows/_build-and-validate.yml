@@ -125,8 +125,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n build.sh lib/export.sh mkosi/mkosi.finalize \
-            mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
-            tests/test-readiness.sh tests/test-dataplane.sh tests/test-ota.sh
+              mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
+              tests/ota_lib.sh tests/test-readiness.sh tests/test-dataplane.sh tests/test-ota.sh
           # mkosi 配置解析在容器内执行（宿主不再安装 mkosi）
           docker run --rm -v "${PWD}:/src" -w /src \
             basalt-builder:${{ github.sha }} mkosi -C mkosi summary > /dev/null
