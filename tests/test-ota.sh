@@ -251,19 +251,18 @@ ota_run_update() {
     # 完成判定：ExecMainExitTimestampMonotonic 相对启动前基线发生变化且
     # ActiveState 离开 active/activating。仅凭 is-active 会与 --no-block
     # 的任务入队竞态——单元尚未启动即返回 inactive，而从未运行的单元
-    # Result 默认 success（实测假 PASS 根因）。
-    local t0=${SECONDS} cur="" mono="" state="" result=""
-    while (( SECONDS - t0 < 1200 )); do
-        cur="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic -p ActiveState -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '\r')"
-        mono="${cur%%$'\n'*}"
-        state="$(sed -n 2p <<<"${cur}")"
-        result="$(sed -n 3p <<<"${cur}")"
-        if [[ -n "${mono}" && "${mono}" != "0" && "${mono}" != "${pre}" \
-              && ( "${state}" == "inactive" || "${state}" == "failed" ) ]]; then
-            break
+    # Result 默认 success（实测假 PASS 根因）。属性逐一查询（多 -p 合并
+    # 查询的输出顺序不可靠，实测错位）。
+    local t0=${SECONDS} mono="" state="" result=""
+    while (( SECONDS - t0 < 1800 )); do
+        mono="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
+        if [[ -n "${mono}" && "${mono}" != "0" && "${mono}" != "${pre}" ]]; then
+            state="$(guest_run "systemctl show -p ActiveState --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
+            [[ "${state}" == "inactive" || "${state}" == "failed" ]] && break
         fi
         sleep 3
     done
+    result="$(guest_run "systemctl show -p Result --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
     if [[ "${result}" != "success" ]]; then
         echo "=== [probe] systemd-sysupdate.service journal（失败取证）===" >&2
         guest_run "journalctl -u systemd-sysupdate.service --no-pager | tail -n 60" >&2 || true
