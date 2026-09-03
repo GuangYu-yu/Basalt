@@ -159,7 +159,6 @@ ota_fabricate_uki() {
 
     objcopy -O binary --only-section=.linux   "${v1_uki}" "${d}/linux"
     objcopy -O binary --only-section=.initrd  "${v1_uki}" "${d}/initrd"
-    objcopy -O binary --only-section=.osrel   "${v1_uki}" "${d}/osrel"
     local cmdline uname
     cmdline="$(objcopy -O binary --only-section=.cmdline "${v1_uki}" /dev/stdout | tr -d '\0')"
     uname="$(objcopy -O binary --only-section=.uname "${v1_uki}" /dev/stdout | tr -d '\0')"
@@ -168,19 +167,23 @@ ota_fabricate_uki() {
     # cmdline 换绑目标版本镜像（其余参数与工厂 UKI 逐字一致）
     cmdline="$(sed "s/${IMAGE_ID}_${V1}\.erofs/${IMAGE_ID}_${ver}.erofs/" <<<"${cmdline}")"
     [[ -n "${extra_cmdline}" ]] && cmdline="${cmdline} ${extra_cmdline}"
-    # 版本字段同步（Basalt appliance osrel 契约）：VERSION_ID 是 systemd-boot
-    # Type 2 条目排序键（VERSION_ID == IMAGE_VERSION == OTA 版本），PRETTY_NAME
-    # 为菜单标题——工厂 UKI .osrel 与镜像 /usr/lib/os-release 同源
-    sed -i -e "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Basalt ${ver}\"/" \
-           -e "s/^VERSION_ID=.*/VERSION_ID=${ver}/" \
-           -e "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${ver}/" "${d}/osrel"
-    echo "=== [probe] 伪造 v${ver} osrel 内容 ===" >&2
-    cat "${d}/osrel" >&2
+
+    # .osrel 独立生成（与 build.sh rescue 同一契约）：VERSION_ID == IMAGE_VERSION
+    # == OTA 版本，是 systemd-boot Type 2 条目排序键。ukify --os-release=@PATH
+    # 读文件（缺省回退构建宿主机 /etc/os-release——实测曾嵌入 Ubuntu 身份）
+    cat > "${d}/osrel" <<EOF
+ID=basalt
+NAME="Basalt"
+PRETTY_NAME="Basalt ${ver}"
+VERSION_ID=${ver}
+IMAGE_ID=${IMAGE_ID}
+IMAGE_VERSION=${ver}
+EOF
 
     ukify build \
         --linux="${d}/linux" \
         --initrd="${d}/initrd" \
-        --os-release="${d}/osrel" \
+        --os-release=@"${d}/osrel" \
         --uname="${uname}" \
         --cmdline="${cmdline}" \
         --output="${out}"

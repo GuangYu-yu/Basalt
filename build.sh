@@ -359,10 +359,23 @@ objcopy -O binary --only-section=.initrd "${UKI_FILE_PASS1}" "${INITRD_FILE}"
 info "ukify rescue UKI（只读根入口）..."
 # ukify 不创建输出目录的父目录，缺失时报 FileNotFoundError → 先建目录
 install -d "$(dirname "${STAGED_RESCUE_UKI}")"
+# .osrel 是 UKI 的必需构建输入（ukify --os-release=@PATH 读取文件；缺省时
+# ukify 回退到构建宿主机 /etc/os-release——实测 rescue 嵌入 Ubuntu 身份）。
+# 与镜像 /usr/lib/os-release 同源：VERSION_ID == IMAGE_VERSION，构成
+# systemd-boot Type 2 条目排序契约
+cat > "${WORK_DIR}/basalt.osrel" <<EOF
+ID=basalt
+NAME="Basalt"
+PRETTY_NAME="Basalt ${IMAGE_VERSION}"
+VERSION_ID=${IMAGE_VERSION}
+IMAGE_ID=${IMAGE_ID}
+IMAGE_VERSION=${IMAGE_VERSION}
+EOF
 ukify build \
     --linux="${KERNEL_FILE}" \
     --initrd="${INITRD_FILE}" \
     --cmdline="${UKI_CMDLINE} basalt.ro=1 systemd.unit=rescue.target" \
+    --os-release=@"${WORK_DIR}/basalt.osrel" \
     --output="${STAGED_RESCUE_UKI}"
 
 # ── ESP 自适应定稿（唯一需要预算的固定尺寸）──
