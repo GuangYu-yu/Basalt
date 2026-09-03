@@ -404,6 +404,8 @@ phase_ota_boot_bless() {
     local ver="$1"
     echo "---- 重启进入 v${ver} 并验证 bless ----"
     ota_reboot_guest
+    echo "=== [probe] 重启后 cmdline 与 ESP ==="
+    guest_run "cat /proc/cmdline; ls -la /efi/EFI/Linux" || true
     ota_check "v${ver} cmdline 镜像绑定一致" \
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_${ver}.erofs' /proc/cmdline"
     ota_check "根为 overlay（EROFS lower + @os upper）" \
