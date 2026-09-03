@@ -8,7 +8,9 @@
           缺省跳过 ROOT 断言；需要 root（loop 挂载）或 erofsfuse 读取）
 
 三态契约（与 mkosi.conf 的 KernelInitrdModules=/KernelModules= 对应；此处是
-验证端，契约定义在 mkosi.conf，本脚本自动派生、不手工同步）：
+验证端）：forbidden 前缀与 allowed-retained 由本脚本从 mkosi.conf 自动派生
+（单一事实）；required 为下方手工同步的显式正清单——conf 侧加白名单若漏
+同步此处只会少验证不会假红：
   required  子集判断：契约集合 ⊆ 工件内模块（.ko 文件或 modules.builtin）
   forbidden 不相交判断：工件内模块 ∷ 配置排除的子系统 = ∅（forbidden 前缀
             由 forbidden_from_conf() 从 KernelInitrdModules=/KernelModules=

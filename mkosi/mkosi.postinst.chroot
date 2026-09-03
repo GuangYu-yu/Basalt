@@ -37,6 +37,8 @@ ln -sfn /var/lib/landscape /root/.landscape-router
 #     apt/发行版识别、ProtectVersion=%A、readiness 契约的消费域；完整自洽，
 #     不与 /usr/lib 合并（规范无合并语义）。
 # IMAGE_ID/IMAGE_VERSION 由 build.sh 经 --environment 显式注入。
+# 身份块同源三处（修改须同步）：此处（/usr/lib/os-release）、
+# build.sh（rescue 的 basalt.osrel）、tests/ota_lib.sh（伪造 UKI）
 sed -i "/^IMAGE_ID=/d;/^IMAGE_VERSION=/d" /usr/lib/os-release
 rm -f /etc/os-release
 {

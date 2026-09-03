@@ -39,7 +39,9 @@ on:
       - lib/**
       - mkosi/**
       - tests/**
+      - configs/**
       - .github/workflows/*.yml
+      - .github/actions/**
 
 concurrency:
   group: ci-${{ github.ref }}

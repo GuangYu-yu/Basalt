@@ -211,6 +211,8 @@ sed -i -e "s/basalt_/${IMAGE_ID}_/g" \
     -e "s#updates.example.com/basalt/#updates.example.com/${IMAGE_ID}/#g" \
     -e "s/InstancesMax=3/InstancesMax=${INSTANCES_MAX}/g" \
     -e "s/TriesLeft=3/TriesLeft=${INSTANCES_MAX}/g" \
+    -e "s/@v+3-0/@v+${INSTANCES_MAX}-0/g" \
+    -e "s/@v+3\.efi/@v+${INSTANCES_MAX}.efi/g" \
     "${STAGED_SYSUPDATE_D[@]}"
 # 文件轮转新增暂存路径：
 #   @os-staging/  —— pass1 EROFS 工件种子（pass2 CopyFiles=/@os-staging:/@images；
@@ -242,6 +244,10 @@ cleanup_staged() {
 if [[ "${IMAGE_ID}" != "basalt" ]] && \
    grep -qE 'basalt_' "${STAGED_SYSUPDATE_D[@]}"; then
     die "IMAGE_ID 渲染不完整：渲染后的定义文件仍残留 basalt_"
+fi
+if [[ "${INSTANCES_MAX}" != "3" ]] && \
+   grep -qE '@v\+3(-0)?\.efi' "${STAGED_SYSUPDATE_D[@]}"; then
+    die "tries 渲染不完整：渲染后的定义文件仍残留 +3 字面量"
 fi
 trap cleanup_staged EXIT
 # bash 默认收到 TERM/INT 不执行 EXIT trap（CI timeout 即 TERM），转发使其必达
@@ -362,7 +368,9 @@ install -d "$(dirname "${STAGED_RESCUE_UKI}")"
 # .osrel 是 UKI 的必需构建输入（ukify --os-release=@PATH 读取文件；缺省时
 # ukify 回退到构建宿主机 /etc/os-release——实测 rescue 嵌入 Ubuntu 身份）。
 # 与镜像 /usr/lib/os-release 同源：VERSION_ID == IMAGE_VERSION，构成
-# systemd-boot Type 2 条目排序契约
+# systemd-boot Type 2 条目排序契约。
+# 身份块同源三处（修改须同步）：此处（rescue UKI 宿主侧原料）、
+# mkosi.postinst.chroot（/usr/lib/os-release）、tests/ota_lib.sh（伪造 UKI）
 cat > "${WORK_DIR}/basalt.osrel" <<EOF
 ID=basalt
 NAME="Basalt"

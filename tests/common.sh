@@ -27,7 +27,6 @@ ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
-FAIL_FAST="${FAIL_FAST:-0}"
 LANDSCAPE_TEST_HTTP_TIMEOUT="${LANDSCAPE_TEST_HTTP_TIMEOUT:-10}"
 # CI 为 TCG 软件模拟（无 KVM），首启时长波动大（eBPF attach + DB 初始化），
 # 各阶段超时按最慢启动路径校准，避免余量不足造成假失败
@@ -86,9 +85,6 @@ run_check() {
             echo "       output: ${output}"
         fi
         FAIL_COUNT=$((FAIL_COUNT + 1))
-        if [[ "${FAIL_FAST}" == "1" ]]; then
-            exit $rc
-        fi
     fi
 
     return $rc

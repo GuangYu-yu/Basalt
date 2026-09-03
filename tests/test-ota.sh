@@ -41,7 +41,6 @@
 # （sysupdate.d(5)：/etc 优先于 /usr/lib）。
 # =============================================================================
 set -euo pipefail
-FAIL_FAST=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
