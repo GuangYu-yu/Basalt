@@ -11,7 +11,7 @@
 # =============================================================================
 FROM ubuntu:24.04
 
-ARG MKOSI_VERSION=v26
+ARG MKOSI_VERSION=latest
 ARG DEBIAN_FRONTEND=noninteractive
 
 # 依赖集合与 build.sh require 断言清单同构（mkosi/qemu-img/xz/curl/python3/
@@ -30,9 +30,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# mkosi 不发布 PyPI 包，从 GitHub tag 源码包安装（与 build.sh 的 >=26
-# 硬断言同版本锚点，可经 --build-arg MKOSI_VERSION= 覆盖）
-RUN python3 -m pip install --break-system-packages --no-cache-dir \
-        "https://github.com/systemd/mkosi/archive/refs/tags/${MKOSI_VERSION}.tar.gz"
+# mkosi 不发布 PyPI 包，从 GitHub tag 源码包安装。默认自适应最新 release：
+# 经 releases/latest 的 302 Location 解析 tag（不用 GitHub API——匿名限额
+# 60 次/h/IP，CI runner 共享出口 IP 会随机撞限）；fixed tag 可经
+# --build-arg MKOSI_VERSION= 锚定（与 build.sh 的 >=26 最低断言共存，
+# 断言只设下限不锁版本）
+RUN if [ "${MKOSI_VERSION}" = "latest" ]; then \
+        MKOSI_TAG="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/systemd/mkosi/releases/latest | sed 's#.*/tag/##')" \
+        && echo "mkosi tag resolved: ${MKOSI_TAG}"; \
+    else \
+        MKOSI_TAG="${MKOSI_VERSION}"; \
+    fi \
+    && python3 -m pip install --break-system-packages --no-cache-dir \
+        "https://github.com/systemd/mkosi/archive/refs/tags/${MKOSI_TAG}.tar.gz"
 
 WORKDIR /src

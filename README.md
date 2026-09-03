@@ -1,6 +1,6 @@
 # Basalt
 
-基于 [mkosi](https://mkosi.systemd.io/) v26 构建的 [Landscape](https://github.com/ThisSeanZhang/landscape) 路由器操作系统镜像。
+基于 [mkosi](https://mkosi.systemd.io/)（自适应最新 release）构建的 [Landscape](https://github.com/ThisSeanZhang/landscape) 路由器操作系统镜像。
 
 不可变系统设计：EROFS 只读根镜像以版本化文件承载 + overlayfs 全根增量层 + systemd-sysupdate 文件轮转原子更新，纯 UEFI（UKI）引导。
 
@@ -25,9 +25,9 @@
 ```bash
 sudo apt install mkosi qemu-utils xz-utils python3 curl \
   systemd-ukify systemd-boot-efi binutils util-linux
-# apt 版本过旧时从源码安装固定版本
+# apt 版本过旧时从源码安装最新 release（Dockerfile 同此解析逻辑）
 python3 -m pip install --break-system-packages \
-  https://github.com/systemd/mkosi/archive/refs/tags/v26.tar.gz
+  "https://github.com/systemd/mkosi/archive/$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/systemd/mkosi/releases/latest | sed 's#.*/tag/#refs/tags/#').tar.gz"
 ```
 
 ## 快速开始
