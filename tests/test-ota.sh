@@ -475,24 +475,21 @@ phase_boot_level_bad() {
     local attempt
     for attempt in 1 2 3; do
         echo "---- 失败启动尝试 ${attempt}/${OTA_TRIES}（硬复位承载）----"
-        # 仅第 1 次经 SSH 触发 reboot（此刻仍运行 v2）；后续尝试 guest 已在
-        # emergency（无 SSH），由上一轮硬复位承载重启。失败尝试禁止
-        # ota_wait_booted——SSH 永不就绪，等待纯属浪费（实测每轮多耗 10 分钟）
-        if [[ ${attempt} -eq 1 ]]; then
-            guest_run "systemctl reboot" || true
-        fi
-        # 串口取证（非判定）：offset 在失败签名出现前捕获，等待命中即证明
-        # 内核/initrd 已运行（systemd-boot 的 tries 计数在固件选条目时完成，
-        # 此时计数已落盘）——等待同时充当硬复位前同步点
+        # 统一硬复位冷启动：实测 warm reboot（SSH systemctl reboot）不可靠——
+        # 本轮 reboot 命令未在 guest 执行（串口无第二次 Restarting system），
+        # 少一次失败尝试后"第 4 次启动"错位落在第 3 次 try；且 warm reboot
+        # 后新 boot 的串口输出丢失，取证依赖串口必须用 fresh boot（实测失败
+        # 签名必然落盘，~25s 内命中）
+        ota_hard_reset
         local offset
         offset="$(ota_serial_offset)"
         ota_serial_wait_evidence \
             "erofs loop mount failed|Switch root target contains no usable init" \
             420 "${offset}"
-        ota_hard_reset
     done
 
     echo "---- 第 4 次启动：tries 耗尽，自动回 v2 ----"
+    ota_hard_reset
     ota_wait_booted
     ota_check "自动回退到 v2（cmdline）" \
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
