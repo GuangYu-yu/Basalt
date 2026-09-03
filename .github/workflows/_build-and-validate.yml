@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: ""
+      image_version:
+        description: "镜像版本（IMAGE_VERSION，纯数字）：工厂构建留空 = 1；发布构建 = tag 的 image 段"
+        required: false
+        type: string
+        default: ""
       root_password:
         description: "镜像 root/ld 初始密码"
         required: false
@@ -147,12 +152,13 @@ jobs:
             local args=(--output-format "${OUTPUT_FORMATS:-img}")
             [[ "${INCLUDE_DOCKER}" == "true" ]] && args+=(--include-docker true)
             [[ -n "${{ inputs.landscape_version }}" ]] && args+=(--version "${{ inputs.landscape_version }}")
+            [[ -n "${{ inputs.image_version }}" ]] && args+=(--image-version "${{ inputs.image_version }}")
             # --privileged：mkosi 以 root 执行 mount/loop/chroot（CAP_SYS_ADMIN
             # + /dev/loop*）；EFFECTIVE_CONFIG_PATH 映射容器内挂载路径 /src
             docker run --rm --privileged \
               -v "${PWD}:/src" -w /src \
               -e COMPRESS_OUTPUT -e RUN_TEST -e GITHUB_TOKEN \
-              -e OUTPUT_FORMATS -e DIAG_CMDLINE \
+              -e OUTPUT_FORMATS -e DIAG_CMDLINE -e OTA_BASE_URL \
               -e EFFECTIVE_CONFIG_PATH="/src/configs/landscape_init.toml" \
               basalt-builder:${{ github.sha }} ./build.sh "${args[@]}"
           }
@@ -215,16 +221,16 @@ jobs:
             output/metadata/build-metadata.txt
           retention-days: 30
 
-      - name: 上传 OTA 测试原料
-        # test-ota.sh 物料契约：版本化 EROFS + UKI（preflight 硬校验存在性）
-        if: ${{ steps.tests.outputs.run_ota == 'true' }}
+      - name: 上传版本化 OTA 资产
+        # 发布资产 + test-ota.sh 物料契约：版本化 EROFS + UKI（preflight
+        # 硬校验存在性）。恒上传——它们同时是 GitHub Release 的 OTA 资产
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.tests.outputs.image_artifact }}-ota
           path: |
             output/*.erofs
             output/*.efi
-          retention-days: 7
+          retention-days: 30
 
       - name: 上传构建日志片段
         if: always()

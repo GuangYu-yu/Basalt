@@ -1,15 +1,34 @@
 # =============================================================================
-# 发布：tag 推送 → 双变体构建+测试 → 元数据校验 → GitHub Release
-# 发布物：basalt.img.xz（无版本，工厂/dd 部署）+ SHA256SUMS
-# （版本化 OTA 产物 basalt_<v>.erofs.xz/.efi 由部署方在更新源放置，
-#   build.sh 产出到 output/ 但不上传本 release）
+# 发布：手动触发（CI 全绿后）→ 双变体构建 + 元数据校验 → GitHub Release
+#       → 发布后 smoke（真实 sysupdate list 验证 GitHub URL 契约）
+#
+# 双层身份 tag：v<landscape-version>-<image-version>（如 v0.24.2-3）——
+# landscape 版本 = 上游项目版本；image 版本 = 不可变 OTA 单位版本，独立递增。
+# Release 不可变（不覆盖同 tag 资产）。
+#
+# 发布物（= 设备 OTA 源，Source = releases/latest/download/）：
+#   basalt.img.xz / basalt-docker.img.xz   工厂/dd 部署镜像（无 docker/docker 变体）
+#   basalt_<v>.erofs.xz / basalt_<v>.efi   版本化 OTA 资产（设备 MatchPattern 同名）
+#   SHA256SUMS                              单一清单——sysupdate url-file 源的
+#                                           版本枚举端点（GET Path/SHA256SUMS）
 # =============================================================================
 
 name: 发布
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      landscape_version:
+        description: "Landscape 上游版本（latest 或 vX.Y.Z；缺省 latest，构建时解析）"
+        required: false
+        default: ""
+      image_version:
+        description: "镜像版本（缺省 = 最新 v<land>-<n> tag 的 n + 1）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,21 +36,58 @@ concurrency:
 
 jobs:
   prepare:
-    name: 准备发布元数据
+    name: 解析发布版本
     runs-on: ubuntu-24.04
     outputs:
+      landscape_version: ${{ steps.meta.outputs.landscape_version }}
+      image_version: ${{ steps.meta.outputs.image_version }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
-      target_sha: ${{ steps.meta.outputs.target_sha }}
     steps:
-      - name: 解析发布元数据
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要全部 tag 计算下一个 image 版本
+
+      - name: 解析双层版本
         id: meta
-        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_LANDSCAPE: ${{ inputs.landscape_version }}
+          IN_IMAGE: ${{ inputs.image_version }}
         run: |
           set -euo pipefail
+          # landscape 版本：输入优先；缺省解析上游 latest tag（与 build.sh 的
+          # 解析口径一致——tag 不再需要与上游版本号重合）
+          landscape="${IN_LANDSCAPE}"
+          if [[ -z "${landscape}" ]]; then
+            landscape="$(curl -fsSL --retry 3 https://api.github.com/repos/ThisSeanZhang/landscape/releases/latest \
+              | grep -oP '"tag_name":\s*"\K[^"]+')"
+          fi
+          [[ -n "${landscape}" ]] || { echo "无法解析 Landscape 版本" >&2; exit 1; }
+
+          # image 版本：输入优先；缺省 = 既有 v<land>-<n> tag 的最大 n + 1
+          image="${IN_IMAGE}"
+          if [[ -z "${image}" ]]; then
+            land="${landscape#v}"
+            image="$(git ls-remote --tags origin "v${land}-*" \
+              | grep -oE -- "-[0-9]+\$" | tr -d '-' | sort -n | tail -1)"
+            image=$(( ${image:-0} + 1 ))
+          fi
+          [[ "${image}" =~ ^[0-9]+$ ]] || { echo "镜像版本须为纯数字: ${image}" >&2; exit 1; }
+
+          release_tag="v${landscape#v}-${image}"
+          # Release 不可变：tag 已存在（无论何因）即拒绝发布
+          if gh release view "${release_tag}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${release_tag} 已存在——不可变原则，拒绝覆盖" >&2
+            exit 1
+          fi
+
           {
-            echo "release_tag=${GITHUB_REF_NAME}"
-            echo "target_sha=${GITHUB_SHA}"
+            echo "landscape_version=${landscape}"
+            echo "image_version=${image}"
+            echo "release_tag=${release_tag}"
           } >> "$GITHUB_OUTPUT"
+          echo "发布: tag=${release_tag} (landscape=${landscape}, image=${image})"
 
   build_no_docker:
     name: 构建镜像
@@ -42,11 +98,12 @@ jobs:
     uses: ./.github/workflows/_build-and-validate.yml
     with:
       include_docker: false
-      run_test: readiness,dataplane
-      landscape_version: ${{ needs.prepare.outputs.release_tag }}
+      run_test: readiness
+      landscape_version: ${{ needs.prepare.outputs.landscape_version }}
+      image_version: ${{ needs.prepare.outputs.image_version }}
 
   build_docker:
-    name: 构建 Docker 镜像
+    name: 构建 Docker 变体镜像
     needs: prepare
     permissions:
       actions: read
@@ -54,51 +111,101 @@ jobs:
     uses: ./.github/workflows/_build-and-validate.yml
     with:
       include_docker: true
-      run_test: readiness
-      landscape_version: ${{ needs.prepare.outputs.release_tag }}
+      run_test: none
+      landscape_version: ${{ needs.prepare.outputs.landscape_version }}
+      image_version: ${{ needs.prepare.outputs.image_version }}
 
-  release:
+  publish:
     name: 发布版本
     needs: [prepare, build_no_docker, build_docker]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write
+    env:
+      IMAGE_VERSION: ${{ needs.prepare.outputs.image_version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
-      - name: 下载产物
+      - name: 下载产物（no-docker）
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build_no_docker.outputs.image_artifact }}
           path: artifacts/no-docker/
 
-      - name: 下载产物
+      - name: 下载产物（docker）
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build_docker.outputs.image_artifact }}
           path: artifacts/docker/
 
-      - name: 校验发布产物
-        shell: bash
-        env:
-          TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
+      - name: 下载 OTA 资产（版本化 EROFS + UKI）
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_no_docker.outputs.image_artifact }}-ota
+          path: artifacts/ota/
+
+      - name: 组装发布物
         run: |
           set -euo pipefail
-          for dir in artifacts/no-docker artifacts/docker; do
-            [[ -f "${dir}/metadata/build-metadata.txt" ]] || { echo "缺少构建元数据: ${dir}" >&2; exit 1; }
-            compgen -G "${dir}/*.img.xz" > /dev/null || { echo "缺少 img.xz: ${dir}" >&2; exit 1; }
-            [[ -f "${dir}/SHA256SUMS" ]] || { echo "缺少 SHA256SUMS: ${dir}" >&2; exit 1; }
+          mkdir -p release
+          # 双变体工厂镜像（重命名消歧——发布物名不可冲突）
+          cp artifacts/no-docker/basalt.img.xz release/basalt.img.xz
+          cp artifacts/docker/basalt.img.xz   release/basalt-docker.img.xz
+          # 版本化 OTA 资产（设备侧 MatchPattern 同名：basalt_<v>.erofs.xz/.efi）
+          cp artifacts/ota/basalt_${IMAGE_VERSION}.erofs release/basalt_${IMAGE_VERSION}.erofs
+          cp artifacts/ota/basalt_${IMAGE_VERSION}.efi   release/basalt_${IMAGE_VERSION}.efi
+          xz -T0 -k -f release/basalt_${IMAGE_VERSION}.erofs
 
-            git_sha="$(awk -F'=' '/^git_sha=/{print $2; exit}' "${dir}/metadata/build-metadata.txt")"
-            [[ "${git_sha}" == "${TARGET_SHA}" ]] \
-              || { echo "${dir} 的 git_sha=${git_sha}，期望 ${TARGET_SHA}" >&2; exit 1; }
-          done
+          # 单一 SHA256SUMS：sysupdate url-file 源的版本枚举端点——必须列出
+          # 版本化资产（@v 解析来源）与全部发布物
+          ( cd release && sha256sum \
+              basalt_${IMAGE_VERSION}.erofs.xz \
+              basalt_${IMAGE_VERSION}.efi \
+              basalt.img.xz basalt-docker.img.xz > SHA256SUMS )
+          cat release/SHA256SUMS
 
-      - name: 创建 GitHub 发布
+          # 契约校验：git_sha 与 image_version 同源（防错产物错发布）
+          git_sha="$(awk -F'=' '/^git_sha=/{print $2; exit}' artifacts/no-docker/metadata/build-metadata.txt)"
+          [[ "${git_sha}" == "${GITHUB_SHA}" ]] || { echo "git_sha=${git_sha} 期望 ${GITHUB_SHA}" >&2; exit 1; }
+          meta_ver="$(awk -F'=' '/^image_version=/{print $2; exit}' artifacts/no-docker/metadata/build-metadata.txt)"
+          [[ "${meta_ver}" == "${IMAGE_VERSION}" ]] || { echo "image_version=${meta_ver} 期望 ${IMAGE_VERSION}" >&2; exit 1; }
+
+      - name: 创建 GitHub Release（不可变）
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/no-docker/*.img.xz
-            artifacts/no-docker/SHA256SUMS
-            artifacts/docker/*.img.xz
-            artifacts/docker/SHA256SUMS
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          files: |
+            release/basalt.img.xz
+            release/basalt-docker.img.xz
+            release/basalt_${{ env.IMAGE_VERSION }}.erofs.xz
+            release/basalt_${{ env.IMAGE_VERSION }}.efi
+            release/SHA256SUMS
+
+  smoke:
+    name: 发布后 smoke（真实 sysupdate list）
+    needs: [prepare, build_no_docker, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载镜像构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_no_docker.outputs.image_artifact }}
+          path: output/
+
+      - name: 准备测试镜像
+        timeout-minutes: 15
+        uses: ./.github/actions/prepare-test-image
+
+      - name: 真实 sysupdate list 验证 GitHub 发布源
+        env:
+          SSH_PASSWORD: landscape
+          SSH_TIMEOUT: '120'
+        run: |
+          timeout --foreground 15m ./tests/release-smoke.sh \
+            output/basalt.img "${{ needs.prepare.outputs.image_version }}"

@@ -46,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --include-docker) INCLUDE_DOCKER="$2"; shift 2 ;;
         --output-format)  CLI_FORMATS+=("$2"); shift 2 ;;
         --version)        LANDSCAPE_VERSION="$2"; shift 2 ;;
+        --image-version)  IMAGE_VERSION="$2"; shift 2 ;;
         --no-compress)    COMPRESS_OUTPUT="no"; shift ;;
         --run-test)       RUN_TEST="$2"; shift 2 ;;
         --smoke)          SMOKE=true; shift ;;
@@ -62,12 +63,37 @@ fi
 rest="$(tr , '\n' <<<"${OUTPUT_FORMATS}" | awk '!seen[$0]++' | { grep -vx img || true; } | paste -sd, -)"
 OUTPUT_FORMATS="${rest:+${rest},}img"
 
-# ── 镜像版本（单一事实 = 版本号）──
-# 工厂构建恒为 1；--version 显式指定时用该版本号。恒注入 --image-version 是
-# 硬契约：ProtectVersion=%A 取 os-release 的 IMAGE_VERSION=，缺失则 vacuum
-# 保护静默失效（见 70-root.transfer 头注）
-VER="1"
-[[ "${LANDSCAPE_VERSION:-latest}" != "latest" ]] && VER="${LANDSCAPE_VERSION#v}"
+# ── OTA 发布源（GitHub Releases latest/download）──
+# 设备侧 transfer 的 Source URL 指向 GitHub Releases：releases/latest/download/
+# 是无凭据 302 资产端点（SHA256SUMS 亦经此解析——sysupdate url-file 源的版本
+# 枚举即 GET Path/SHA256SUMS）。owner/repo 从构建上下文 .git/config 的 origin
+# 推导（复刻仓库构建 → 天然指向自己的 Release）；OTA_BASE_URL 显式覆盖（自建
+# 源 / 无 .git 构建兜底）。两者皆缺时保留占位符并警告——设备端 sysupdate 不
+# 可用，但不阻断镜像构建（发布流程会断言渲染完整性）。
+ota_base_url="${OTA_BASE_URL:-}"
+if [[ -z "${ota_base_url}" && -f "${SCRIPT_DIR}/.git/config" ]]; then
+    origin_url="$(awk '/\[remote "origin"\]/{f=1;next} f&&/^[[:space:]]*url/{sub(/^[[:space:]]*url[[:space:]]*=[[:space:]]*/,"");print;exit}' "${SCRIPT_DIR}/.git/config")"
+    case "${origin_url}" in
+        git@github.com:*) repo_path="${origin_url#git@github.com:}" ;;
+        *github.com/*)    repo_path="${origin_url#*github.com/}" ;;
+    esac
+    if [[ -n "${repo_path:-}" ]]; then
+        repo_path="${repo_path%.git}"
+        ota_base_url="https://github.com/${repo_path}/releases/latest/download/"
+        info "OTA 发布源: ${ota_base_url}"
+    fi
+fi
+if [[ -z "${ota_base_url}" ]]; then
+    warn "OTA 发布源未渲染（无 .git/origin 或非 GitHub；可设 OTA_BASE_URL 显式指定）——设备侧 transfer 保留占位符"
+fi
+
+# ── 镜像版本（双层身份：landscape 版本 = 上游项目版本；镜像版本 = 不可变
+#    OTA 单位版本，独立递增——发布 tag 为 v<landscape>-<image>）──
+# 工厂构建恒为 1；--image-version 显式指定发布构建的版本。恒注入
+# --image-version 是硬契约：ProtectVersion=%A 取 os-release 的 IMAGE_VERSION=，
+# 缺失则 vacuum 保护静默失效（见 70-root.transfer 头注）
+VER="${IMAGE_VERSION:-1}"
+[[ "${VER}" =~ ^[0-9]+$ ]] || die "镜像版本须为纯数字（收到 '${VER}'）"
 [[ ${#VER} -le 16 ]] || echo "WARN: 镜像版本 '${VER}' 偏长（UKI/镜像文件名预算）" >&2
 
 require() { command -v "$1" >/dev/null || die "缺少 '$1'（安装: apt install $2）"; }
@@ -214,6 +240,13 @@ sed -i -e "s/basalt_/${IMAGE_ID}_/g" \
     -e "s/@v+3-0/@v+${INSTANCES_MAX}-0/g" \
     -e "s/@v+3\.efi/@v+${INSTANCES_MAX}.efi/g" \
     "${STAGED_SYSUPDATE_D[@]}"
+# OTA 发布源渲染：占位域名 → GitHub Releases latest/download（ota_base_url 为
+# 空时保留占位符并已警告）。replacement 中的 & 需转义（sed 替换段特殊字符）
+if [[ -n "${ota_base_url}" ]]; then
+    ota_base_url_esc="${ota_base_url//&/\\&}"
+    sed -i -e "s#updates.example.com/${IMAGE_ID}/#${ota_base_url_esc}#g" \
+        "${STAGED_SYSUPDATE_D[@]}"
+fi
 # 文件轮转新增暂存路径：
 #   @os-staging/  —— pass1 EROFS 工件种子（pass2 CopyFiles=/@os-staging:/@images；
 #                   staging 根即镜像文件，无 images/ 子目录层级）
@@ -248,6 +281,10 @@ fi
 if [[ "${INSTANCES_MAX}" != "3" ]] && \
    grep -qE '@v\+3(-0)?\.efi' "${STAGED_SYSUPDATE_D[@]}"; then
     die "tries 渲染不完整：渲染后的定义文件仍残留 +3 字面量"
+fi
+if [[ -n "${ota_base_url}" ]] && \
+   grep -q 'updates.example.com' "${STAGED_SYSUPDATE_D[@]}"; then
+    die "OTA 源渲染不完整：渲染后的定义文件仍残留占位域名"
 fi
 trap cleanup_staged EXIT
 # bash 默认收到 TERM/INT 不执行 EXIT trap（CI timeout 即 TERM），转发使其必达
