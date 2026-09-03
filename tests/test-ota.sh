@@ -559,12 +559,8 @@ phase_business_level_bad() {
         fi
         # 无签名：SSH 探测（eth2 配置持久于 overlay upper——v2 下直接可达；
         # v4 下网络全灭不可达）
-        local probe_ok=0
-        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if guest_run "true" 2>/dev/null; then probe_ok=1; break; fi
-            sleep 10
-        done
-        if [[ ${probe_ok} -eq 1 ]]; then
+        if wait_for_guest_command "SSH 探测（回退/浪费 boot 判别）" 120 10 \
+            guest_run "true"; then
             # 首次 boot 偏差根因的直接取证：ESP 实况 + bootctl 视角
             guest_run "ls -la /efi/EFI/Linux; bootctl list --no-pager 2>&1 | head -n 40" || true
             if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
