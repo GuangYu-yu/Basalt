@@ -1,0 +1,12 @@
+# OTA 候选条目选择：sysupdate 成功落盘后调用。
+# 运行时至多存在一个带 '+' 的 boot-counting 条目 = 本次安装的 candidate
+# （bless 自动去后缀、vacuum 清旧版本、同版本成对安装均为既有契约）。
+# bootctl set-oneshot 的参数是 boot entry ID：Type 2 UKI 的 ID 由 .efi
+# 文件名派生（去掉后缀）——非完整文件名。OneShot 优先于一切默认选择，
+# 首启确定性不依赖 .osrel 排序；OneShot 被读取后由固件自动清除，后续
+# 重试/回退交由 boot counting + 排序承载。
+set -e
+
+new="$(ls /efi/EFI/Linux/*+*.efi 2>/dev/null | sort -V | tail -1 || true)"
+[ -n "${new}" ] || exit 0
+/usr/bin/bootctl set-oneshot "$(basename "${new}" .efi)"
