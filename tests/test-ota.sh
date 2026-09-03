@@ -410,6 +410,11 @@ phase_ota_boot_bless() {
     ota_reboot_guest
     echo "=== [probe] 重启后 cmdline 与 ESP ==="
     guest_run "cat /proc/cmdline; ls -la /efi/EFI/Linux" || true
+    echo "=== [probe] boot 选择取证：loader.conf + bootctl 默认项 + EFI 变量 ==="
+    guest_run "cat /efi/loader/loader.conf" || true
+    guest_run "bootctl list --no-pager 2>&1 | head -n 30" || true
+    guest_run "bootctl status --no-pager 2>&1 | grep -A4 'Default Boot Loader Entry'" || true
+    guest_run "ls /sys/firmware/efi/efivars | grep -i LoaderEntry" || true
     ota_check "v${ver} cmdline 镜像绑定一致" \
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_${ver}.erofs' /proc/cmdline"
     ota_check "根为 overlay（EROFS lower + @os upper）" \
