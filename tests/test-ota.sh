@@ -475,10 +475,15 @@ phase_boot_level_bad() {
     local attempt
     for attempt in 1 2 3; do
         echo "---- 失败启动尝试 ${attempt}/${OTA_TRIES}（硬复位承载）----"
-        ota_reboot_guest || true
-        # 串口取证（非判定）：确认进入失败阶段后再硬复位（失败签名出现意味着
-        # 内核/initrd 已运行——systemd-boot 的 tries 计数在固件选条目时完成，
-        # 此时计数已落盘）；签名本身不作为成功条件
+        # 仅第 1 次经 SSH 触发 reboot（此刻仍运行 v2）；后续尝试 guest 已在
+        # emergency（无 SSH），由上一轮硬复位承载重启。失败尝试禁止
+        # ota_wait_booted——SSH 永不就绪，等待纯属浪费（实测每轮多耗 10 分钟）
+        if [[ ${attempt} -eq 1 ]]; then
+            guest_run "systemctl reboot" || true
+        fi
+        # 串口取证（非判定）：offset 在失败签名出现前捕获，等待命中即证明
+        # 内核/initrd 已运行（systemd-boot 的 tries 计数在固件选条目时完成，
+        # 此时计数已落盘）——等待同时充当硬复位前同步点
         local offset
         offset="$(ota_serial_offset)"
         ota_serial_wait_evidence \
