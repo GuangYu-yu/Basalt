@@ -14,6 +14,10 @@ Before=boot-complete.target
 
 [Service]
 Type=oneshot
+# 失败可见性：探测超时消息同步到 console（串口）——boot 级业务故障的唯一
+# 观察面（OTA 测试硬复位承载、无 SSH 的失败形态依赖串口取证）
+StandardOutput=journal+console
+StandardError=journal+console
 # 60 × 3s = 180s 探测预算（TCG 软模拟首启实测 < 120s）；TimeoutStartSec
 # 兜底防 curl 挂死
 ExecStart=/bin/sh -ec 'i=0; while [ $i -lt 60 ]; do curl -skI --max-time 3 https://localhost:6443/ -o /dev/null && exit 0; i=$((i+1)); sleep 3; done; echo "API listener not ready after ${i} probes" >&2; exit 1'

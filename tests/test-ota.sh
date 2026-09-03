@@ -16,7 +16,9 @@
 #   矩阵 4  业务级坏版本：v4 UKI cmdline 追加 systemd.mask=landscape-router
 #           → 引导成功但 API_READY 超时 → bless 不触发 → tries 耗尽 → 回 v2
 #           （mask 是 cmdline 级、版本内在的故障，不污染共享 overlay upper，
-#           回滚后 v1/v2 业务即恢复——规避 §2 声明的共享状态污染边界）
+#           回滚后业务即恢复——规避 §2 声明的共享状态污染边界）。注意 mask
+#           同时杀死全部接口配置（eth 由 landscape-router 运行期管理），
+#           v4 内 SSH 不可用：硬复位承载失败尝试，串口取证健康门失败消息
 #   矩阵 5  @data 塞满：系统存活 + API 在线；sysupdate 更新 ENOSPC 失败
 #           （无害半状态）；清空间后重试成功
 #   矩阵 6  rescue：boot-loader-entry 选 basalt-rescue.efi → 只读根 +
@@ -523,25 +525,32 @@ phase_business_level_bad() {
     local result
     result="$(ota_run_update)"
     ota_check "v${ver} 安装成功" test "${result}" = "success"
+    # 落盘断言 + 刷盘（同矩阵 3：Result=success 不保证落盘；硬复位断电语义）
+    ota_check "v${ver} EROFS 落盘（${IMAGE_ID}_${ver}.erofs）" \
+        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
+    ota_check "v${ver} UKI 落盘带 tries（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \
+        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
+    guest_run "sync"
 
-    local attempt expected_name
+    local attempt
     for attempt in 1 2 3; do
-        echo "---- 业务失败启动 ${attempt}/${OTA_TRIES} ----"
-        ota_reboot_guest
-        # 引导成功但 API 永不就绪：健康门超时失败（bless 不触发）
-        wait_for_guest_command "basalt-boot-health 失败" 360 5 \
-            guest_run "systemctl is-failed basalt-boot-health.service"
-        ota_check "尝试 ${attempt}: 健康门失败（bless 不触发）" \
-            guest_run "systemctl is-failed basalt-boot-health.service"
-        expected_name="${IMAGE_ID}_${ver}+$(( OTA_TRIES - attempt ))-${attempt}.efi"
-        ota_check "尝试 ${attempt}: UKI 保留计数（${expected_name}，未被 bless）" \
-            guest_run "test -f /efi/EFI/Linux/${expected_name}"
+        echo "---- 业务失败启动 ${attempt}/${OTA_TRIES}（硬复位承载）----"
+        # mask landscape-router 会同时杀死全部接口配置（/etc/network/interfaces
+        # 仅 lo，eth0/1/2 由 landscape-router 运行期管理）——SSH 控制通道在 v4 内
+        # 不可用，业务失败取证只能走串口（健康门失败消息 journal+console）
+        ota_hard_reset
+        local offset
+        offset="$(ota_serial_offset)"
+        ota_serial_wait_evidence "API listener not ready" 420 "${offset}"
     done
 
     echo "---- 第 4 次启动：tries 耗尽，自动回 v2 ----"
-    ota_reboot_guest
+    ota_hard_reset
+    ota_wait_booted
     ota_check "自动回退到 v2（cmdline）" \
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
+    ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
+        guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
     ota_check "回退后 API 恢复在线（业务自愈）" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
     ota_check "回退后健康门成功" \
