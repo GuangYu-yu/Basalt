@@ -507,6 +507,9 @@ phase_boot_level_bad() {
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
     ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
+    # 轮询等待（TCG 下 landscape-webserver 启动 30s+，单发 curl 时序脆弱）
+    wait_for_guest_command "回退后 API 恢复在线" 120 5 \
+        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
     ota_check "回退后 API 恢复在线" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 }
@@ -569,6 +572,9 @@ phase_business_level_bad() {
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
     ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
+    # 轮询等待（TCG 下 landscape-webserver 启动 30s+，单发 curl 时序脆弱）
+    wait_for_guest_command "回退后 API 恢复在线（业务自愈）" 120 5 \
+        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
     ota_check "回退后 API 恢复在线（业务自愈）" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
     ota_check "回退后健康门成功" \
