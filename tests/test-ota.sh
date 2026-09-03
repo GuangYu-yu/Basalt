@@ -161,7 +161,9 @@ stage_v4_exhaust() {
     ota_check "v4 安装成功" test "${result}" = "success"
     ota_assert_pair_landed 4
 
-    ota_stage_exhaust 4 340 "API listener not ready" \
+    # settle=500s：健康门探测预算最长 60×(3s curl 超时 + 3s sleep)≈360s +
+    # boot 时间（实测快/慢路径波动 225~430s+），窗口须覆盖慢路径
+    ota_stage_exhaust 4 500 "API listener not ready" \
         || { echo "[FAIL] v4 tries 耗尽未收敛" >&2; return 1; }
     ota_assert_fallback 4 2
     ota_check "回退后健康门成功" \
