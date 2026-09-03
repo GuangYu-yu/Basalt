@@ -6,10 +6,13 @@
 # 覆盖：
 #   矩阵 2  OTA v1→v2：成对落盘（erofs+UKI 带 +3-0）、重启后 cmdline 一致、
 #           bless 去计数、@images rw wrapper 恢复 ro
-#   矩阵 3  引导级坏版本：v3 EROFS 损坏 → initrd emergency → 3 次 tries 耗尽
-#           → 自动回 v2（测试机硬复位承载"失败的启动尝试"语义——真实部署
-#           为硬件看门狗；sd-boot 对损坏 UKI 二进制的行为无文档保证，不作
-#           依赖，故用 EROFS 损坏而非 UKI 损坏承载同一机制）
+#   矩阵 3  引导级坏版本：v3 EROFS 截断 1M（超级块保留，可挂载、内容损坏）
+#           → 启动无法完成 → 3 次 tries 耗尽 → 自动回 v2（测试机硬复位承载
+#           "失败的启动尝试"语义——真实部署为硬件看门狗）。判定契约是
+#           "坏版本不被 bless、boot counting 最终回退"，不绑定失败发生在
+#           哪个阶段（initrd 挂载失败 / switch_root 无 init 均为合法失败
+#           形态，串口仅取证）；sd-boot 对损坏 UKI 二进制的行为无文档保证，
+#           不作依赖，故用 EROFS 损坏而非 UKI 损坏承载同一机制
 #   矩阵 4  业务级坏版本：v4 UKI cmdline 追加 systemd.mask=landscape-router
 #           → 引导成功但 API_READY 超时 → bless 不触发 → tries 耗尽 → 回 v2
 #           （mask 是 cmdline 级、版本内在的故障，不污染共享 overlay upper，
@@ -114,6 +117,24 @@ ota_serial_wait_pattern() {
     error "串口日志 ${SERIAL_GEN} 轮内未匹配: ${pattern}（${timeout}s）"
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
     return 1
+}
+
+# 引导失败取证（非判定）：等待已知失败签名之一，仅入日志；核心判定在
+# boot counting 最终回退，不绑定具体错误发生在哪个阶段
+ota_serial_wait_evidence() {
+    local pattern="$1" timeout="$2" offset="$3"
+    local t0=${SECONDS}
+    while (( SECONDS - t0 < timeout )); do
+        if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && \
+           tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -Eq "${pattern}"; then
+            echo "[INFO] 失败签名取证（尝试已进入失败阶段，可安全硬复位）"
+            return 0
+        fi
+        sleep 5
+    done
+    echo "[WARN] 未捕获已知失败签名（仅取证记录，不判定）"
+    dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
+    return 0
 }
 
 ota_serial_offset() {
@@ -455,11 +476,14 @@ phase_boot_level_bad() {
     for attempt in 1 2 3; do
         echo "---- 失败启动尝试 ${attempt}/${OTA_TRIES}（硬复位承载）----"
         ota_reboot_guest || true
-        # 引导失败：emergency 挂起（无 SSH）；串口取证 initrd-root-overlay 失败信息
+        # 串口取证（非判定）：确认进入失败阶段后再硬复位（失败签名出现意味着
+        # 内核/initrd 已运行——systemd-boot 的 tries 计数在固件选条目时完成，
+        # 此时计数已落盘）；签名本身不作为成功条件
         local offset
         offset="$(ota_serial_offset)"
-        ota_check "尝试 ${attempt}: initrd emergency（erofs loop mount 失败）" \
-            ota_serial_wait_pattern "erofs loop mount failed" 420 "${offset}"
+        ota_serial_wait_evidence \
+            "erofs loop mount failed|Switch root target contains no usable init" \
+            420 "${offset}"
         ota_hard_reset
     done
 
