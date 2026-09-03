@@ -325,7 +325,9 @@ ota_stage_exhaust() {
     for round in $(seq 1 $((OTA_TRIES + 1))); do
         echo "---- 硬复位轮次 ${round}（v${ver} 失败 boot 收敛）----"
         ota_hard_reset
-        ota_serial_wait_evidence "${pattern}" "${settle}" || true
+        local offset
+        offset="$(ota_serial_offset)"
+        ota_serial_wait_evidence "${pattern}" "${settle}" "${offset}" || true
         if wait_for_guest_command "SSH 探测（回退判别）" 120 10 guest_run "true"; then
             if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
                 return 0
