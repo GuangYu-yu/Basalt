@@ -315,12 +315,14 @@ ota_stage_exhaust() {
     # 契约：恰好 OTA_TRIES 次"真坏版本 boot"后 boot counting 回退。控制流不
     # 依赖串口（实测签名会丢/迟到）：每轮硬复位 → 等待签名（纯取证，窗口 =
     # 失败形态的自然耗时，同时保证 try 已消耗）→ SSH 探测（可达 = 旧版本
-    # boot，v4 内网络全灭不可达）→ bad 态文件在列 = 真回退。6 轮上限容忍
-    # 浪费 boot（实测 install 后首次冷启动 selection 可能落旧版本）。
-    # 真伪回退由调用方的后置断言仲裁。
+    # boot，v4 内网络全灭不可达）→ bad 态文件在列 = 真回退。
+    # 轮次上限 = OTA_TRIES+1：容忍观测到的"install 后首次冷启动 selection
+    # 落旧版本"浪费一次（根因未明；测试环境 EFI 变量挥发——QEMU 未挂 vars
+    # pflash——ota-select 的 OneShot 天然无效，选择实际由 ESP 文件名排序承
+    # 载）；浪费超过一次 = 固件反复选旧版本 = 产品 bug，测试应当失败暴露。
     local ver="$1" settle="$2" pattern="$3"
     local round
-    for round in 1 2 3 4 5 6; do
+    for round in $(seq 1 $((OTA_TRIES + 1))); do
         echo "---- 硬复位轮次 ${round}（v${ver} 失败 boot 收敛）----"
         ota_hard_reset
         ota_serial_wait_evidence "${pattern}" "${settle}" || true
