@@ -321,18 +321,29 @@ ota_stage_exhaust() {
     # pflash——ota-select 的 OneShot 天然无效，选择实际由 ESP 文件名排序承
     # 载）；浪费超过一次 = 固件反复选旧版本 = 产品 bug，测试应当失败暴露。
     local ver="$1" settle="$2" pattern="$3"
-    local round
+    local round sig=0 converged=0
     for round in $(seq 1 $((OTA_TRIES + 1))); do
-        echo "---- 硬复位轮次 ${round}（v${ver} 失败 boot 收敛）----"
+        echo "---- 硬复位轮次 ${round}（v${ver} 失败 boot 收敛，sig=${sig}）----"
         ota_hard_reset
         local offset
         offset="$(ota_serial_offset)"
-        ota_serial_wait_evidence "${pattern}" "${settle}" "${offset}" || true
+        if ota_serial_wait_evidence "${pattern}" "${settle}" "${offset}"; then
+            sig=$((sig + 1))
+            if [[ ${sig} -ge ${OTA_TRIES} ]]; then
+                ota_hard_reset   # 第 OTA_TRIES+1 次启动：tries 耗尽 → 旧版本
+                converged=1
+                break
+            fi
+            continue
+        fi
+        # 无签名：SSH 探测（可达 = 旧版本 boot——真回退或浪费 boot）
         if wait_for_guest_command "SSH 探测（回退判别）" 120 10 guest_run "true"; then
             if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
-                return 0
+                converged=1   # bad 态在列 = OTA_TRIES 次已消耗，本 boot 即回退
+                break
             fi
         fi
     done
+    [[ ${converged} -eq 1 ]] && return 0
     return 1
 }
