@@ -536,30 +536,39 @@ phase_business_level_bad() {
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
     guest_run "sync"
 
-    # 自愈循环：实测 install 后首次冷启动的固件 selection 可能落在 v2（浪费
-    # 一次 boot、tries 后移），根因待证（OneShot ID / ESP 可见性，v4 内无 SSH
-    # 无法实证）。契约判定不依赖复位次数：签名命中 3 次（3 次 try 消耗）或
-    # SSH 可达 + bad 态文件存在（真回退）即收敛；浪费 boot / 取证丢失被下一
-    # 轮复位自愈，8 轮上限防失控。真伪回退由末尾断言仲裁。
+    # 契约判定：恰好 OTA_TRIES 次"真 v4 失败 boot"（以串口签名为准）后回退。
+    # 实测 install 后首次冷启动的固件 selection 可能落在 v2（浪费 boot、
+    # tries 不消耗），根因待证——复位轮次只是手段，不与失败次数绑定；无签名
+    # boot 经 SSH 探测三分类：真回退（bad 态在列，收敛）/ 浪费 boot（取证后
+    # 继续复位）/ v4 取证丢失（继续复位）。6 轮上限防失控，真伪回退由末尾
+    # 断言仲裁。
     local sig=0 attempt converged=0
-    for attempt in 1 2 3 4 5 6 7 8; do
-        echo "---- 业务失败启动 ${attempt}（已消耗 try：${sig}/3）----"
+    for attempt in 1 2 3 4 5 6; do
+        echo "---- 硬复位轮次 ${attempt}（v4 失败 boot 取证：${sig}/${OTA_TRIES}）----"
         ota_hard_reset
         local offset
         offset="$(ota_serial_offset)"
         if ota_serial_wait_evidence "API listener not ready" 420 "${offset}" >/dev/null; then
             sig=$((sig + 1))
             if [[ ${sig} -ge ${OTA_TRIES} ]]; then
-                ota_hard_reset
+                ota_hard_reset   # 第 OTA_TRIES+1 次启动：tries 耗尽 → v2
                 converged=1
                 break
             fi
-        else
-            # 无签名：可能已回退（也可能浪费 boot / 串口取证丢失）。
-            # SSH 可达 + bad 态文件存在 = 真回退；否则继续复位
-            if ota_wait_booted 2>/dev/null && \
-               guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
-                converged=1
+            continue
+        fi
+        # 无签名：SSH 探测（eth2 配置持久于 overlay upper——v2 下直接可达；
+        # v4 下网络全灭不可达）
+        local probe_ok=0
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if guest_run "true" 2>/dev/null; then probe_ok=1; break; fi
+            sleep 10
+        done
+        if [[ ${probe_ok} -eq 1 ]]; then
+            # 首次 boot 偏差根因的直接取证：ESP 实况 + bootctl 视角
+            guest_run "ls -la /efi/EFI/Linux; bootctl list --no-pager 2>&1 | head -n 40" || true
+            if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
+                converged=1   # bad 态在列 = OTA_TRIES 次已消耗，本 boot 即回退
                 break
             fi
         fi
