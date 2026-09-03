@@ -29,10 +29,25 @@ ln -sfn /var/lib/landscape /root/.landscape-router
 # resolved/NetworkManager disable 防第二网络栈。
 # 分区/文件系统扩容由 initrd 内 systemd-repart + x-systemd.growfs 完成
 
-# ProtectVersion=%A 契约（build.sh 的 UKI .osrel 断言同源）：mkosi 只把版本
-# 作为 $IMAGE_VERSION 环境变量提供，不自动写入 os-release；ukify 的 .osrel
-# 段取自镜像 /usr/lib/os-release → 此处显式注入（IMAGE_ID/IMAGE_VERSION 由
-# build.sh 经 --environment 显式注入，见 MKOSI_ARGS）。/etc/os-release 是指向
-# 本文件的 symlink（Debian 布局），运行期 %A 展开与构建期断言同源命中。
+# os-release 双层身份模型（os-release(5)：/etc 优先于 /usr/lib，两者可独立）：
+#   /usr/lib/os-release = Basalt appliance/启动身份 —— mkosi UKI .osrel 的固定
+#     输入源；VERSION_ID 刻意映射为 IMAGE_VERSION，构成 systemd-boot Type 2
+#     条目排序契约（VERSION_ID == IMAGE_VERSION == OTA 版本，单一事实源）。
+#   /etc/os-release     = Debian 运行兼容身份（独立真实文件，非 symlink）——
+#     apt/发行版识别、ProtectVersion=%A、readiness 契约的消费域；完整自洽，
+#     不与 /usr/lib 合并（规范无合并语义）。
+# IMAGE_ID/IMAGE_VERSION 由 build.sh 经 --environment 显式注入。
 sed -i "/^IMAGE_ID=/d;/^IMAGE_VERSION=/d" /usr/lib/os-release
-printf 'IMAGE_ID=%s\nIMAGE_VERSION=%s\n' "${IMAGE_ID}" "${IMAGE_VERSION}" >> /usr/lib/os-release
+rm -f /etc/os-release
+{
+    cat /usr/lib/os-release
+    printf 'IMAGE_ID=%s\nIMAGE_VERSION=%s\n' "${IMAGE_ID}" "${IMAGE_VERSION}"
+} > /etc/os-release
+cat > /usr/lib/os-release <<EOF
+ID=basalt
+NAME="Basalt"
+PRETTY_NAME="Basalt ${IMAGE_VERSION}"
+VERSION_ID=${IMAGE_VERSION}
+IMAGE_ID=${IMAGE_ID}
+IMAGE_VERSION=${IMAGE_VERSION}
+EOF

@@ -168,9 +168,10 @@ ota_fabricate_uki() {
     # cmdline 换绑目标版本镜像（其余参数与工厂 UKI 逐字一致）
     cmdline="$(sed "s/${IMAGE_ID}_${V1}\.erofs/${IMAGE_ID}_${ver}.erofs/" <<<"${cmdline}")"
     [[ -n "${extra_cmdline}" ]] && cmdline="${cmdline} ${extra_cmdline}"
-    # 版本字段三处同步：systemd-boot 按 osrel VERSION 选最新条目——只改
-    # IMAGE_VERSION 时 v2 仍被视为 v1 同版本，重启会继续引导 v1（实测）
-    sed -i -e "s/^VERSION=.*/VERSION=${ver}/" \
+    # 版本字段同步（Basalt appliance osrel 契约）：VERSION_ID 是 systemd-boot
+    # Type 2 条目排序键（VERSION_ID == IMAGE_VERSION == OTA 版本），PRETTY_NAME
+    # 为菜单标题——工厂 UKI .osrel 与镜像 /usr/lib/os-release 同源
+    sed -i -e "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Basalt ${ver}\"/" \
            -e "s/^VERSION_ID=.*/VERSION_ID=${ver}/" \
            -e "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${ver}/" "${d}/osrel"
 
