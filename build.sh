@@ -366,10 +366,10 @@ install -d "$(dirname "${STAGED_RESCUE_UKI}")"
 cat > "${WORK_DIR}/basalt.osrel" <<EOF
 ID=basalt
 NAME="Basalt"
-PRETTY_NAME="Basalt ${IMAGE_VERSION}"
-VERSION_ID=${IMAGE_VERSION}
+PRETTY_NAME="Basalt ${VER}"
+VERSION_ID=${VER}
 IMAGE_ID=${IMAGE_ID}
-IMAGE_VERSION=${IMAGE_VERSION}
+IMAGE_VERSION=${VER}
 EOF
 ukify build \
     --linux="${KERNEL_FILE}" \
