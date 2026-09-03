@@ -79,13 +79,13 @@ run_check() {
 
     if [[ $rc -eq 0 ]]; then
         echo "[PASS] ${desc}"
-        ((PASS_COUNT++))
+        PASS_COUNT=$((PASS_COUNT + 1))
     else
         echo "[FAIL] ${desc}"
         if [[ -n "$output" ]]; then
             echo "       output: ${output}"
         fi
-        ((FAIL_COUNT++))
+        FAIL_COUNT=$((FAIL_COUNT + 1))
         if [[ "${FAIL_FAST}" == "1" ]]; then
             exit $rc
         fi
@@ -98,7 +98,7 @@ run_skip() {
     local desc="$1"
     local reason="$2"
     echo "[SKIP] ${desc} — ${reason}"
-    ((SKIP_COUNT++))
+    SKIP_COUNT=$((SKIP_COUNT + 1))
 }
 
 contains_all_text() {
@@ -182,7 +182,7 @@ wait_for_pidfile() {
             fi
         fi
         sleep 1
-        ((elapsed++))
+        elapsed=$((elapsed + 1))
     done
 
     error "${label} failed to write pidfile after ${timeout}s"
@@ -742,7 +742,7 @@ landscape_router_stop_vm() {
             local waited=0
             while kill -0 "${LANDSCAPE_ROUTER_PID}" 2>/dev/null && [[ $waited -lt $shutdown_timeout ]]; do
                 sleep 1
-                ((waited++))
+                waited=$((waited + 1))
             done
             if kill -0 "${LANDSCAPE_ROUTER_PID}" 2>/dev/null; then
                 echo "quit" | socat -T2 STDIN UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" &>/dev/null || true
