@@ -127,9 +127,11 @@ ota_assert_pair_landed() {
     guest_run "sync"
 }
 
-# 回退后置契约：cmdline 绑定回退目标 + bad 态文件 + API 恢复
+# 回退后置契约：boot（第 OTA_TRIES+1 次启动的 guest 引导完成）→ cmdline 绑定
+# 回退目标 + bad 态文件 + API 恢复
 ota_assert_fallback() {
     local ver="$1" to="$2"
+    ota_wait_booted
     ota_check "回退到 v${to}（cmdline 镜像绑定）" \
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_${to}.erofs' /proc/cmdline"
     ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
