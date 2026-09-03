@@ -174,6 +174,8 @@ ota_fabricate_uki() {
     sed -i -e "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Basalt ${ver}\"/" \
            -e "s/^VERSION_ID=.*/VERSION_ID=${ver}/" \
            -e "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${ver}/" "${d}/osrel"
+    echo "=== [probe] 伪造 v${ver} osrel 内容 ===" >&2
+    cat "${d}/osrel" >&2
 
     ukify build \
         --linux="${d}/linux" \
