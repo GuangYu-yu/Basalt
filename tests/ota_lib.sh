@@ -340,8 +340,11 @@ ota_stage_exhaust() {
             fi
             continue
         fi
-        # 无签名：SSH 探测（可达 = 旧版本 boot——真回退或浪费 boot）
-        if wait_for_guest_command "SSH 探测（回退判别）" 120 10 guest_run "true"; then
+        # 无签名：SSH 探测。**必须先 bootstrap**——eth2 的 IP 是运行时注入
+        # （/etc/network/interfaces 无此配置），重启即失；跳过 bootstrap 的
+        # 裸 SSH 探测对健康回退 boot 也必失败（实测导致引擎永不收敛）。
+        # v4（mask）下 bootstrap 180s 超时（预算内）；v2 回退 boot ~60s 成功。
+        if landscape_router_bootstrap_mgmt "Router" && setup_ssh; then
             if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
                 converged=1   # bad 态在列 = OTA_TRIES 次已消耗，本 boot 即回退
                 break
