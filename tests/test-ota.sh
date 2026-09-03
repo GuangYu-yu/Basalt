@@ -121,8 +121,9 @@ ota_serial_wait_pattern() {
     return 1
 }
 
-# 引导失败取证（非判定）：等待已知失败签名之一，仅入日志；核心判定在
-# boot counting 最终回退，不绑定具体错误发生在哪个阶段
+# 引导失败取证（非判定）：等待已知失败签名之一；命中返回 0、超时返回 1
+# （仅在 if 上下文消费——返回值语义区分"已进入失败阶段"，不构成断言）；
+# 核心判定在 boot counting 最终回退，不绑定具体错误发生在哪个阶段
 ota_serial_wait_evidence() {
     local pattern="$1" timeout="$2" offset="$3"
     local t0=${SECONDS}
@@ -136,7 +137,7 @@ ota_serial_wait_evidence() {
     done
     echo "[WARN] 未捕获已知失败签名（仅取证记录，不判定）"
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
-    return 0
+    return 1
 }
 
 ota_serial_offset() {
@@ -496,7 +497,7 @@ phase_boot_level_bad() {
         offset="$(ota_serial_offset)"
         ota_serial_wait_evidence \
             "erofs loop mount failed|Switch root target contains no usable init" \
-            420 "${offset}"
+            420 "${offset}" || true
     done
 
     echo "---- 第 4 次启动：tries 耗尽，自动回 v2 ----"
@@ -532,20 +533,37 @@ phase_business_level_bad() {
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
     guest_run "sync"
 
-    local attempt
-    for attempt in 1 2 3; do
-        echo "---- 业务失败启动 ${attempt}/${OTA_TRIES}（硬复位承载）----"
-        # mask landscape-router 会同时杀死全部接口配置（/etc/network/interfaces
-        # 仅 lo，eth0/1/2 由 landscape-router 运行期管理）——SSH 控制通道在 v4 内
-        # 不可用，业务失败取证只能走串口（健康门失败消息 journal+console）
+    # 自愈循环：实测 install 后首次冷启动的固件 selection 可能落在 v2（浪费
+    # 一次 boot、tries 后移），根因待证（OneShot ID / ESP 可见性，v4 内无 SSH
+    # 无法实证）。契约判定不依赖复位次数：签名命中 3 次（3 次 try 消耗）或
+    # SSH 可达 + bad 态文件存在（真回退）即收敛；浪费 boot / 取证丢失被下一
+    # 轮复位自愈，8 轮上限防失控。真伪回退由末尾断言仲裁。
+    local sig=0 attempt converged=0
+    for attempt in 1 2 3 4 5 6 7 8; do
+        echo "---- 业务失败启动 ${attempt}（已消耗 try：${sig}/3）----"
         ota_hard_reset
         local offset
         offset="$(ota_serial_offset)"
-        ota_serial_wait_evidence "API listener not ready" 420 "${offset}"
+        if ota_serial_wait_evidence "API listener not ready" 420 "${offset}" >/dev/null; then
+            sig=$((sig + 1))
+            if [[ ${sig} -ge ${OTA_TRIES} ]]; then
+                ota_hard_reset
+                converged=1
+                break
+            fi
+        else
+            # 无签名：可能已回退（也可能浪费 boot / 串口取证丢失）。
+            # SSH 可达 + bad 态文件存在 = 真回退；否则继续复位
+            if ota_wait_booted 2>/dev/null && \
+               guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
+                converged=1
+                break
+            fi
+        fi
     done
+    [[ ${converged} -eq 1 ]] || echo "[WARN] 矩阵 4 未按预期收敛（断言仲裁）"
 
-    echo "---- 第 4 次启动：tries 耗尽，自动回 v2 ----"
-    ota_hard_reset
+    echo "---- 回退验证：tries 耗尽，自动回 v2 ----"
     ota_wait_booted
     ota_check "自动回退到 v2（cmdline）" \
         guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
