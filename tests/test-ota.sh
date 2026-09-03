@@ -168,7 +168,11 @@ ota_fabricate_uki() {
     # cmdline 换绑目标版本镜像（其余参数与工厂 UKI 逐字一致）
     cmdline="$(sed "s/${IMAGE_ID}_${V1}\.erofs/${IMAGE_ID}_${ver}.erofs/" <<<"${cmdline}")"
     [[ -n "${extra_cmdline}" ]] && cmdline="${cmdline} ${extra_cmdline}"
-    sed -i "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${ver}/" "${d}/osrel"
+    # 版本字段三处同步：systemd-boot 按 osrel VERSION 选最新条目——只改
+    # IMAGE_VERSION 时 v2 仍被视为 v1 同版本，重启会继续引导 v1（实测）
+    sed -i -e "s/^VERSION=.*/VERSION=${ver}/" \
+           -e "s/^VERSION_ID=.*/VERSION_ID=${ver}/" \
+           -e "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${ver}/" "${d}/osrel"
 
     ukify build \
         --linux="${d}/linux" \
