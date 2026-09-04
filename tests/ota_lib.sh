@@ -308,12 +308,25 @@ ota_run_update() {
     local pre
     pre="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
     guest_run "systemctl start --no-block systemd-sysupdate.service"
-    local t0=${SECONDS} mono="" state="" result=""
+    local t0=${SECONDS} mono="" state="" result="" dead=0
     while (( SECONDS - t0 < 1800 )); do
         mono="$(guest_run "systemctl show -p ExecMainExitTimestampMonotonic --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
         if [[ -n "${mono}" && "${mono}" != "0" && "${mono}" != "${pre}" ]]; then
             state="$(guest_run "systemctl show -p ActiveState --value systemd-sysupdate.service" 2>/dev/null | tr -d '[:space:]')"
             [[ "${state}" == "inactive" || "${state}" == "failed" ]] && break
+        fi
+        # SSH 死亡即中止：guest_run 连续失败说明 guest 网络或系统已不可达，
+        # 继续轮询只是空耗预算（实测 SSH 死后 30 分钟全空转）——立即返回并让
+        # 统一取证在死亡时刻就近观察（串口 console-tee 承载死前输出）
+        if [[ -z "${mono}" ]]; then
+            dead=$((dead + 1))
+            if (( dead >= 5 )); then
+                echo "[ERROR] SSH 在更新轮询期间失联（连续 ${dead} 次），中止等待" >&2
+                printf '%s' "ssh-lost"
+                return 0
+            fi
+        else
+            dead=0
         fi
         sleep 3
     done

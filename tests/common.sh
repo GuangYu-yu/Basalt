@@ -484,9 +484,12 @@ LANDSCAPE_TEST_METADATA_FILE=""
 LANDSCAPE_ROUTER_API_TOKEN=""
 LANDSCAPE_TEST_NAME="${LANDSCAPE_TEST_NAME:-test}"
 # 首启 repart 需真实空闲空间扩 B 槽（=A 槽实测尺寸）与 var（Weight=100），
-# 实测最小需约 195M（582M 镜像 → 777M），默认扩 1G 留足余量；
+# 实测最小需约 195M（582M 镜像 → 777M），默认扩 2G：OTA 生命周期池内同时
+# 存在 3 个 ~450MB 部署子卷（v1 ro + v2 运行 + v3 安装临时）+ btrfs 元数据，
+# 1G 扩容下 var≈1.5G 已 90% 满（v3 安装期 SSH 失联疑点，消解 ENOSPC 混淆
+# 变量；受控 ENOSPC 场景由 stage_v5 dd 填充承载）；
 # truncate 稀疏扩展 = 模拟更大的部署盘，GPT 备份头由 systemd-repart 迁移到新盘尾
-LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-1073741824}"
+LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-2147483648}"
 
 landscape_expand_raw_image() {
     local image_path="$1"

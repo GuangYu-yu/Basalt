@@ -137,6 +137,11 @@ stage_v2_boot() {
     # 存活（旧 overlay 时代"注入一次跨重启有效"的前提已失效）。后续 v3/v4/v5
     # 更新均发起于 v2，此处重注入（内容幂等）
     ota_inject_sysupdate_overrides
+    # 更新过程串口可见化：sysupdate 输出默认只进 journal，SSH 死亡时（实测
+    # v3 安装期 SSH 死 30 分钟、串口全静默）guest 内部不可观测。tee 到 console
+    # 后串口承载下载/解包/裁剪旧版本全程 + 死亡时刻的最后输出（测试侧取证，
+    # 不改产品默认行为）。/etc 属 v2，存活至 rescue 前的全部更新阶段
+    guest_run "mkdir -p /etc/systemd/system/systemd-sysupdate.service.d && printf '[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n' > /etc/systemd/system/systemd-sysupdate.service.d/10-console-tee.conf && systemctl daemon-reload"
     OTA_RUNNING_VER=2
 }
 
