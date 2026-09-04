@@ -70,7 +70,7 @@ ota_serial_expect() {
 # QEMU monitor 命令（SSH 死亡后的唯一 guest 通道）；响应直接回显（info status/
 # info usernet——后者直接观察 slirp 转发与连接状态，网络层挂死的直接证据）
 ota_monitor_cmd() {
-    printf '%s\n' "$1" | socat -T5 STDIN UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" 2>/dev/null || true
+    ( printf '%s\n' "$1"; sleep 3 ) | socat -T5 - UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" 2>/dev/null || true
 }
 
 # SSH 失联时的挂死取证（不依赖 guest 网络）：

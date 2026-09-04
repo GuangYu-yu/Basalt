@@ -153,6 +153,14 @@ stage_v2_boot() {
 
 stage_v3_exhaust() {
     echo "== stage: v3 引导级坏版本（tar 内 init 清空）→ tries 耗尽 → 回退 =="
+    # 外科实验：把「sysupdate 启动时的旧版本裁剪」（InstancesMax=2 → 删除 ro
+    # 的 root-basalt-1）从 sysupdate 内部剥离，手动执行同一操作定位冻结点：
+    #   - 删除即冻结 → 根因 = ro 子卷删除 + quota(qgroup 清理)
+    #   - 删除成功   → 冻结在 sysupdate 枚举/拉取路径（排除裁剪变量）
+    # 对后续状态机的影响：vacuum 断言消费自然形成的多版本状态（v2 + bad 态
+    # v3/v4 + v5 candidate），n_before > n_after 契约不受 v1 提前离场影响
+    ota_check "实验：手动删除 ro 旧部署 root-basalt-1（隔离 sysupdate 裁剪路径）" \
+        guest_run "btrfs subvolume delete /var/lib/basalt/pool/root-basalt-1"
     # 损坏注入：解包工厂 tar.xz → 清空 /usr/lib/systemd/systemd → 重打包。
     # SHA256SUMS 由 ota_serve_version 重签（损坏在内容不在安装）；init 为空
     # 文件 → switch_root exec 失败 → 引导必败。契约不绑定失败阶段
