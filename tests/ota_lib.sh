@@ -67,21 +67,32 @@ ota_serial_expect() {
     return 1
 }
 
-# QEMU monitor 命令（SSH 死亡后的唯一 guest 通道）
+# QEMU monitor 命令（SSH 死亡后的唯一 guest 通道）；响应直接回显（info status/
+# info usernet——后者直接观察 slirp 转发与连接状态，网络层挂死的直接证据）
 ota_monitor_cmd() {
-    printf '%s\n' "$1" | socat -T2 STDIN UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" 2>/dev/null || true
+    printf '%s\n' "$1" | socat -T5 STDIN UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" 2>/dev/null || true
 }
 
-# SSH 失联时的挂死取证：经 monitor 注入 SysRq（内核转储不依赖 guest 网络）。
-# 先 w（blocked/D 状态任务——挂死点直接证据）后 t（全任务栈），输出落串口，
-# 由后续 dump_log_tail 带入 CI 日志
+# SSH 失联时的挂死取证（不依赖 guest 网络）：
+#   1. monitor info status / info usernet —— VM 运行态 + slirp 连接表
+#   2. SysRq-w（blocked/D 状态任务）→ l（各 CPU 内核回溯——自旋挂死证据）
+#      → t（全任务内核栈）。串口承载转储；实测转储为流式输出，VM 生命周期
+#      内持续写入，最后以串口增量整体带入 CI 日志
 ota_sysrq_hang_dump() {
-    echo "[INFO] 经 QEMU monitor 触发 SysRq-w/t 任务转储（串口取证）" >&2
+    echo "[INFO] SSH 失联挂死取证：monitor 状态 + SysRq w/l/t" >&2
     ota_monitor_cmd "info status"
+    ota_monitor_cmd "info usernet"
+    local offset
+    offset="$(ota_serial_offset)"
     ota_monitor_cmd "sendkey alt-sysrq-w"
     sleep 12
+    ota_monitor_cmd "sendkey alt-sysrq-l"
+    sleep 12
     ota_monitor_cmd "sendkey alt-sysrq-t"
-    sleep 20
+    sleep 45
+    echo "=== [forensics] 串口增量（SysRq 转储 + 死前输出）===" >&2
+    tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | head -c 262144 >&2 || true
+    echo "" >&2
 }
 
 # ── VM 生命周期 ──
@@ -340,8 +351,6 @@ ota_run_update() {
             if (( dead >= 5 )); then
                 echo "[ERROR] SSH 在更新轮询期间失联（连续 ${dead} 次），中止等待" >&2
                 ota_sysrq_hang_dump
-                # SysRq-w/t 转储巨大：取证 tail 提量（EXIT trap 的统一取证消费）
-                export DUMP_TAIL_LINES=400
                 printf '%s' "ssh-lost"
                 return 0
             fi
