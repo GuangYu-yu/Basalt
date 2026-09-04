@@ -239,11 +239,15 @@ def builtin_from_blob(blob: bytes, names: list[str]) -> set[str]:
 
 def modules_from_paths(paths: set[str], builtin: set[str],
                        forbidden: tuple[str, ...]) -> tuple[set[str], list[str]]:
-    """三态契约输入：模块名集合（.ko + builtin）与违例路径清单。"""
+    """三态契约输入：模块名集合（.ko + builtin）与违例路径清单。
+
+    违例只判定模块文件（.ko）：mkosi 模块过滤删文件不删目录，tar 名录中的
+    空目录（如残留的 drivers/media/）不构成契约违例。
+    """
     kos = {modname(n): n for n in paths
            if re.search(r"usr/lib/modules/[^/]+/.*\.ko(\.(gz|xz|zst))?$", n)}
     violations = sorted(
-        {n for n in paths if any(f in f"/{n}" for f in forbidden)})
+        {n for n in kos.values() if any(f in f"/{n}" for f in forbidden)})
     return set(kos) | builtin, violations
 
 
