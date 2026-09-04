@@ -165,6 +165,8 @@ ota_dump_forensics() {
     guest_run "systemctl status basalt-boot-health.service --no-pager -l 2>&1 | head -n 20" >&2 || true
     echo "=== [forensics] transfer 定义（/etc/sysupdate.d）===" >&2
     guest_run "cat /etc/sysupdate.d/*.transfer 2>/dev/null" >&2 || true
+    echo "=== [forensics] machine-id 身份链 ===" >&2
+    guest_run "echo etc=\$(cat /etc/machine-id 2>/dev/null); echo state=\$(cat /var/lib/basalt/state/machine-id 2>/dev/null); findmnt -n -o SOURCE /etc/machine-id 2>/dev/null; journalctl -b --no-pager -n 20 2>/dev/null | grep -i 'state-bind\|state-init' || echo 'no state-bind/state-init journal this boot'" >&2 || true
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
 }
 
