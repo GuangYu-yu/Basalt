@@ -3,7 +3,7 @@
 #
 # 产品契约与测试辅助的边界：
 #   - 测试经产品路径驱动（systemctl start systemd-sysupdate.service →
-#     10-images-rw wrapper → ota-prep / sysupdate / ota-select），不绕过
+#     10-basalt-update wrapper → ota-prep / sysupdate / ota-select），不绕过
 #   - /etc/sysupdate.d 注入 override 走产品支持的覆盖机制（/etc 优先于
 #     /usr/lib），内容仅两处测试性：Verify=no（无签名链路）+ 本地源 URL
 #
@@ -117,11 +117,14 @@ ota_check_fails() {
 }
 
 # 安装后置契约：成对落盘（Result=success 是服务级结果，不保证资源落盘——
-# 可能 no-op/未枚举/装错路径）+ sync（硬复位断电语义要求）
+# 可能 no-op/未枚举/装错路径）+ sync（硬复位断电语义要求）。
+# 子卷断言用 btrfs subvolume show 而非 test -d：sysupdate.d(5) 明示
+# subvolume 目标在 Path 非 btrfs 时静默降级为普通目录——必须断言产出物
+# 真的是子卷（嵌套/降级事故的唯一可靠探测点）
 ota_assert_pair_landed() {
     local ver="$1"
-    ota_check "v${ver} EROFS 落盘（${IMAGE_ID}_${ver}.erofs）" \
-        guest_run "test -f /var/lib/basalt/images/${IMAGE_ID}_${ver}.erofs"
+    ota_check "v${ver} 部署子卷落盘（root-basalt-${ver}）" \
+        guest_run "btrfs subvolume show /var/lib/basalt/pool/root-basalt-${ver} >/dev/null"
     ota_check "v${ver} UKI 落盘带 tries（${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi）" \
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+${OTA_TRIES}-0.efi"
     guest_run "sync"
@@ -132,8 +135,8 @@ ota_assert_pair_landed() {
 ota_assert_fallback() {
     local ver="$1" to="$2"
     ota_wait_booted
-    ota_check "回退到 v${to}（cmdline 镜像绑定）" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_${to}.erofs' /proc/cmdline"
+    ota_check "回退到 v${to}（cmdline 部署子卷绑定）" \
+        guest_run "grep -q 'subvol=root-basalt-${to}' /proc/cmdline"
     ota_check "坏版本条目耗尽为 bad 态（${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi）" \
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
     # 轮询等待（TCG 下 landscape-webserver 启动 30s+，单发 curl 时序脆弱）
@@ -152,8 +155,8 @@ ota_dump_forensics() {
     guest_run "ls -la /efi/EFI/Linux" >&2 || true
     echo "=== [forensics] bootctl list ===" >&2
     guest_run "bootctl list --no-pager 2>&1 | head -n 40" >&2 || true
-    echo "=== [forensics] @images 清单与 ro 属性 ===" >&2
-    guest_run "ls -la /var/lib/basalt/images 2>/dev/null; btrfs property get -ts /var/lib/basalt/images ro 2>/dev/null" >&2 || true
+    echo "=== [forensics] 池子卷清单与 ro 属性 ===" >&2
+    guest_run "ls -la /var/lib/basalt/pool 2>/dev/null; for s in /var/lib/basalt/pool/root-basalt-*; do echo \"\$s: \$(btrfs property get -ts \"\$s\" ro 2>/dev/null)\"; done" >&2 || true
     echo "=== [forensics] sysupdate list ===" >&2
     guest_run "/usr/lib/systemd/systemd-sysupdate list --no-pager" >&2 || true
     echo "=== [forensics] journal systemd-sysupdate ===" >&2
@@ -179,12 +182,6 @@ ota_exit_handler() {
     exit "${rc}"
 }
 
-# ── @images 只读窗口（btrfs 子卷属性；共享 superblock 下 remount,ro 必
-#    EBUSY，见 fstab / 10-images-rw.conf 注释）──
-
-ota_images_unlock() { guest_run "btrfs property set -ts /var/lib/basalt/images ro false"; }
-ota_images_lock() { guest_run "btrfs property set -ts /var/lib/basalt/images ro true"; }
-
 # ── 版本伪造（host 侧）──
 
 ota_fabricate_uki() {
@@ -201,8 +198,9 @@ ota_fabricate_uki() {
     uname="$(objcopy -O binary --only-section=.uname "${v1_uki}" /dev/stdout | tr -d '\0')"
     [[ -s "${d}/linux" && -s "${d}/initrd" && -n "${cmdline}" ]] || { error "UKI PE 段提取失败"; return 1; }
 
-    # cmdline 换绑目标版本镜像（其余参数与工厂 UKI 逐字一致）
-    cmdline="$(sed "s/${IMAGE_ID}_${V1}\.erofs/${IMAGE_ID}_${ver}.erofs/" <<<"${cmdline}")"
+    # cmdline 换绑目标版本部署子卷（其余参数与工厂 UKI 逐字一致；与 build.sh
+    # 的 rootflags=subvol=root-basalt-<v> 同一版本契约）
+    cmdline="$(sed "s/subvol=root-basalt-${V1}/subvol=root-basalt-${ver}/" <<<"${cmdline}")"
     [[ -n "${extra_cmdline}" ]] && cmdline="${cmdline} ${extra_cmdline}"
 
     # .osrel 独立生成（与 build.sh rescue 同一契约）：VERSION_ID == IMAGE_VERSION
@@ -226,42 +224,54 @@ EOF
         --output="${out}"
 }
 
+# 引导级坏版本载荷：解包工厂 tar.zst → 清空部署内 init（/usr/lib/systemd/
+# systemd，/sbin/init 的目标）→ 重打包。安装侧 SHA256SUMS 由
+# ota_serve_version 重新生成（损坏在内容、不在安装——安装必然成功，
+# 引导必然失败，等价于旧管线的"EROFS 截断保留超级块"注入）
+ota_fabricate_corrupt_tar() {
+    local ver="$1" src="$2" out="$3"
+    local d="${FAB_DIR}/corrupt-${ver}"
+    rm -rf "${d}" && mkdir -p "${d}"
+    tar --zstd -xf "${src}" -C "${d}"
+    [[ -x "${d}/usr/lib/systemd/systemd" ]] || { error "工厂 tar 无 /usr/lib/systemd/systemd（载荷异常）"; return 1; }
+    : > "${d}/usr/lib/systemd/systemd"
+    tar --zstd -cf "${out}" -C "${d}" .
+}
+
 ota_serve_version() {
-    local ver="$1" erofs_src="$2" uki_file="$3"
+    local ver="$1" tar_src="$2" uki_file="$3"
     rm -rf "${OTA_SERVE_DIR}"
     mkdir -p "${OTA_SERVE_DIR}"
-    # 流式直压：无需中间未压缩副本（sysupdate 源只消费 .erofs.xz）
-    xz -T0 -c "${erofs_src}" > "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.erofs.xz"
+    # tar.zst 直接分发（sysupdate url-tar 源；与工厂 OTA 资产同格式）
+    cp -f "${tar_src}" "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.tar.zst"
     cp -f "${uki_file}" "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.efi"
     ( cd "${OTA_SERVE_DIR}" && sha256sum \
-        "${IMAGE_ID}_${ver}.erofs.xz" "${IMAGE_ID}_${ver}.efi" > SHA256SUMS )
+        "${IMAGE_ID}_${ver}.tar.zst" "${IMAGE_ID}_${ver}.efi" > SHA256SUMS )
 }
 
 # 注入测试 override 到 /etc/sysupdate.d/（产品覆盖机制：/etc 优先于 /usr/lib）。
 # 内容与设备侧模板同构，仅两处测试性差异：Verify=no（无签名链路）+ 本地源
-# URL。Tries/InstancesMax 与 build.env 同源（设备侧渲染同源）
+# URL。InstancesMax=2/TriesLeft=3 为架构常量（与设备侧模板同值）
 ota_inject_sysupdate_overrides() {
     local url="http://10.0.2.2:${OTA_SERVER_PORT}/"
     local root_b64 uki_b64
     # 设备侧定义的本地镜像（URL + 显式 Verify=no：测试无 GPG 签名链路，
-    # 排除发行版 Verify= 默认值差异的干扰；TriesLeft/InstancesMax 与
-    # build.env 同源）
+    # 排除发行版 Verify= 默认值差异的干扰）
     root_b64="$(base64 -w0 <<EOF
 [Transfer]
 ProtectVersion=%A
 Verify=no
 
 [Source]
-Type=url-file
+Type=url-tar
 Path=${url}
-MatchPattern=${IMAGE_ID}_@v.erofs.xz
+MatchPattern=${IMAGE_ID}_@v.tar.zst
 
 [Target]
-Type=regular-file
-Path=/var/lib/basalt/images
-MatchPattern=${IMAGE_ID}_@v.erofs
-Mode=0444
-InstancesMax=${INSTANCES_MAX}
+Type=subvolume
+Path=/var/lib/basalt/pool
+MatchPattern=root-basalt-@v
+InstancesMax=2
 EOF
 )"
     uki_b64="$(base64 -w0 <<EOF
@@ -282,7 +292,7 @@ Path=/efi/EFI/Linux
 MatchPattern=${IMAGE_ID}_@v+@l-@d.efi ${IMAGE_ID}_@v.efi
 TriesLeft=${OTA_TRIES}
 TriesDone=0
-InstancesMax=${INSTANCES_MAX}
+InstancesMax=2
 EOF
 )"
     guest_run "mkdir -p /etc/sysupdate.d"

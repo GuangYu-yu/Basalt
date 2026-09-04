@@ -1,17 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# Basalt — OTA / 文件轮转更新端到端状态机测试
+# Basalt — OTA / btrfs 部署子卷更新端到端状态机测试
 # =============================================================================
 #
 # 显式状态机（每阶段：前置状态 → 操作 → 后置契约）：
 #
-#   stage_v2_install   前置: 工厂 v1 运行中（cmdline/ro 属性/主 UKI 契约）
-#                      操作: sysupdate 安装 v2
-#                      契约: 成对落盘 + @images ro 恢复
+#   stage_v2_install   前置: 工厂 v1 运行中（cmdline 子卷绑定/池部署契约/
+#                      主 UKI 契约/设备身份基线）
+#                      操作: sysupdate 安装 v2（url-tar → subvolume）
+#                      契约: 成对落盘（root-basalt-2 子卷 + tries UKI）
 #   stage_v2_boot      操作: 重启进 v2
-#                      契约: cmdline 绑定 + overlay 根 + bless 去计数 + 健康门
-#   stage_v3_exhaust   操作: 安装引导级坏版本（EROFS 截断 1M）→ 硬复位承载
-#                      失败启动
+#                      契约: cmdline 子卷绑定 + btrfs 根 + bless 去计数 +
+#                            健康门 + 设备身份跨版本稳定（machine-id/ssh key）
+#   stage_v3_exhaust   操作: 安装引导级坏版本（tar 内 init 清空——SHA256
+#                      由清单重签，安装成功、引导必败）→ 硬复位承载失败启动
 #                      契约: tries 耗尽 → 自动回退 v2 + bad 态 + API 恢复
 #   stage_v4_exhaust   操作: 安装业务级坏版本（mask landscape-router）→ 同上
 #                      契约: 同 v3 + 回退后健康门成功
@@ -22,7 +24,8 @@
 #                      契约: 发生裁剪 + 受保护版本（运行版本）永在 +
 #                            实例数 ≤ InstancesMax+1 + rescue 不动
 #   stage_rescue       操作: boot-loader-entry 选 rescue（破坏性，最后）
-#                      契约: 只读根 + rescue shell（sulogin 上串口）+ SSH 关闭
+#                      契约: 动态发现根 + rescue shell（sulogin 上串口）+
+#                            SSH 关闭
 #
 # 断言哲学：只断言稳定契约（文件存在性 / cmdline / btrfs 属性 / bootctl 状态 /
 # API 就绪），不断言偶然日志。串口仅两类用途：取证（ota_lib）与 rescue 的
@@ -63,38 +66,44 @@ OTA_TRIES="${OTA_TRIES:-3}"         # tries=TriesLeft 耗尽需要 T 次失败�
 OTA_HTTP_PID=""
 OTA_VM_STARTED=0
 OTA_RUNNING_VER=""                  # 状态机显式状态：当前运行的版本
+OTA_V1_MACHINE_ID=""                # 设备身份基线（v1 运行时采集，v2 断言不变）
+OTA_V1_SSH_KEY_HASH=""
+INSTANCES_MAX=2                     # 架构常量（与设备侧 transfer 模板同值）
 
 # ── Stage 1：v2 安装 ──
 
 stage_v2_install() {
     echo "== stage: v2 安装 =="
-    # 前置状态：工厂 v1 运行中；@images 收敛 ro=true；工厂主 UKI 命名契约
-    # （ESP 中唯一非 boot-count 主 UKI 恰为 ${IMAGE_ID}_${V1}.efi——sysupdate
-    # MatchPattern=@v 同源，构建侧 UnifiedKernelImageFormat 保证。rescue 为
-    # 连字符名，underscore 模式天然排除）
-    ota_check "前置：工厂 v1 cmdline 绑定" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_${V1}.erofs' /proc/cmdline"
-    ota_check "前置：@images ro=true（images-lock 收敛）" \
-        guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
+    # 前置状态：工厂 v1 运行中；工厂部署子卷在池顶层且真实为子卷；工厂主
+    # UKI 命名契约（ESP 中唯一非 boot-count 主 UKI 恰为 ${IMAGE_ID}_${V1}.efi
+    # ——sysupdate MatchPattern=@v 同源，构建侧 UnifiedKernelImageFormat 保证。
+    # rescue 为连字符名，underscore 模式天然排除）
+    ota_check "前置：工厂 v1 cmdline 子卷绑定" \
+        guest_run "grep -q 'subvol=root-basalt-${V1}' /proc/cmdline"
+    ota_check "前置：工厂 v1 部署为池内真实子卷" \
+        guest_run "btrfs subvolume show /var/lib/basalt/pool/root-basalt-${V1} >/dev/null"
     local factory_uki="${IMAGE_ID}_${V1}.efi"
     local found_uki
     found_uki="$(guest_run "find /efi/EFI/Linux -maxdepth 1 -type f -name '${IMAGE_ID}_*.efi' ! -name '*+*' -printf '%f\n'")"
     ota_check "前置：工厂主 UKI 契约（${factory_uki}）" \
         test "${found_uki}" = "${factory_uki}"
+    # 设备身份基线（@data state 跨版本持久契约的采集点）
+    OTA_V1_MACHINE_ID="$(guest_run "cat /etc/machine-id")"
+    OTA_V1_SSH_KEY_HASH="$(guest_run "sha256sum /var/lib/basalt/state/ssh/ssh_host_ed25519_key.pub" | awk '{print $1}')"
+    ota_check "前置：machine-id 基线非空（bind 契约生效）" \
+        test -n "${OTA_V1_MACHINE_ID}"
 
-    # 操作：sysupdate 安装 v2（产品路径：service → wrapper → ota-prep/sysupdate/
-    # ota-select）
+    # 操作：sysupdate 安装 v2（产品路径：service → wrapper → ota-prep/
+    # sysupdate/ota-select）
     ota_fabricate_uki 2 "" "${FAB_DIR}/${IMAGE_ID}_2.efi"
     ota_serve_version 2 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
         "${FAB_DIR}/${IMAGE_ID}_2.efi"
     local result
     result="$(ota_run_update)"
     ota_check "sysupdate 安装成功（Result=${result}）" test "${result}" = "success"
 
     # 后置契约
-    ota_check "@images 恢复 ro=true（wrapper trap）" \
-        guest_run "btrfs property get -ts /var/lib/basalt/images ro | grep -q 'ro=true'"
     ota_assert_pair_landed 2
 }
 
@@ -103,10 +112,11 @@ stage_v2_install() {
 stage_v2_boot() {
     echo "== stage: v2 引导 + bless =="
     ota_reboot_guest
-    ota_check "v2 cmdline 镜像绑定" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
-    ota_check "根为 overlay（EROFS lower + @os upper）" \
-        test "$(guest_run "findmnt -n -o FSTYPE /" 2>/dev/null | tr -d '[:space:]')" = "overlay"
+    ota_check "v2 cmdline 子卷绑定" \
+        guest_run "grep -q 'subvol=root-basalt-2' /proc/cmdline"
+    ota_check "根为 btrfs 部署子卷（FSTYPE + FSROOT）" \
+        test "$(guest_run "findmnt -n -o FSTYPE /" 2>/dev/null | tr -d '[:space:]')" = "btrfs" -a \
+              "$(guest_run "findmnt -n -o FSROOT /" 2>/dev/null | tr -d '[:space:]')" = "/root-basalt-2"
     # bless 在 boot-complete（= basalt-boot-health 成功）后去计数；轮询文件重命名
     wait_for_guest_command "bless 去计数" 240 5 \
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_2.efi"
@@ -114,22 +124,28 @@ stage_v2_boot() {
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_2.efi"
     ota_check "健康门通过（API 就绪）" \
         guest_run "systemctl show -p Result --value basalt-boot-health.service | grep -qx success"
+    # 设备身份跨部署稳定（initrd bind mount + state 目录的核心断言）
+    ota_check "machine-id 跨版本不变（v1 → v2）" \
+        test "$(guest_run "cat /etc/machine-id")" = "${OTA_V1_MACHINE_ID}"
+    ota_check "SSH host key 跨版本不变（v1 → v2）" \
+        test "$(guest_run "sha256sum /var/lib/basalt/state/ssh/ssh_host_ed25519_key.pub" | awk '{print $1}')" = "${OTA_V1_SSH_KEY_HASH}"
     OTA_RUNNING_VER=2
 }
 
 # ── Stage 3：引导级坏版本 → tries 耗尽 → 回退 ──
 
 stage_v3_exhaust() {
-    echo "== stage: v3 引导级坏版本（EROFS 截断）→ tries 耗尽 → 回退 =="
-    # 损坏注入：截断 1M——超级块保留（可挂载），内容缺失 → 启动无法完成。
-    # 契约不绑定失败阶段（挂载失败 / switch_root 无 init 均为合法形态）。
-    # sd-boot 对损坏 UKI 二进制的行为无文档保证，不作依赖，故用 EROFS 损坏
-    # 而非 UKI 损坏承载同一机制
+    echo "== stage: v3 引导级坏版本（tar 内 init 清空）→ tries 耗尽 → 回退 =="
+    # 损坏注入：解包工厂 tar.zst → 清空 /usr/lib/systemd/systemd → 重打包。
+    # SHA256SUMS 由 ota_serve_version 重签（损坏在内容不在安装）；init 为空
+    # 文件 → switch_root exec 失败 → 引导必败。契约不绑定失败阶段
+    #（switch_root 失败 / kernel panic 均为合法形态）
     ota_fabricate_uki 3 "" "${FAB_DIR}/${IMAGE_ID}_3.efi"
-    cp -f "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" "${FAB_DIR}/${IMAGE_ID}_3.erofs.corrupt"
-    truncate -s 1M "${FAB_DIR}/${IMAGE_ID}_3.erofs.corrupt"
+    ota_fabricate_corrupt_tar 3 \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
+        "${FAB_DIR}/${IMAGE_ID}_3.tar.zst"
     ota_serve_version 3 \
-        "${FAB_DIR}/${IMAGE_ID}_3.erofs.corrupt" \
+        "${FAB_DIR}/${IMAGE_ID}_3.tar.zst" \
         "${FAB_DIR}/${IMAGE_ID}_3.efi"
     local result
     result="$(ota_run_update)"
@@ -138,7 +154,7 @@ stage_v3_exhaust() {
 
     # 操作：OTA_TRIES 次失败 boot（硬复位承载）→ 契约：回退 v2
     ota_stage_exhaust 3 90 \
-        "erofs loop mount failed|Switch root target contains no usable init" \
+        "Kernel panic|Failed to switch root|not syncing" \
         || { echo "[FAIL] v3 tries 耗尽未收敛" >&2; return 1; }
     ota_assert_fallback 3 2
 }
@@ -154,7 +170,7 @@ stage_v4_exhaust() {
     # journal+console）
     ota_fabricate_uki 4 "systemd.mask=landscape-router.service" "${FAB_DIR}/${IMAGE_ID}_4.efi"
     ota_serve_version 4 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
         "${FAB_DIR}/${IMAGE_ID}_4.efi"
     local result
     result="$(ota_run_update)"
@@ -174,7 +190,7 @@ stage_v4_exhaust() {
 
 stage_v5_enospc() {
     echo "== stage: @data 塞满 → ENOSPC 半状态 → 清理重试 =="
-    # 填满 /var（@data；btrfs 空间池与 @os/@images 共享 → 更新写入同样 ENOSPC）
+    # 填满 /var（@data；btrfs 单一空间池与部署子卷共享 → 更新写入同样 ENOSPC）
     guest_run "nohup sh -c 'dd if=/dev/zero of=/var/lib/basalt-ota-fill bs=64M; echo done > /run/ota-fill-done' >/dev/null 2>&1 &" || true
     wait_for_guest_command "磁盘填满" 900 10 \
         guest_run "test -f /run/ota-fill-done"
@@ -189,7 +205,7 @@ stage_v5_enospc() {
     # 操作：更新写入 ENOSPC → 无害半状态（失败可重试）
     ota_fabricate_uki 5 "" "${FAB_DIR}/${IMAGE_ID}_5.efi"
     ota_serve_version 5 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs" \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
         "${FAB_DIR}/${IMAGE_ID}_5.efi"
     local result
     result="$(ota_run_update)"
@@ -213,32 +229,29 @@ stage_vacuum() {
     # 版本（旧流程 vacuum 先行 + seed 5 版本，已弃——破坏性操作应消费前面
     # 自然形成的状态）
     ota_check "前置：运行版本仍为 v2" \
-        guest_run "grep -q 'basalt.image=${IMAGE_ID}_2.erofs' /proc/cmdline"
+        guest_run "grep -q 'subvol=root-basalt-2' /proc/cmdline"
     local before n_before
-    before="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
-    n_before="$(grep -c "^${IMAGE_ID}_[0-9].*\.erofs\$" <<<"${before}" || true)"
+    before="$(guest_run "ls /var/lib/basalt/pool" 2>/dev/null || true)"
+    n_before="$(grep -c "^root-basalt-[0-9][0-9]*\$" <<<"${before}" || true)"
 
-    # 操作：vacuum（@images rw 窗口：解锁属性 → vacuum → 恢复加锁，成败皆锁；
+    # 操作：vacuum（池顶层挂载 rw，无属性窗口——旧 @images 机制已废弃；
     # systemd-sysupdate bin 不在 PATH，全路径调用）
-    ota_images_unlock
     if ! guest_run "/usr/lib/systemd/systemd-sysupdate vacuum"; then
-        ota_images_lock || true
         echo "[FAIL] vacuum 失败" >&2
         return 1
     fi
-    ota_images_lock
 
     # 后置契约：发生裁剪 + 受保护版本（运行版本）永在 + 深度 ≤ InstancesMax+1
     # + rescue UKI 不动
     local after ukis n_after
-    after="$(guest_run "ls /var/lib/basalt/images" 2>/dev/null || true)"
+    after="$(guest_run "ls /var/lib/basalt/pool" 2>/dev/null || true)"
     ukis="$(guest_run "ls /efi/EFI/Linux" 2>/dev/null || true)"
-    n_after="$(grep -c "^${IMAGE_ID}_[0-9].*\.erofs\$" <<<"${after}" || true)"
-    ota_check "vacuum 发生裁剪（EROFS n=${n_before} → ${n_after}）" \
+    n_after="$(grep -c "^root-basalt-[0-9][0-9]*\$" <<<"${after}" || true)"
+    ota_check "vacuum 发生裁剪（部署子卷 n=${n_before} → ${n_after}）" \
         test "${n_after}" -lt "${n_before}"
-    ota_check "受保护版本镜像存在（运行版本 v${OTA_RUNNING_VER}）" \
-        grep -q "^${IMAGE_ID}_${OTA_RUNNING_VER}\.erofs\$" <<<"${after}"
-    ota_check "EROFS 实例数 ≤ InstancesMax+1（保护版本可额外保留）" \
+    ota_check "受保护版本部署存在（运行版本 v${OTA_RUNNING_VER}）" \
+        grep -q "^root-basalt-${OTA_RUNNING_VER}\$" <<<"${after}"
+    ota_check "部署实例数 ≤ InstancesMax+1（保护版本可额外保留）" \
         test "${n_after}" -le $(( INSTANCES_MAX + 1 ))
     ota_check "vacuum 不动 rescue UKI" \
         grep -q "${IMAGE_ID}-rescue.efi" <<<"${ukis}"
@@ -249,8 +262,10 @@ stage_vacuum() {
 # ── Stage 7：rescue（破坏性，最后）──
 
 stage_rescue() {
-    echo "== stage: rescue（手动入口 → 只读根 + rescue shell）=="
-    # 经 EFI Boot Loader Interface 枚举可用条目并锁定 rescue
+    echo "== stage: rescue（手动入口 → 动态发现根 + rescue shell）=="
+    # 经 EFI Boot Loader Interface 枚举可用条目并锁定 rescue。
+    # rescue UKI cmdline 无 root=：initrd basalt-rescue-select 动态发现最高
+    # 版本部署子卷挂为 /sysroot（rescue.target 完整用户空间应急）
     local entries rescue_id
     entries="$(guest_run "systemctl reboot --boot-loader-entry=help" 2>&1 || true)"
     rescue_id="$(grep -oE '[^ ]*rescue[^ ]*' <<<"${entries}" | head -1)"
@@ -289,8 +304,8 @@ preflight() {
         exit 2
     }
 
-    if ! require_commands qemu-system-x86_64 sshpass curl socat jq awk truncate objcopy ukify python3 xz base64; then
-        error "Install test dependencies: sudo apt install qemu-system-x86 ovmf sshpass socat jq systemd-ukify binutils"
+    if ! require_commands qemu-system-x86_64 sshpass curl socat jq awk truncate objcopy ukify python3 xz base64 zstd tar; then
+        error "Install test dependencies: sudo apt install qemu-system-x86 ovmf sshpass socat jq systemd-ukify binutils zstd"
         exit 2
     fi
 
@@ -298,7 +313,7 @@ preflight() {
         exit 2
     fi
 
-    source "${PROJECT_DIR}/build.env"   # IMAGE_ID / INSTANCES_MAX（与设备侧渲染同源）
+    source "${PROJECT_DIR}/build.env"   # IMAGE_ID（部署保留深度为架构常量 2）
     load_landscape_topology || exit 2
     landscape_router_init_paths "ota"
 
@@ -307,10 +322,10 @@ preflight() {
 
     V1="$(sed -n 's/^image_version=//p' "${PROJECT_DIR}/output/metadata/build-metadata.txt" | tr -d '[:space:]')"
     [[ -n "${V1}" ]] || { error "build-metadata.txt 缺少 image_version"; exit 2; }
-    local v1_erofs="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.erofs"
+    local v1_tar="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst"
     local v1_uki="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.efi"
-    [[ -f "${v1_erofs}" && -f "${v1_uki}" ]] || {
-        error "缺少 OTA 原料工件（${v1_erofs} / ${v1_uki}）；CI 需将 *.erofs/*.efi 纳入构建 artifact"
+    [[ -f "${v1_tar}" && -f "${v1_uki}" ]] || {
+        error "缺少 OTA 原料工件（${v1_tar} / ${v1_uki}）；CI 需将 *.tar.zst/*.efi 纳入构建 artifact"
         exit 2
     }
 

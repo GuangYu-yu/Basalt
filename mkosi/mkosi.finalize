@@ -8,23 +8,25 @@ ROOT="${1:-${BUILDROOT:?BUILDROOT not set}}"
 
 # 时区/locale 由 build.sh 经 mkosi 原生 Timezone=/Locale= 设置写入
 
-# ── 机器身份（overlay 层持久化）──
-# PID1 生成 machine-id 早于 local-fs（overlay 挂载前 / 仍只读，首写必失败），
-# 走 /run 临时 ID；machine-id-commit 在 local-fs 后把临时 ID 提交进 overlay 层
-# （/etc/machine-id 写入落 btrfs 增量）→ 跨重启/跨更新稳定。
+# ── 机器身份（initrd bind mount 契约）──
+# /etc/machine-id 保持构建期空文件：initrd 的 basalt-initrd-state-bind 把
+# @data 内 /var/lib/basalt/state/machine-id bind 到 /sysroot/etc/machine-id
+# （switch_root 前完成，pid1 从启动即见 state 值）。首装 state 文件不存在时
+# 以空文件引导生成，systemd-machine-id-commit 把生成 ID 提交进 bind 目标
+# （即写穿到 state）——enable 链由此保留
 : > "${ROOT}/etc/machine-id"
 rm -f "${ROOT}/var/lib/systemd/random-seed"
 ln -sfn /usr/lib/systemd/system/systemd-machine-id-commit.service \
     "${ROOT}/etc/systemd/system/multi-user.target.wants/systemd-machine-id-commit.service"
 
 # ── overlay 全根增量层目录 ──
-# upper/work 由 initrd-root-overlay.service 在 var 挂载后运行时创建；
-# 不在此烘焙（根树 mkdir 依赖 CopyFiles=/var 转移，该机制不可靠曾丢文件）
-# ESP 挂载点（fstab PARTLABEL=ESP 条目）
+# overlayfs 已废弃（btrfs 部署子卷直挂为根）。ESP 挂载点（fstab PARTLABEL=ESP
+# 条目；systemd mount 单元对缺失挂载点自动 mkdir，此处烘焙保持显式）
 mkdir -p "${ROOT}/efi"
 
 # host key 不烘焙（同 key 分发到所有设备 = 安全事故）：
-# 首启由 ssh.service drop-in 的 ssh-keygen -A 生成，写入 overlay 层持久化
+# 首启由 basalt-state-init 在 @data 的 /var/lib/basalt/state/ssh/ 生成
+# （sshd_config.d HostKey 指向该目录——密钥跨部署版本持久，杜绝 TOFU 风暴）
 rm -f "${ROOT}"/etc/ssh/ssh_host_*
 
 # journald 日志持久化到 btrfs /var（只读根上 /var/log 不可写）
@@ -43,9 +45,12 @@ find "${ROOT}/usr/bin" "${ROOT}/usr/sbin" "${ROOT}/usr/lib" \
     -exec strip --strip-unneeded {} + 2>/dev/null || true
 
 # ── 禁焙扫描：命中即构建失败 ──
-# 注意 find 的 -o 不改变起点，每个独立起点单独一条 find
+# 注意 find 的 -o 不改变起点，每个独立起点单独一条 find。
+# /root 载荷残留 = 旧 EROFS 管线布局泄漏（新架构载荷走 @landscape-staging
+# → @landscape 子卷，根树不得携带二进制/静态资源）
 forbidden="$(find "${ROOT}/etc/ssh" -name 'ssh_host_*' 2>/dev/null; \
-             find "${ROOT}/root" \( -name '.bash_history' -o -name '.lesshst' \) 2>/dev/null; \
+             find "${ROOT}/root" \( -name '.bash_history' -o -name '.lesshst' \
+                                    -o -name 'landscape-webserver' -o -name 'static.zip' \) 2>/dev/null; \
              find "${ROOT}/var/cache/apt" "${ROOT}/var/log/apt" -type f 2>/dev/null; \
              find "${ROOT}/var/log" -name 'dpkg.log*' 2>/dev/null)"
 if [[ -n "${forbidden}" ]]; then

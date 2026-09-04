@@ -2,7 +2,8 @@
 # （mkosi.1 构建序：sysusers → tmpfiles → preset-all）。/etc/system-preset 优先
 # 于发行版 /usr/lib/system-preset，是镜像内服务启用的唯一事实来源
 enable landscape-router.service
-enable images-lock.service
+enable basalt-state-init.service
+enable basalt-deployments-readonly.service
 enable ssh.service
 enable networking.service
 enable chrony.service

@@ -4,8 +4,8 @@
 工件：
   initrd  mkosi 拆分产物（经 extract_pe_section 从 UKI 拆出的合并 initrd，
           build.sh 收集到 output/）；此处零抽取逻辑，只做解码与断言
-  root    pass1 SplitArtifacts=partitions 拆出的裸 EROFS 根镜像（可选参数，
-          缺省跳过 ROOT 断言；需要 root（loop 挂载）或 erofsfuse 读取）
+  root    pass1 Format=tar 产出的 OTA 根载荷 basalt_<v>.tar.zst（可选参数，
+          缺省跳过 ROOT 断言；zstandard 流式解压 + tar 名录，无需挂载权限）
 
 三态契约（与 mkosi.conf 的 KernelInitrdModules=/KernelModules= 对应；此处是
 验证端）：forbidden 前缀与 allowed-retained 由本脚本从 mkosi.conf 自动派生
@@ -20,25 +20,22 @@
 
 契约内容：
   initrd 启动链  virtio_blk virtio_scsi virtio_pci virtio_net ahci sd_mod
-                 nvme autofs4 erofs overlay btrfs vfat loop
+                 nvme autofs4 btrfs vfat
   initrd 平台    ata_piix vmw_pvscsi mptspi mpt3sas hv_vmbus
                  hv_storvsc hv_netvsc xen_blkfront
   root 数据面    nf_conntrack tun veth bridge e1000 r8169
 遗漏/越禁 = 退出码 1（构建期秒级失败，替代 5 分钟 SSH 超时才发现）。
 """
-import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
+import tarfile
 from pathlib import Path
 
 import zstandard
 
 REQUIRED_INITRD = {
     "virtio_blk", "virtio_scsi", "virtio_pci", "virtio_net", "ahci", "sd_mod", "nvme", "autofs4",
-    "erofs", "overlay", "btrfs", "vfat", "loop",
+    "btrfs", "vfat",
     # btrfs 符号依赖（libcrc32c 引用 crc32c 符号；crc32c_generic 即满足，
     # crc32c-intel 在 arch/x86/crypto 不在根树保留集，不可得）
     "crc32c_generic",
@@ -65,12 +62,13 @@ REQUIRED_ROOT = {
 }
 
 # initrd 单元契约：自定义 initrd 子镜像必须真实生效（主镜像未声明
-# Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动只读根）。
-# 含 repart 扩容关键三件套：时序 dropin、定义源（--definitions）dropin、
-# 定义文件本身——任一丢失则首启扩容回归（repart 无定义 FAILED）
+# Initrds= 时 mkosi 静默用默认 initrd，这些文件缺失且启动失败）。
+# btrfs 部署子卷架构三钩子 + repart 扩容关键三件套（时序 dropin、定义源
+# （--definitions）dropin、定义文件本身）——任一丢失即启动链回归
 REQUIRED_UNITS = {
-    "usr/lib/systemd/system/initrd-root-overlay.service",
-    "usr/lib/systemd/system/initrd-switch-root.service.d/10-overlay.conf",
+    "usr/lib/systemd/system/basalt-initrd-sysrw.service",
+    "usr/lib/systemd/system/basalt-initrd-state-bind.service",
+    "usr/lib/systemd/system/basalt-rescue-select.service",
     "usr/lib/systemd/system/systemd-repart.service.d/90-after-sysroot.conf",
     "usr/lib/systemd/system/systemd-repart.service.d/99-console.conf",
     "etc/repart.d/92-var-grow.conf",
@@ -264,52 +262,31 @@ def check_artifact(label: str, modules: set[str], forbidden: list[str],
     return missing + forbidden
 
 
-def walk_modules(root: str) -> tuple[set[str], set[str]]:
-    """遍历挂载点内的 usr/lib/modules，返回（.ko 路径集，builtin 模块名集）。"""
-    paths: set[str] = set()
-    builtin: set[str] = set()
-    for dirpath, _dirnames, filenames in os.walk(root):
-        rel_dir = os.path.relpath(dirpath, root)
-        for fn in filenames:
-            rel = os.path.normpath(os.path.join(rel_dir, fn))
-            if "usr/lib/modules/" in f"/{rel}":
-                paths.add(rel.lstrip("/"))
-                if fn == "modules.builtin":
-                    try:
-                        for line in Path(dirpath, fn).read_text(
-                                encoding="utf-8", errors="replace").splitlines():
-                            if line.strip():
-                                builtin.add(modname(line.strip()))
-                    except OSError:
-                        pass
-    return paths, builtin
+def root_tar_modules(root_tar: Path, forbidden: tuple[str, ...]
+                     ) -> tuple[set[str], list[str], set[str]]:
+    """读取 OTA 根载荷 tar.zst 的模块名录（usr/lib/modules）。
 
-
-def root_erofs_modules(erofs: Path, forbidden: tuple[str, ...]
-                       ) -> tuple[set[str], list[str], set[str]]:
-    """读取裸 EROFS 根镜像的模块清单（usr/lib/modules）。
-
-    需要文件系统访问：root（loop 挂载）或 erofsfuse（非 root）。
+    mkosi make_tar 为 GNU tar PAX 格式（--acls --selinux --xattrs），条目名
+    带 "./" 前缀。zstandard 流式解压 + tarfile 名录，无需挂载/FUSE 权限。
     返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
     """
-    tmp = tempfile.mkdtemp(prefix="basalt-gate-")
-    mnt = os.path.join(tmp, "root")
-    os.mkdir(mnt)
-    try:
-        if os.geteuid() == 0:
-            subprocess.run(["mount", "-o", "ro,loop", str(erofs), mnt], check=True)
-        elif shutil.which("erofsfuse"):
-            subprocess.run(["erofsfuse", str(erofs), mnt], check=True)
-        else:
-            sys.exit("无法读取 ROOT 工件：需要 root（loop 挂载）或 erofsfuse")
-        paths, builtin = walk_modules(mnt)
-    finally:
-        if os.geteuid() == 0:
-            subprocess.run(["umount", mnt], check=True)
-        else:
-            unmount = shutil.which("fusermount3") or shutil.which("fusermount")
-            subprocess.run([unmount, "-u", mnt], check=True)
-    shutil.rmtree(tmp, ignore_errors=True)
+    paths: set[str] = set()
+    builtin: set[str] = set()
+    with open(root_tar, "rb") as f:
+        with zstandard.ZstdDecompressor().stream_reader(f) as zfh:
+            with tarfile.open(fileobj=zfh, mode="r|") as tf:
+                for member in tf:
+                    name = member.name.lstrip("./")
+                    if "usr/lib/modules/" not in f"/{name}":
+                        continue
+                    paths.add(name)
+                    if member.name.rsplit("/", 1)[-1] == "modules.builtin":
+                        extract = tf.extractfile(member)
+                        if extract is not None:
+                            for line in extract.read().decode(
+                                    "utf-8", errors="replace").splitlines():
+                                if line.strip():
+                                    builtin.add(modname(line.strip()))
     modules, violations = modules_from_paths(paths, builtin, forbidden)
     return modules, violations, paths
 
@@ -381,10 +358,10 @@ def main() -> int:
     rc = check(blob, initrd_forbidden, initrd_retained)
 
     if len(sys.argv) > 2:
-        # ROOT 工件（pass1 拆出的裸 EROFS 根镜像）
+        # ROOT 工件（pass1 Format=tar 的 OTA 根载荷 tar.zst）
         root_modules, root_violations, root_paths = \
-            root_erofs_modules(Path(sys.argv[2]), root_forbidden)
-        missing = check_artifact("root(EROFS)", root_modules,
+            root_tar_modules(Path(sys.argv[2]), root_forbidden)
+        missing = check_artifact("root(tar)", root_modules,
                                  root_violations, REQUIRED_ROOT)
         for r in root_retained:
             if r not in kernel_dirs(root_paths):
@@ -394,7 +371,7 @@ def main() -> int:
             print(f"[module-gate] FAIL ROOT 缺失/违例：{' '.join(missing)}", file=sys.stderr)
             return 1
         print("[module-gate] root PASS")
-        audit_dirs(root_paths, "root(EROFS)")
+        audit_dirs(root_paths, "root(tar)")
     return rc
 
 

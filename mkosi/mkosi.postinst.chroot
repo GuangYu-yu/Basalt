@@ -1,30 +1,22 @@
 #!/bin/sh
 # =============================================================================
-# mkosi.postinst — chroot 内后置安装（零网络：发布物由 build.sh 宿主侧下载、
-# --extra-tree 注入）
+# mkosi.postinst — chroot 内后置安装（零网络：发布物由 build.sh 宿主侧下载）
 #
-# 只读根(EROFS)路径契约：
-#   运行期可写 = overlay 全根增量层(btrfs /var) + tmpfs(/run /tmp /sys/fs/bpf)
-#   landscape-webserver 的持久化状态（landscape_init.toml 等）必须位于 /var，
-#   静态资源(前端)留在只读根 —— 它们就是镜像内容的一部分。
-#   服务单元用 WorkingDirectory 指向 /var/lib/landscape 承接状态写。
+# btrfs 部署子卷路径契约（/usr-etc-var 三分）：
+#   /usr /etc  随版本原子更新的部署内容（root-basalt-<v> 子卷，全根可写）
+#   /var       运行期挂载 @data（用户/应用数据 + 设备身份 state 目录）
+#   landscape 载荷三件套（webserver/static/toml）不在根树——由 pass2 灌装
+#   @landscape 子卷（/var/lib/basalt/landscape 挂载点），与 root OTA 解耦
 # =============================================================================
 set -eu
 
-# 发布物落位：二进制 → 只读根，静态资源解压 → 只读根，zip 用后即删
-# （勿放 /tmp：chroot sandbox 以 tmpfs 遮蔽镜像树 /tmp）
-chmod +x /root/landscape-webserver
-mkdir -p /usr/share/landscape/static
-unzip -oq /root/static.zip -d /usr/share/landscape/static/
-rm -f /root/static.zip
-
 # 状态目录 → btrfs /var（运行期可写）。兼容层：/root/.landscape-router
-# 是上游硬编码路径，做成指向 /var 的 symlink 承接运行时写入
+# 是上游硬编码 HOME 路径，做成指向 /var 的 symlink 承接运行时写入
 ln -sfn /var/lib/landscape /root/.landscape-router
 
 # 服务启用/禁用由 system-preset 声明（30-landscape.preset，mkosi 原生
 # preset-all 应用）：ssh/networking 为 readiness 契约；chrony 单 NTP 客户端；
-# sysupdate.timer 设备侧文件轮转更新（EROFS 镜像 + UKI 成对落盘）定时检查
+# sysupdate.timer 设备侧更新（部署子卷 + UKI 成对落盘）定时检查
 # （sysupdate-reboot.timer 不启用，重启时机由部署方决定）；
 # resolved/NetworkManager disable 防第二网络栈。
 # 分区/文件系统扩容由 initrd 内 systemd-repart + x-systemd.growfs 完成

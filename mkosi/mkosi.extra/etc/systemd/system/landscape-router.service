@@ -1,28 +1,31 @@
 [Unit]
 Description=Landscape Router
 # 分区/文件系统扩容由 initrd 内 systemd-repart 完成（先于 switch_root），
-# 无需在应用单元上再挂顺序依赖
+# 无需在应用单元上再挂顺序依赖；@landscape 载荷挂载先于本单元（local-fs 段）
 After=local-fs.target
 
 [Service]
 Type=exec
-# 只读根契约：运行期写入只发生在 /var(btrfs) 与 tmpfs。
-# WorkingDirectory=/var/lib/landscape 承接进程的相对路径写入；
-# /root/.landscape-router 是构建期预留的 symlink → /var/lib/landscape。
+# /usr-etc-var 三分契约：
+#   载荷（webserver/static/toml）= @landscape 子卷（/var/lib/basalt/landscape，
+#     与 root OTA 解耦）；-w 显式指定 webroot，消除二进制默认路径歧义
+#   运行期状态 = @data：WorkingDirectory=/var/lib/landscape 承接进程的相对
+#     路径写入；/root/.landscape-router 是构建期预留的 symlink → /var/lib/landscape
+#     （上游 HOME 硬编码路径兼容层）
 # StateDirectory 首启自动创建工作目录（/var 独立分区，构建期不保证存在）
 StateDirectory=landscape
 WorkingDirectory=/var/lib/landscape
 # 有工厂/存量拓扑则导入启动，否则 Web 引导（运行期按实际文件判定，
 # 无需构建期预渲染开关文件）
-ExecStart=/bin/sh -ec 'if [ -f /var/lib/landscape/landscape_init.toml ]; then exec /root/landscape-webserver; else exec /root/landscape-webserver --auto; fi'
+ExecStart=/bin/sh -ec 'if [ -f /var/lib/landscape/landscape_init.toml ]; then exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static; else exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static --auto; fi'
 Restart=always
 RestartSec=2
 LimitMEMLOCK=infinity
 # eBPF map pin（/sys/fs/bpf 为 tmpfs 语义，天然可写）
 ExecStartPre=/bin/sh -c 'mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf'
-# 工厂默认拓扑 → home（var 独立分区构建期不带业务文件，root 分区
-# /usr/share 由镜像原子更新；home 已有配置/已初始化则不动，工厂重置=清 /var）
-ExecStartPre=/bin/sh -c 'if [ ! -e /var/lib/landscape/landscape_init.toml ] && [ -e /usr/share/landscape/landscape_init.toml ]; then cp /usr/share/landscape/landscape_init.toml /var/lib/landscape/; fi'
+# 工厂默认拓扑 → home（var 独立分区构建期不带业务文件；工厂默认 toml 随
+# @landscape 载荷分发，home 已有配置/已初始化则不动，工厂重置=清 /var）
+ExecStartPre=/bin/sh -c 'if [ ! -e /var/lib/landscape/landscape_init.toml ] && [ -e /var/lib/basalt/landscape/landscape_init.toml ]; then cp /var/lib/basalt/landscape/landscape_init.toml /var/lib/landscape/; fi'
 
 [Install]
 WantedBy=multi-user.target

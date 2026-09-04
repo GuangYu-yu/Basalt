@@ -1,9 +1,6 @@
 # OTA 前置空间就绪（由 systemd-sysupdate.service wrapper 调用）：
-#   1. repart 增长 var 分区（--dry-run=no 必需：默认 auto 在 VM 环境退化
-#      为 dry-run，恒 "No changes"——stock 单元原有该参数，重写 ExecStart
-#      时不得遗漏）
-#   2. btrfs resize 扩展文件系统（x-systemd.growfs 只在挂载窗口运行一次，
-#      首启增长分区错过该窗口时由此兜底）
-# 已增长时两者均为幂等 no-op。
-/usr/bin/systemd-repart --definitions=/etc/repart.d --dry-run=no /dev/disk/by-partlabel/var
+# btrfs resize 扩展文件系统（x-systemd.growfs 只在挂载窗口运行一次，
+# 首启增长错过该窗口时由此兜底）。已增长时为幂等 no-op。
+# 分区级增长由 initrd 内 systemd-repart（92-var-grow.conf Weight=100）每次
+# boot 承载，不再于此重复调用。
 btrfs filesystem resize max /var

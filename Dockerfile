@@ -14,8 +14,8 @@ FROM ubuntu:24.04
 ARG MKOSI_VERSION=latest
 ARG DEBIAN_FRONTEND=noninteractive
 
-# 依赖集合与 build.sh require 断言清单同构（mkosi/qemu-img/xz/curl/python3/
-# objcopy/ukify + PE stub）；erofs/btrfs mkfs 由 mkosi ToolsTree 自带，
+# 依赖集合与 build.sh require 断言清单同构（mkosi/qemu-img/xz/unzip/curl/
+# python3/objcopy/ukify + PE stub）；btrfs/mkfs 由 mkosi ToolsTree 自带，
 # 不预焙进本镜像
 RUN apt-get update && apt-get install -y --no-install-recommends \
         systemd-repart \
@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         systemd-boot-efi \
         qemu-utils \
         xz-utils \
+        unzip \
         binutils \
         python3-pip \
         debian-archive-keyring \

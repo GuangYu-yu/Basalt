@@ -1,3 +1,8 @@
 # Managed by Landscape Router - do not edit
+# 本文件为版本化部署内容（/etc 随 root-basalt-<v> 原子更新）；设备特有
+# 网络配置持久于 @data 的 state 目录（跨版本稳定），经 source 引入。
+# ifupdown source 支持通配，目录不存在/无匹配时静默跳过（basalt-state-init
+# 负责创建骨架目录）。运行期接口（eth*）由 landscape-router 动态管理。
 auto lo
 iface lo inet loopback
+source /var/lib/basalt/state/network/*.conf

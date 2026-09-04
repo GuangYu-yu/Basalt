@@ -1,19 +1,17 @@
 # 设备侧 sysupdate transfer —— UKI（入口点资源）
 # transfer 文件名字母序决定写入顺序：入口点（UKI）最后写（80 > 70-root），
-# 异常中断只会留下「有镜像无入口」的无害半状态（sysupdate.d(5) 两阶段
-# 语义：先全部下载到临时目标，再按 transfer 文件名字母序 rename 定稿 +
-# 磁盘同步）。
+# 异常中断只会留下「有部署无入口」的无害半状态（sysupdate.d(5) 两阶段
+# 语义：先全部下载解包到临时目标，再按 transfer 文件名字母序 rename 定稿
+# + 磁盘同步）。
 # 版本化 UKI 文件保留多份：旧 UKI 条目仍可启动 = 回滚路径。
-# InstancesMax=3 与 70-root.transfer 一致（保留深度相同）；rescue UKI
-# （basalt-rescue.efi）不匹配 MatchPattern，vacuum 不动。
+# InstancesMax=2 与 70-root.transfer 一致（部署保留深度 = 架构常量）；
+# rescue UKI（basalt-rescue.efi）不匹配 MatchPattern，vacuum 不动。
 # ESP 挂载点由 fstab PARTLABEL=ESP 条目固定（/efi）。
-# 资源模型 = 版本化单个文件（regular-file）：Target Type=regular-file 与
-# 70-root 同构（url-file source 兼容 target 仅 regular-file/partition，不含
-# directory——sysupdate.d(5) 资源类型矩阵），Path= 为容纳多版本文件的目录，
-# MatchPattern= 定目录内文件命名（boot counting 文件名，@d/@l 三段式）。
+# 资源模型 = 版本化单个文件（regular-file）：Path= 为容纳多版本文件的目录，
+# MatchPattern= 定目录内文件命名（boot counting 文件名，@l/@d 三段式）。
 [Transfer]
 # 运行版本 UKI 同受 ProtectVersion=%A 保护（与 70-root 一致）：vacuum 不删
-# 当前启动的 UKI——缺此字段时 basalt_1.efi 会被当旧实例清掉（实测）。
+# 当前启动的 UKI——缺此字段时当前版本会被当旧实例清掉（实测教训）。
 ProtectVersion=%A
 
 [Source]
@@ -32,6 +30,4 @@ MatchPattern=basalt_@v+@l-@d.efi \
              basalt_@v.efi
 TriesLeft=3
 TriesDone=0
-InstancesMax=3
-# 上行 TriesLeft/InstancesMax=3 为模板默认：build.sh 暂存渲染按
-# build.env INSTANCES_MAX 统一替换（保留深度与重试次数同源），勿手改数值
+InstancesMax=2

@@ -1,0 +1,24 @@
+# rescue 动态根发现（basalt.rescue=1 激活；正常启动路径零开销——Condition
+# 不满足即整单元跳过）
+# rescue UKI 是永久条目，cmdline 不能固化 subvol=root-basalt-N（N 随更新
+# 递增），且必须整体不带 root=——残留 root=（无 subvol）会让 fstab-generator
+# 生成挂 DefaultSubvolume=@data 的 sysroot.mount（@data 无系统，必死），且
+# 与本单元的挂载冲突（EBUSY）。无 root= 时本单元是 /sysroot 的唯一提供者。
+# 机制（systemd initrd 官方结构核对）：initrd.target 达成 → 自动 isolate
+# initrd-switch-root.target → systemctl switch-root 对已挂载的 /sysroot 执行
+# 换根（无需存在 sysroot.mount 单元）。本单元排在其前完成挂载即可。
+# 枚举为空（池损坏/无部署）：exit 1 → 单元失败 → initrd emergency（rescue
+# 语义的最后兜底，不 panic 不阻塞）。选中部署若为 ro（deployments-readonly
+# 收敛过）先翻 rw——应急维护需要可写根。
+[Unit]
+Description=Basalt rescue: discover and mount newest deployment
+DefaultDependencies=no
+ConditionKernelCommandLine=basalt.rescue=1
+After=dev-disk-by\x2dpartlabel-var.device
+Before=initrd-switch-root.target
+
+[Service]
+Type=oneshot
+# 单行命令：unit 语法引号不可跨行。sort -V 取版本号最高者
+ExecStart=/bin/sh -c 'exec >/dev/console 2>&1; mkdir -p /run/basalt-rescue-pool /sysroot; mount -o subvolid=5 /dev/disk/by-partlabel/var /run/basalt-rescue-pool || { echo "basalt-rescue-select: pool mount failed"; exit 1; }; latest="$(ls -d /run/basalt-rescue-pool/root-basalt-[0-9]* 2>/dev/null | sort -V | tail -1)"; [ -n "$latest" ] || { echo "basalt-rescue-select: no root-basalt-* deployment found"; exit 1; }; subvol="$(basename "$latest")"; if btrfs property get -ts "$latest" ro 2>/dev/null | grep -q "^ro=true$"; then btrfs property set -ts "$latest" ro false || { echo "basalt-rescue-select: ro->rw failed for $subvol"; exit 1; }; fi; mount -o "subvol=$subvol,compress=zstd:1,noatime,rw" /dev/disk/by-partlabel/var /sysroot && echo "basalt-rescue-select: sysroot=$subvol" || { echo "basalt-rescue-select: sysroot mount failed"; exit 1; }'
+RemainAfterExit=yes

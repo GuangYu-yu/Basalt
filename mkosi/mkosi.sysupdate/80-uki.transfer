@@ -4,9 +4,9 @@
 # 不启用设备启动阶段的 tries/boot-counting（三段式文件名与自动回滚属
 # 设备侧职责，见 mkosi.extra/usr/lib/sysupdate.d/80-uki.transfer）。
 # Source 为本机构建输出目录中的版本化 UKI（basalt_<v>.efi，cmdline 绑同版本
-# basalt.image=）；Target Type=regular-file：regular-file source 兼容 target
-# 仅 regular-file/partition，不含 directory（sysupdate.d(5) 资源类型矩阵），
-# Path= 为容纳多版本文件的目录，与设备侧 70-root/80-uki 同构。
+# subvol=root-basalt-<v>）；Target Type=regular-file（url-file/regular-file
+# source 兼容 target 仅 regular-file/partition），Path= 为容纳多版本文件的
+# 目录，与设备侧 70-root/80-uki 同构。
 # =============================================================================
 [Transfer]
 # 运行版本 UKI 同受 ProtectVersion=%A 保护（与构建侧 70-root 一致）
@@ -21,3 +21,4 @@ MatchPattern=basalt_@v.efi
 Type=regular-file
 Path=/efi/EFI/Linux
 MatchPattern=basalt_@v.efi
+InstancesMax=2

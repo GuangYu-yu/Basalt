@@ -1,0 +1,20 @@
+# 回滚 ro→rw 钩子（sysroot.mount 前置，best-effort）
+# 场景：旧部署被 deployments-readonly 标记 ro 后，boot counting 回退选中
+# 旧 UKI 引导 ro 子卷——ro 子卷挂载后无 rw 挂载选项可用（先挂后改死锁），
+# 必须在挂载前对设备直接翻属性。正常更新链新部署天生 rw，本单元为 no-op。
+# 机制：池顶层（subvolid=5）暂挂 → 引导目标（cmdline subvol=）属性 ro=true
+# 则翻 false → 卸载暂挂。btrfs 允许同 fs 多并发挂载，与随后 sysroot.mount
+# 无冲突。失败不阻塞（非引导部署不存在该属性时 grep 落空即静默通过）。
+# 失败可见性：stderr 转发 console（initrd 服务契约）。
+[Unit]
+Description=Clear read-only flag on booted basalt deployment subvolume
+DefaultDependencies=no
+ConditionKernelCommandLine=!basalt.rescue=1
+After=dev-disk-by\x2dpartlabel-var.device
+Before=sysroot.mount
+
+[Service]
+Type=oneshot
+# 单行命令：unit 语法引号不可跨行。正常 boot（rw 部署）grep 无命中即成功
+ExecStart=/bin/sh -c 'exec >/dev/console 2>&1; subvol="$(sed -n "s/.*subvol=\(root-basalt-[0-9][0-9]*\).*/\1/p" /proc/cmdline)"; [ -n "$subvol" ] || exit 0; mkdir -p /run/basalt-pool-tmp; mount -o subvolid=5 /dev/disk/by-partlabel/var /run/basalt-pool-tmp || { echo "basalt-initrd-sysrw: pool mount failed, skipping"; exit 0; }; if btrfs property get -ts "/run/basalt-pool-tmp/$subvol" ro 2>/dev/null | grep -q "^ro=true$"; then btrfs property set -ts "/run/basalt-pool-tmp/$subvol" ro false && echo "basalt-initrd-sysrw: $subvol ro->rw (rollback boot)" || echo "basalt-initrd-sysrw: ro->rw FAILED for $subvol"; fi; umount /run/basalt-pool-tmp'
+RemainAfterExit=yes

@@ -84,15 +84,16 @@ preflight() {
     ok "Preflight passed"
 }
 
-auto_overlay_root_check() {
-    # mkosi 管线契约（文件轮转）：/ 为全根 overlay（lower=@images 子卷内
-    # 版本化 EROFS 文件 loop 只读挂载，upper/work=btrfs @os overlay/）。
-    # overlay 组装失败进 initrd emergency（组装服务无回退分支），
-    # 只读 EROFS 根继续启动仅 rescue UKI（basalt.ro=1）形态成立——
-    # 本测试路径下 / 非 overlay 即组装失败，必须判 FAIL。
+auto_root_check() {
+    # mkosi 管线契约（btrfs 部署子卷）：/ 为 btrfs 版本化部署子卷直挂
+    # （root-basalt-<v>，全根可写）。FSROOT 断言绑定子卷寻址（cmdline
+    # rootflags=subvol= 与 70-root.transfer MatchPattern 的运行期对账）；
+    # 非 btrfs / FSROOT 失配即 sysroot 组装失败，必须判 FAIL
     local fstype=""
+    local fsroot=""
     fstype="$(guest_run "findmnt -n -o FSTYPE /" 2>/dev/null || true)"
-    [[ "$fstype" == "overlay" ]]
+    fsroot="$(guest_run "findmnt -n -o FSROOT /" 2>/dev/null || true)"
+    [[ "$fstype" == "btrfs" && "$fsroot" =~ ^/root-basalt-[0-9]+$ ]]
 }
 
 run_smoke_checks() {
@@ -139,7 +140,7 @@ run_smoke_checks() {
     # initrd 能力组（mkosi.conf KernelInitrdModules= 白名单）在目标内核实际
     # 可加载断言：modinfo 依赖闭包不含符号依赖（btrfs↔crc32c_generic 实例），
     # 启动链未覆盖的模块在此显式加载，符号/依赖缺失立即暴露（modprobe 幂等）
-    run_check "initrd capability modules load" guest_run 'for m in nvme virtio_blk loop erofs overlay btrfs crc32c_generic; do modprobe "$m" || exit 1; done; for m in nvme virtio_blk loop erofs overlay btrfs crc32c_generic; do grep -q "^$m " /proc/modules || exit 1; done'
+    run_check "initrd capability modules load" guest_run 'for m in nvme virtio_blk btrfs crc32c_generic vfat; do modprobe "$m" || exit 1; done; for m in nvme virtio_blk btrfs crc32c_generic vfat; do grep -q "^$m " /proc/modules || exit 1; done'
     run_check "PCI/NIC diagnostics tools installed" guest_run "command -v lspci >/dev/null 2>&1 && command -v ethtool >/dev/null 2>&1"
 
     if landscape_test_requires_docker; then
@@ -148,7 +149,15 @@ run_smoke_checks() {
         run_skip "Docker image is functional" "Docker not expected for include_docker=${LANDSCAPE_TEST_INCLUDE_DOCKER:-unknown}"
     fi
 
-    run_check "Root assembled as overlayfs" auto_overlay_root_check
+    run_check "Root mounted as btrfs deployment subvolume" auto_root_check
+    # 设备身份契约：initrd bind mount 生效（/etc/machine-id = state 文件），
+    # @landscape 载荷就位（二进制 + webroot + state 骨架目录）
+    run_check "machine-id bound to persistent state" \
+        guest_run "test -s /etc/machine-id && cmp -s /etc/machine-id /var/lib/basalt/state/machine-id"
+    run_check "Landscape payload present (@landscape)" \
+        guest_run "test -x /var/lib/basalt/landscape/landscape-webserver && test -d /var/lib/basalt/landscape/static"
+    run_check "SSH host keys in persistent state" \
+        guest_run "test -f /var/lib/basalt/state/ssh/ssh_host_ed25519_key && test -f /var/lib/basalt/state/ssh/ssh_host_rsa_key"
     # ProtectVersion=%A 运行期契约：sysupdate vacuum 按 /etc/os-release 的
     # IMAGE_VERSION= 保护当前版本（构建期 UKI .osrel 断言的 guest 侧兜底）
     run_check "IMAGE_VERSION contract in /etc/os-release" \

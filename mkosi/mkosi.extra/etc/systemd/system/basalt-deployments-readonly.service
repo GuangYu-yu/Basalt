@@ -1,0 +1,18 @@
+# 旧部署子卷只读收敛（更新收尾，幂等 oneshot）
+# 每次 boot 运行（比绑死 bless 链更稳：bless 一次性触发时序难以挂靠，
+# boot 期收敛同时覆盖手动删除/重装等任意状态轨迹）。
+# After=var-lib-basalt-pool.mount：属性操作须池顶层挂载就绪（fstab 生成的
+# 单元名）；Before=systemd-sysupdate.service：更新前完成收敛（非必需，
+# 语义清晰化——vacuum 删 ro 子卷合法，此处不构成前置）。
+[Unit]
+Description=Mark non-running basalt deployments read-only
+After=var-lib-basalt-pool.mount
+RequiresMountsFor=/var/lib/basalt/pool
+Before=systemd-sysupdate.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/basalt/basalt-deployments-readonly
+
+[Install]
+WantedBy=multi-user.target

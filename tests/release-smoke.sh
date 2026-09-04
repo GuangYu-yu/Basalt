@@ -54,14 +54,16 @@ wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "R
 
 # 真实语义链：guest 内 sysupdate 以设备侧定义（/usr/lib/sysupdate.d，构建期
 # 渲染为 GitHub URL）枚举 AVAILABLE 集合；刚发布的版本不在设备上 → 出现在
-# list 中即证明"GitHub 枚举 + @v 解析"整条链工作
+# list 中即证明"GitHub 枚举 + @v 解析"整条链工作。
+# 根载荷为 tar.zst（url-tar 源，70-root.transfer）——断言部署子卷条目
 echo "== systemd-sysupdate list（设备视角，Source = GitHub Releases）=="
 list="$(guest_run "/usr/lib/systemd/systemd-sysupdate list --no-pager")"
 echo "${list}"
 
-if grep -q "${IMAGE_ID}_${EXPECTED_VERSION}\.erofs" <<<"${list}"; then
-    ok "GitHub 发布源契约验证通过：AVAILABLE 含 ${IMAGE_ID}_${EXPECTED_VERSION}"
+if grep -q "root-basalt-${EXPECTED_VERSION}\b" <<<"${list}" \
+   && grep -q "${IMAGE_ID}_${EXPECTED_VERSION}\.efi" <<<"${list}"; then
+    ok "GitHub 发布源契约验证通过：AVAILABLE 含 root-basalt-${EXPECTED_VERSION} + ${IMAGE_ID}_${EXPECTED_VERSION}"
 else
-    error "AVAILABLE 未包含 ${IMAGE_ID}_${EXPECTED_VERSION}（GitHub 枚举/解析失败）"
+    error "AVAILABLE 未包含 root-basalt-${EXPECTED_VERSION} / ${IMAGE_ID}_${EXPECTED_VERSION}（GitHub 枚举/解析失败）"
     exit 1
 fi

@@ -1,0 +1,15 @@
+# @landscape 载荷独立更新（手动/编排触发 oneshot；不设 timer——载荷新鲜度
+# 策略属部署方决策，systemctl start 即更新）
+# After=var-lib-basalt-landscape.mount：落盘点为 @landscape 子卷挂载
+[Unit]
+Description=Update Landscape payload subvolume (@landscape)
+After=var-lib-basalt-landscape.mount
+RequiresMountsFor=/var/lib/basalt/landscape
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/basalt/basalt-landscape-update
+# 下载窗口大（~数十 MB），预算放宽
+TimeoutStartSec=20m

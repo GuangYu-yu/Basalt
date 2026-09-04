@@ -1,0 +1,26 @@
+#!/bin/sh
+# basalt-deployments-readonly — 旧部署子卷收敛为只读（保护性优化，非正确性前提）
+# 每次 boot 幂等运行：池内 root-basalt-* 除当前运行版本外全部标记
+# btrfs 属性 ro=true。属性级 ro（非挂载级）：同 superblock 其他 rw 挂载下
+# mount remount,ro 必 EBUSY（实测），属性是 btrfs 子卷只读的正确载体。
+# 失败语义：单项失败仅告警不退出（ro 是优化；sysupdate vacuum 删除 ro
+# 子卷为合法操作，btrfs 删除 ioctls 不受 ro 属性限制）。
+# 回滚配套：initrd basalt-initrd-sysrw.service 在挂载前把引导目标的 ro
+# 属性翻回 false（ro 子卷挂载后无 rw 挂载选项可用，先挂后改会死锁）。
+set -u
+
+# 当前运行部署：UKI cmdline 固化 subvol=root-basalt-<N>（同一版本契约，
+# 见 70-root.transfer 头注）。rescue 启动（无 subvol=）时 cur 为空——
+# 全部标记 ro，rescue-select 会在挂载前把选中部署翻回 rw
+cur="$(sed -n 's/.*subvol=\(root-basalt-[0-9][0-9]*\).*/\1/p' /proc/cmdline)"
+
+for d in /var/lib/basalt/pool/root-basalt-[0-9]*; do
+    [ -d "$d" ] || continue
+    [ "$(basename "$d")" = "$cur" ] && continue
+    if ! btrfs property get -ts "$d" ro 2>/dev/null | grep -q '^ro=true$'; then
+        btrfs property set -ts "$d" ro true 2>/dev/null \
+            || echo "basalt-deployments-readonly: $d 转 ro 失败（忽略）" >&2
+    fi
+done
+
+exit 0

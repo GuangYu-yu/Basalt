@@ -1,0 +1,40 @@
+#!/bin/sh
+# basalt-state-init — 设备身份骨架幂等初始化（@data 内 /var/lib/basalt/state）
+# /usr-etc-var 三分：/etc 为版本化内容（随部署原子更新），设备特有状态
+# 全部落 @data 的 state 目录，跨版本持久。
+# 逐项幂等：任意项失败不阻断其余项（骨架为可重建派生物，唯一硬契约
+# machine-id 走 initrd bind mount，本脚本仅承载降级回填）。
+set -u
+
+STATE=/var/lib/basalt/state
+
+# 骨架目录：ssh（HostKey 指向）/ network（interfaces source 引入）/
+# pool、landscape 挂载点（systemd mount 单元虽自动创建，显式兜底）
+mkdir -p "${STATE}/ssh" "${STATE}/network" /var/lib/basalt/pool /var/lib/basalt/landscape
+
+# machine-id 降级回填：正常路径由 initrd basalt-initrd-state-bind 把
+# state/machine-id bind 到 /etc/machine-id（pid1 写穿）。bind 失败的降级
+# 形态下，pid1 把生成 ID 写进了部署子卷内的 /etc/machine-id（版本内临时
+# 值）——回填到 state，下次启动 bind 即恢复稳定身份
+if [ ! -s "${STATE}/machine-id" ] && [ -s /etc/machine-id ]; then
+    cp /etc/machine-id "${STATE}/machine-id" || \
+        echo "basalt-state-init: machine-id 回填失败（降级路径，下次启动重试）" >&2
+fi
+
+# SSH host key：HostKey 指向 state（sshd_config.d/60-state-hostkeys.conf），
+# 缺失即生成（幂等：< /dev/null 防交互挂起；失败仅告警，sshd 的
+# ExecStartPre 守卫会显式失败暴露）
+gen_key() {
+    # $1 = 类型, $2 = rsa 位数（ed25519 传空）
+    k="${STATE}/ssh/ssh_host_${1}_key"
+    [ -f "${k}" ] && return 0
+    if [ -n "${2:-}" ]; then
+        ssh-keygen -q -t "${1}" -b "${2}" -N '' -f "${k}" </dev/null >/dev/null 2>&1
+    else
+        ssh-keygen -q -t "${1}" -N '' -f "${k}" </dev/null >/dev/null 2>&1
+    fi || echo "basalt-state-init: ssh_host_${1}_key 生成失败" >&2
+}
+gen_key ed25519 ""
+gen_key rsa 3072
+
+exit 0

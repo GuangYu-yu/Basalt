@@ -2,16 +2,14 @@
 # mkosi.sysupdate/70-root.transfer —— 构建侧定义
 # 供 `mkosi sysupdate` 动词使用（mkosi v25+ 以本目录为定义目录调用
 # systemd-sysupdate，源经 --transfer-source 指向构建输出目录）：将本机构建
-# 出的 EROFS 根镜像安装到本机/测试机的 /var/lib/basalt/images。
-# 与设备侧（mkosi.extra/usr/lib/sysupdate.d/70-root.transfer）同一
-# regular-file 目标模型；Source 用 regular-file（本地文件源，sysupdate.d(5)
-# 合法源类型）。
+# 出的 tar.zst 根载荷安装到本机/测试机的池顶层 /var/lib/basalt/pool
+# （root-basalt-<v> 部署子卷）。与设备侧
+# （mkosi.extra/usr/lib/sysupdate.d/70-root.transfer）同一 url-tar→subvolume
+# 目标模型；Source 用 tar（本地 tar 归档，sysupdate.d(5) 合法源类型，
+# 兼容目标 directory/subvolume）。
 # 本地实测路径：构建后
 #   systemd-sysupdate --transfer-source=<构建输出目录> update
-# （目标机 @images 默认 ro——btrfs 子卷属性 ro=true，images-lock.service 每次
-#   boot 收敛；解锁须 btrfs property set -ts /var/lib/basalt/images ro false，
-#   更新后恢复 true——ro 语义见设备侧 fstab 与
-#   systemd-sysupdate.service.d/10-images-rw.conf）
+# （池顶层挂载 rw，无 @images 式属性窗口——旧机制已废弃）
 # 生产 OTA 发布通道（更新服务器/CDN、签名分发）属部署方责任，不在本项目范围；
 # 设备侧 Source 仍为占位 URL。
 # =============================================================================
@@ -20,14 +18,12 @@
 ProtectVersion=%A
 
 [Source]
-Type=regular-file
+Type=tar
 Path=.
-MatchPattern=basalt_@v.erofs \
-            basalt_@v.erofs.xz
+MatchPattern=basalt_@v.tar.zst
 
 [Target]
-Type=regular-file
-Path=/var/lib/basalt/images
-MatchPattern=basalt_@v.erofs
-Mode=0444
-InstancesMax=3
+Type=subvolume
+Path=/var/lib/basalt/pool
+MatchPattern=root-basalt-@v
+InstancesMax=2

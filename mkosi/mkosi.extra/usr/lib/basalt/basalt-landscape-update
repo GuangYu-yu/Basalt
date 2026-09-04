@@ -1,0 +1,52 @@
+#!/bin/sh
+# basalt-landscape-update — @landscape 载荷独立更新（最小下载单元）
+# 载荷 = landscape-webserver + static/（landscape_init.toml 为构建期 CI 注入
+# 的工厂种子，不随上游 release 分发，不在此更新；设备 home 内已初始化配置
+# 更不受影响）。与 root OTA 解耦：不引入 sysupdate 第三组 transfer/版本状态机。
+#
+# 源与校验：复用上游 Landscape GitHub Releases（build.sh 同一获取方式），
+# 源 URL 经 /etc/basalt/landscape-update.conf 的 LANDSCAPE_RELEASE_URL 覆盖
+# （缺省上游 latest/download）。SHA256SUMS 若存在于源目录则强校验；
+# 清单缺失时退化为 curl -f 传输级校验并显式告警。
+# 原子落盘：全部资源先落临时目录并校验，staging 完整成形后逐项 rename
+# 到位（同子卷内 rename 原子），最后按需重启 landscape-router 换新进程。
+set -eu
+
+DEST=/var/lib/basalt/landscape
+CONF=/etc/basalt/landscape-update.conf
+RELEASE_URL="https://github.com/ThisSeanZhang/landscape/releases/latest/download/"
+[ -f "${CONF}" ] && . "${CONF}"   # LANDSCAPE_RELEASE_URL=... 可覆盖
+
+TMP="$(mktemp -d /run/basalt-landscape-update.XXXXXX)"
+trap 'rm -rf "${TMP}"' EXIT
+
+fetch() { curl -fL --retry 3 -o "$2" "${RELEASE_URL}/$1"; }
+
+fetch landscape-webserver-x86_64 "${TMP}/landscape-webserver"
+chmod 0755 "${TMP}/landscape-webserver"
+fetch static.zip "${TMP}/static.zip"
+unzip -oq "${TMP}/static.zip" -d "${TMP}/"
+[ -d "${TMP}/static" ] || { echo "static.zip 解压后无 static/ 目录" >&2; exit 1; }
+
+# 可选完整性校验：源目录存在 SHA256SUMS 即强校验（仅校验本次下载项）
+if fetch SHA256SUMS "${TMP}/SHA256SUMS" 2>/dev/null; then
+    ( cd "${TMP}" && grep -E 'landscape-webserver-x86_64|static\.zip' SHA256SUMS \
+        | sha256sum -c - ) || { echo "SHA256SUMS 校验失败" >&2; exit 1; }
+else
+    echo "basalt-landscape-update: 源无 SHA256SUMS，跳过逐文件校验（传输级校验已过）" >&2
+fi
+
+# 逐项原子替换：每个 rename 原子，整体替换非原子——短暂窗口内旧二进制与
+# 新 static 并存（webserver Restart=always + 末尾重启收敛，接受）；失败中止
+# 保留旧载荷（.old 回滚残留在下次成功更新时清理）
+for item in landscape-webserver static; do
+    rm -rf "${DEST}.${item}.old"
+    [ -e "${DEST}/${item}" ] && mv "${DEST}/${item}" "${DEST}.${item}.old"
+    mv "${TMP}/${item}" "${DEST}/${item}"
+done
+rm -rf "${DEST}".*.old
+
+# 新载荷就位：重启服务进程（ExecStart shell 包装 exec 二进制，restart 即换新）
+systemctl try-restart landscape-router.service
+
+echo "landscape 载荷更新完成：${DEST}"

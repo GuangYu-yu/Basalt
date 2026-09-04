@@ -190,22 +190,21 @@ jobs:
         run: |
           set -euo pipefail
           source build.env
-          # 门禁在宿主执行（非 root 的 erofsfuse 路径）：erofs-utils/erofsfuse/
-          # fuse3 原属构建依赖步骤，容器化后由本步骤自持
+          # 门禁在宿主执行：ROOT 工件为 tar.zst（zstandard 解压 + tar 名录，
+          # 无需 root/erofsfuse 挂载路径）
           sudo apt-get update
-          sudo apt-get install -y erofs-utils erofsfuse fuse3 python3-pip
+          sudo apt-get install -y python3-pip zstd
           python3 -m pip install --quiet --break-system-packages zstandard
           # 全量落盘 mkosi 合并后的有效配置（模块门禁失败时随 test-logs artifact 上传，
           # 用于判定 KernelInitrdModules= 等选项是否被识别）
           docker run --rm -v "${PWD}:/src" -w /src \
             basalt-builder:${{ github.sha }} mkosi -C mkosi cat-config > output/test-logs/mkosi-config.txt
           initrd="$(ls "output/${IMAGE_ID}"*.initrd | head -n1)"
-          # ROOT 工件：裸 EROFS 根镜像（版本取自 build-metadata，与产物同源）
+          # ROOT 工件：OTA 根载荷 tar.zst（版本取自 build-metadata，与产物同源）
           ver="$(sed -n 's/^image_version=//p' output/metadata/build-metadata.txt)"
-          erofs="output/${IMAGE_ID}_${ver}.erofs"
-          [[ -f "${erofs}" ]] || { echo "ROOT 工件缺失: ${erofs}" >&2; exit 1; }
-          # 门禁步骤非 root：erofsfuse 路径（loop 挂载需 root，脚本内自动分支）
-          python3 tests/check-initrd-modules.py "${initrd}" "${erofs}"
+          root_tar="output/${IMAGE_ID}_${ver}.tar.zst"
+          [[ -f "${root_tar}" ]] || { echo "ROOT 工件缺失: ${root_tar}" >&2; exit 1; }
+          python3 tests/check-initrd-modules.py "${initrd}" "${root_tar}"
 
       - name: 列出输出文件
         run: ls -lh output/
@@ -222,13 +221,14 @@ jobs:
           retention-days: 30
 
       - name: 上传版本化 OTA 资产
-        # 发布资产 + test-ota.sh 物料契约：版本化 EROFS + UKI（preflight
-        # 硬校验存在性）。恒上传——它们同时是 GitHub Release 的 OTA 资产
+        # 发布资产 + test-ota.sh 物料契约：版本化 tar.zst 根载荷 + UKI
+        # （preflight 硬校验存在性）。恒上传——它们同时是 GitHub Release 的
+        # OTA 资产
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.tests.outputs.image_artifact }}-ota
           path: |
-            output/*.erofs
+            output/*.tar.zst
             output/*.efi
           retention-days: 30
 

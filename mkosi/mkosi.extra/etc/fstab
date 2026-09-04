@@ -1,23 +1,25 @@
 # ESP：标签在 mkosi.repart/10-esp.conf 声明一次；固定挂载点是
 # /usr/lib/sysupdate.d/80-uki.transfer 的 Path= 前提（单一事实派生）。
 PARTLABEL=ESP /efi vfat umask=0077,noatime 0 0
-# @os 运行期挂载点：overlay upper/work 层的宿主（initrd 期同卷挂 /sysroot 组装 overlay）。
-# 显式 rw：与 build.sh rootflags 同源（systemd 缺 rw/ro 时挂载为 ro）。
-PARTLABEL=var /var/lib/basalt btrfs subvol=@os,compress=zstd:1,noatime,rw 0 0
-# @images：版本化 EROFS 镜像。只读保护为 btrfs 子卷属性（ro=true，persistent），
-# 非挂载层 ro——同 superblock 下 @os/@data 仍 rw 时 mount remount,ro 必 EBUSY
-# （实测），故 VFS 挂载保持 rw，只读由属性承载：每次 boot 由
-# images-lock.service 强制收敛 ro=true；OTA 写入经 systemd-sysupdate.service
-# 的 wrapper drop-in 临时 ro=false → trap 恢复 true
-# （usr/lib/systemd/system/systemd-sysupdate.service.d/10-images-rw.conf）。
-# 手动 sysupdate update/vacuum 须先 btrfs property set -ts ... ro false。
-PARTLABEL=var /var/lib/basalt/images btrfs subvol=@images,compress=zstd:1,noatime 0 0
 # /var（@data）：手写 PARTLABEL=var（与其余条目统一），刻意不用 repart
-# MountPoint= 自动生成的 fs UUID 段——两阶段构建（pass1 EROFS 固化 fstab /
-# pass2 最终盘 mkfs）产生两次独立 fs UUID，fstab 固化值与盘上实际失配导致
-# fsck 等不到设备。growfs 由本条目 x-systemd.growfs
-# 触发，分区级 grow 由 initrd 92-var-grow.conf 承担。
+# MountPoint= 自动生成的 fs UUID 段——两阶段构建（pass1 tar 固化 / pass2
+# 最终盘 mkfs）产生独立 fstab 状态，fstab 固化值与盘上实际失配导致 fsck
+# 等不到设备。growfs 由本条目 x-systemd.growfs 触发，分区级 grow 由 initrd
+# 92-var-grow.conf 承担。
 PARTLABEL=var /var btrfs subvol=@data,compress=zstd:1,noatime,x-systemd.growfs 0 0
-# / 的 overlay 组装在 initrd 完成（见 mkosi.images/initrd/.../initrd-root-overlay.service）：
-#   fstab-generator 对 / 只做 remount 语义，真实根阶段无法换 fstype ——
-#   此处刻意无 / 条目（systemd-remount-fs 因此对 overlay 根零操作，干净）。
+# @landscape：应用载荷子卷（landscape-webserver + static/ + 工厂默认 toml），
+# 与 root OTA 解耦独立更新（basalt-landscape-update.service）。挂载点目录在
+# @data 内，缺失时由 systemd mount 单元自动创建（mount.c mkdir_p_label）。
+PARTLABEL=var /var/lib/basalt/landscape btrfs subvol=@landscape,compress=zstd:1,noatime 0 0
+# 池顶层（subvolid=5，规范地址——比名字/路径写法稳）：sysupdate 建部署子卷的
+# 落点。缺此挂载时 sysupdate 的 btrfs subvolume create 落在调用进程根
+# （运行部署内部）→ 嵌套子卷事故（UKI 顶层寻址失败 / vacuum 连坐 / 嵌套
+# 阻断删除，且 update 本身"成功"静默出错）。挂载必须 rw：btrfs subvolume
+# create 在 ro 挂载上 EROFS 直接失败（elemental-operator #923 实证）。
+# 该挂载是 @data 同级的普通数据卷暴露面（pool 视图可见全部子卷），无额外
+# 保护需求；旧部署的 ro 保护在 btrfs 属性层（deployments-readonly.service）。
+PARTLABEL=var /var/lib/basalt/pool btrfs subvolid=5,noatime 0 0
+# / 无条目：sysroot.mount 由 cmdline root= + rootflags=subvol=root-basalt-<N>
+# 在 initrd 内经 fstab-generator 生成（rw，全根可写）；systemd-remount-fs
+# 对无 / 条目的根零操作。设备身份（machine-id/ssh key/网络片段）在
+# /var/lib/basalt/state（@data 普通目录），无独立 fstab 条目。

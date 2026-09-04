@@ -1,0 +1,28 @@
+# 设备 machine-id bind mount（跨部署稳定身份的核心时序）
+# 为什么在 initrd：pid1 读取 /etc/machine-id 远早于真实根 local-fs——fstab
+# bind 或首启服务都太晚（pid1 已缓存新生成 ID → 每次换部署 ID 漂移）。
+# 为什么不用 symlink：258+ 官方封闭（machine-id-setup O_EXCL/O_NOFOLLOW，
+# pid1 不跟随 symlink，systemd#39438）。bind mount 是 switch_root 前唯一
+# 稳定时序点。
+# 机制：@data 暂挂到 /run/basalt-state-mnt（不占 /sysroot/var——真实根
+# var.mount 首启完整挂载，无选项/复用歧义）→ state/machine-id bind 到
+# /sysroot/etc/machine-id。bind 使暂挂不可卸载（文件 bind 引用底层挂载），
+# 随 switch_root 一并进入真实根（/run 跨 switch_root 保留），成为稳定身份。
+# 首装（state 文件不存在）：创建空 state 文件 → pid1 生成临时 ID →
+# systemd-machine-id-commit 写穿 bind 到 state（此后永远走 bind 读旧值）。
+# 降级：bind 失败不阻塞启动（服务不 fail——返回 0 + console 告警；pid1
+# 临时生成 + basalt-state-init 回填 state，下次启动恢复）。
+# rescue（basalt.rescue=1）不运行：rescue 无需一致身份，且其 sysroot 由
+# rescue-select 提供（无 sysroot.mount 单元）。
+[Unit]
+Description=Bind device machine-id into deployment /etc
+DefaultDependencies=no
+ConditionKernelCommandLine=!basalt.rescue=1
+After=sysroot.mount
+Before=initrd-fs.target
+
+[Service]
+Type=oneshot
+# 单行命令：unit 语法引号不可跨行。set +e 语义由 || true 承载（降级不阻塞）
+ExecStart=/bin/sh -c 'exec >/dev/console 2>&1; mkdir -p /run/basalt-state-mnt; if ! mount -o subvol=@data,compress=zstd:1,noatime /dev/disk/by-partlabel/var /run/basalt-state-mnt; then echo "basalt-initrd-state-bind: @data mount failed, degrading (transient machine-id)"; exit 0; fi; mkdir -p /run/basalt-state-mnt/lib/basalt/state; if [ ! -f /run/basalt-state-mnt/lib/basalt/state/machine-id ]; then : > /run/basalt-state-mnt/lib/basalt/state/machine-id || true; fi; if mount --bind /run/basalt-state-mnt/lib/basalt/state/machine-id /sysroot/etc/machine-id; then echo "basalt-initrd-state-bind: machine-id bound (persistent identity)"; else echo "basalt-initrd-state-bind: bind FAILED, degrading (transient machine-id)"; fi; exit 0'
+RemainAfterExit=yes

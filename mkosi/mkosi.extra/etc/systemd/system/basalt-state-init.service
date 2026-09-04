@@ -1,0 +1,18 @@
+# 设备身份骨架初始化（幂等 oneshot，每次 boot 运行）
+# 排序契约（联网查证修正：sshd 默认不保证晚于本地挂载，必须显式依赖）：
+#   After=var.mount —— state 目录在 @data（var.mount 为 fstab 生成的单元名）
+#   Before=ssh.service —— HostKey 生成先于 sshd 配置测试
+#   Before=networking.service —— interfaces 的 source 目录就绪先于 ifup
+#   Before=systemd-machine-id-commit.service —— 降级回填先于 commit 语义
+[Unit]
+Description=Basalt device state skeleton init
+After=var.mount
+RequiresMountsFor=/var/lib/basalt
+Before=ssh.service networking.service systemd-machine-id-commit.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/basalt/basalt-state-init
+
+[Install]
+WantedBy=multi-user.target
