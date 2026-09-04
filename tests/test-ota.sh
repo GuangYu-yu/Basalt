@@ -177,9 +177,12 @@ stage_v3_exhaust() {
     ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
     ota_assert_pair_landed 3
 
-    # 操作：OTA_TRIES 次失败 boot（硬复位承载）→ 契约：回退 v2
+    # 操作：OTA_TRIES 次失败 boot（硬复位承载）→ 契约：回退 v2。
+    # 签名为取证非契约（不绑定失败阶段）：实测 init 清空的失败形态是 initrd
+    # PID1 "Failed to execute /sbin/init → Freezing execution"（不 panic 不
+    # switch root 报错，静默冻结）；panic/not syncing 为其他失败模式的合法形态
     ota_stage_exhaust 3 90 \
-        "Kernel panic|Failed to switch root|not syncing" \
+        "Failed to execute|Freezing execution|Kernel panic|Failed to switch root|not syncing" \
         || { echo "[FAIL] v3 tries 耗尽未收敛" >&2; return 1; }
     ota_assert_fallback 3 2
 }
