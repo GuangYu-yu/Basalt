@@ -142,6 +142,10 @@ stage_v2_boot() {
     # 后串口承载下载/解包/裁剪旧版本全程 + 死亡时刻的最后输出（测试侧取证，
     # 不改产品默认行为）。/etc 属 v2，存活至 rescue 前的全部更新阶段
     guest_run "mkdir -p /etc/systemd/system/systemd-sysupdate.service.d && printf '[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n' > /etc/systemd/system/systemd-sysupdate.service.d/10-console-tee.conf && systemctl daemon-reload"
+    # 解锁全部 SysRq（Debian 默认掩码 438 不含 64=任务转储）：SSH 死亡时经
+    # QEMU monitor sendkey 触发 SysRq-w/t 任务转储到串口——挂死调用点的
+    # 决定性取证（D 状态任务 + 内核栈，不依赖任何 guest 网络）
+    guest_run "echo 1 > /proc/sys/kernel/sysrq"
     OTA_RUNNING_VER=2
 }
 

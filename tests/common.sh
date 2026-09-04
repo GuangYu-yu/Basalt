@@ -188,10 +188,11 @@ wait_for_pidfile() {
 dump_log_tail() {
     local logfile="$1"
     local label="${2:-$1}"
+    local lines="${DUMP_TAIL_LINES:-50}"
     if [[ -f "${logfile}" ]]; then
         echo ""
-        error "=== Last 50 lines of ${label} ==="
-        tail -n 50 "${logfile}" 2>/dev/null || true
+        error "=== Last ${lines} lines of ${label} ==="
+        tail -n "${lines}" "${logfile}" 2>/dev/null || true
         echo ""
     fi
 }
