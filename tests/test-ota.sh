@@ -133,6 +133,10 @@ stage_v2_boot() {
         test "$(guest_run "cat /etc/machine-id")" = "${OTA_V1_MACHINE_ID}"
     ota_check "SSH host key 跨版本不变（v1 → v2）" \
         test "$(guest_run "sha256sum /var/lib/basalt/state/ssh/ssh_host_ed25519_key.pub" | awk '{print $1}')" = "${OTA_V1_SSH_KEY_HASH}"
+    # /etc 随部署子卷版本化——v1 内注入的 sysupdate override 不随版本切换
+    # 存活（旧 overlay 时代"注入一次跨重启有效"的前提已失效）。后续 v3/v4/v5
+    # 更新均发起于 v2，此处重注入（内容幂等）
+    ota_inject_sysupdate_overrides
     OTA_RUNNING_VER=2
 }
 

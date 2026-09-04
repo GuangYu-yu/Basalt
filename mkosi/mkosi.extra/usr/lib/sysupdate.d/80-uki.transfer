@@ -16,7 +16,7 @@ ProtectVersion=%A
 
 [Source]
 Type=url-file
-Path=https://updates.example.com/basalt/
+Path=updates.example.com/basalt/
 MatchPattern=basalt_@v.efi
 
 [Target]

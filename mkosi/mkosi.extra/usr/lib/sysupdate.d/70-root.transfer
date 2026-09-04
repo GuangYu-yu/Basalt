@@ -31,7 +31,9 @@ ProtectVersion=%A
 
 [Source]
 Type=url-tar
-Path=https://updates.example.com/basalt/
+# Path 不带 scheme：占位域经 build.sh sed 渲染为含 scheme 的完整 URL
+#（模板带 https:// 前缀会渲染出双重 scheme——实测 "Could not resolve hostname"）
+Path=updates.example.com/basalt/
 MatchPattern=basalt_@v.tar.xz
 
 [Target]

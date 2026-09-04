@@ -5,7 +5,9 @@
 #   - 测试经产品路径驱动（systemctl start systemd-sysupdate.service →
 #     10-basalt-update wrapper → ota-prep / sysupdate / ota-select），不绕过
 #   - /etc/sysupdate.d 注入 override 走产品支持的覆盖机制（/etc 优先于
-#     /usr/lib），内容仅两处测试性：Verify=no（无签名链路）+ 本地源 URL
+#     /usr/lib），内容仅两处测试性：Verify=no（无签名链路）+ 本地源 URL。
+#     注意 /etc 随部署子卷版本化：override 不跨版本切换存活，版本切换后
+#     须重注入（test-ota.sh stage_v2_boot）
 #
 # 实证教训（保留背景，防回归）：
 #   - 硬复位 = kill -9 QEMU（断电语义）：install 后必须 sync 刷盘，否则页缓存
