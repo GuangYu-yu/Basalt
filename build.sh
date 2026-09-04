@@ -154,10 +154,12 @@ rm -rf "${STAGED_LANDSCAPE_DIR}"
 
 # 工厂拓扑烘焙：CI 经 EFFECTIVE_CONFIG_PATH 注入（workflow 设置
 # configs/landscape_init.toml），无配置时跳过——缺此步骤 landscape 首启无
-# 工厂默认 toml → 走 --auto 不配数据面 → eth0 down → bootstrap 通道不通
+# 工厂默认 toml → 走 --auto 不配数据面 → eth0 down → bootstrap 通道不通。
+# 注入落点为 @landscape-staging 暂存树（三静态资源之一），必须延迟到 pass1
+# 之后灌装：pass1 的 tar 无排除面，暂存提前就位会被打包进根载荷
 if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
     [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
-    install -Dm644 "${EFFECTIVE_CONFIG_PATH}" "${STAGED_CONFIG}"
+    :   # 仅校验存在性；实际灌装见 pass1 后的载荷暂存段
 fi
 
 # ── mkosi 参数拼装 ──
@@ -334,9 +336,13 @@ KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
 
 # ── @landscape 载荷暂存（pass2 的 CopyFiles=/@landscape-staging:/@landscape
 #    灌装源；三静态资源 = 完整应用载荷：landscape-webserver / static/（宿主侧
-#    解压，zip 不入树）/ landscape_init.toml（上方 EFFECTIVE_CONFIG_PATH 注入）──
+#    解压，zip 不入树）/ landscape_init.toml（下方 EFFECTIVE_CONFIG_PATH 注入）──
 info "下载 Landscape 发布物..."
 install -d "${STAGED_LANDSCAPE_DIR}"
+# 工厂拓扑烘焙灌装（早前仅校验存在性，此处实际落盘；见 EFFECTIVE_CONFIG_PATH 契约）
+if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
+    install -Dm644 "${EFFECTIVE_CONFIG_PATH}" "${STAGED_CONFIG}"
+fi
 curl -fL --retry 3 -o "${STAGED_WEBAPP}" "${ASSET_BASE}/landscape-webserver-x86_64"
 chmod +x "${STAGED_WEBAPP}"
 curl -fL --retry 3 -o "${STAGED_STATIC_ZIP}" "${ASSET_BASE}/static.zip"
