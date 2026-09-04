@@ -330,6 +330,10 @@ mkosi "${MKOSI_ARGS[@]}" --format tar --split-artifacts uki,initrd,kernel build
 # OTA 根载荷正名产物（tar.zst 直接可用，无二次压缩/解压中转）
 ROOT_TAR="${WORK_DIR}/${IMAGE_ID}_${VER}.tar.zst"
 [[ -f "${ROOT_TAR}" ]] || die "未找到 pass1 tar 载荷（${ROOT_TAR}）"
+# pass2 mkosi build 启动时清理 output 目录内同名旧产物（<ImageId>_<ver>.* 全集），
+# tar.zst 是 pass1 独有产物（pass2 为 disk 格式不重产）——立即移入 OUTPUT_DIR
+#（build.sh 自有目录，mkosi 不触碰）以存活到导出阶段
+mv -f "${ROOT_TAR}" "${OUTPUT_DIR}/"
 
 KERNEL_FILE="$(ls "${WORK_DIR}"/${IMAGE_ID}*.vmlinuz 2>/dev/null | head -1)"
 [[ -n "${KERNEL_FILE}" ]] || die "未找到 pass1 kernel 工件（rescue UKI 原料，${IMAGE_ID}*.vmlinuz）"
@@ -485,9 +489,9 @@ BUILT_RAW="$(latest_raw)"
 cp -f "${INITRD_FILE}" "${OUTPUT_DIR}/"
 
 # ROOT 工件（tar.zst）：CI 模块门禁第二参数（zstandard 解压 + tar 名录，
-# 无需挂载权限）的输入；同 initrd 处理——不入 BUILD_ARTIFACTS 与发布清单
-# （OTA 发布资产由下方 cp 至 OUTPUT_DIR 的正式副本承载）
-cp -f "${ROOT_TAR}" "${OUTPUT_DIR}/"
+# 无需挂载权限）的输入；不入 BUILD_ARTIFACTS 与发布清单（OTA 发布资产由
+# 下方 ROOT_TAR_FILE 承载）。tar 已在 pass1 后移入 OUTPUT_DIR（规避 pass2
+# mkosi 清理），无需再次拷贝
 
 # BUILT_RAW 已是最终产物名（显式版本恒注入，与 RAW_FILE 同名）
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"
