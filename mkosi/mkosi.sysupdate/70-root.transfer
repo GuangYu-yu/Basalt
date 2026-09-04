@@ -2,7 +2,7 @@
 # mkosi.sysupdate/70-root.transfer —— 构建侧定义
 # 供 `mkosi sysupdate` 动词使用（mkosi v25+ 以本目录为定义目录调用
 # systemd-sysupdate，源经 --transfer-source 指向构建输出目录）：将本机构建
-# 出的 tar.zst 根载荷安装到本机/测试机的池顶层 /var/lib/basalt/pool
+# 出的 tar.xz 根载荷安装到本机/测试机的池顶层 /var/lib/basalt/pool
 # （root-basalt-<v> 部署子卷）。与设备侧
 # （mkosi.extra/usr/lib/sysupdate.d/70-root.transfer）同一 url-tar→subvolume
 # 目标模型；Source 用 tar（本地 tar 归档，sysupdate.d(5) 合法源类型，
@@ -20,7 +20,7 @@ ProtectVersion=%A
 [Source]
 Type=tar
 Path=.
-MatchPattern=basalt_@v.tar.zst
+MatchPattern=basalt_@v.tar.xz
 
 [Target]
 Type=subvolume

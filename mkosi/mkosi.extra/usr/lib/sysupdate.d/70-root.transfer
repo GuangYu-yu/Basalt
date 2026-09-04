@@ -24,13 +24,15 @@
 #   - 幂等：目标已是该版本时 update 为 no-op
 #   - InstancesMax 与 80-uki.transfer 保持一致（sysupdate.d(5) 明示建议各
 #     transfer 一致，否则残留不完整组合；两资源同版本号成对安装、成对 vacuum）
+#   - 载荷压缩为 xz：systemd 257 的 pull 流压缩探测（import-compress.c）
+#     仅识别 xz/gzip/bzip2 魔数，zstd 载荷会被原样喂给 GNU tar 致安装失败
 [Transfer]
 ProtectVersion=%A
 
 [Source]
 Type=url-tar
 Path=https://updates.example.com/basalt/
-MatchPattern=basalt_@v.tar.zst
+MatchPattern=basalt_@v.tar.xz
 
 [Target]
 Type=subvolume

@@ -8,8 +8,9 @@
 #   --smoke : 构建后 mkosi qemu 直接启动验证
 #
 # 更新模型（btrfs 版本化部署子卷，A/B 即用即弃，全根可写）：
-#   pass1  --format tar：mkosi 原生 Format=tar（默认 zstd 压缩）从构建树
-#          直接流式产出 OTA 根载荷 basalt_<v>.tar.zst（GNU tar --acls
+#   pass1  --format tar：mkosi 原生 Format=tar（xz 压缩，v257 pull 流探测
+#          不支持 zstd）从构建树
+#          直接流式产出 OTA 根载荷 basalt_<v>.tar.xz（GNU tar --acls
 #          --selinux --xattrs PAX，与设备侧解包器 systemd-import 的 GNU tar
 #          --xattrs --xattrs-include=* 同构——capabilities 全链路保留），
 #          同时拆出 UKI/kernel/initrd 工件（rescue UKI 原料与 ESP 定稿实测）
@@ -251,7 +252,7 @@ if [[ -n "${ota_base_url}" ]]; then
 fi
 # 暂存路径（全部位于树根，与内容路径无前缀重叠）：
 #   /@landscape-staging  —— pass2 @landscape 载荷灌装暂存（pass1 结束后就位，
-#                           tar.zst 纯净性 + 部署子卷排除均以其为界）
+#                           tar.xz 纯净性 + 部署子卷排除均以其为界）
 #   rescue UKI           —— mkosi.extra/efi/EFI/Linux/，经 ESP CopyFiles=/efi:/ 带入
 STAGED_RESCUE_UKI="${SCRIPT_DIR}/mkosi/mkosi.extra/efi/EFI/Linux/${IMAGE_ID}-rescue.efi"
 rm -f "${STAGED_RESCUE_UKI}"
@@ -322,16 +323,19 @@ info "Landscape 发布物版本：${LANDSCAPE_VERSION}（载荷暂存于 pass1 �
 # 作为 /@landscape-staging 进入每个 OTA 部署
 [[ ! -e "${STAGED_LANDSCAPE_DIR}" ]] || die "@landscape-staging 残留泄漏进 pass1（tar 将携带载荷暂存）"
 info "mkosi build（pass 1/2：tar 载荷 + kernel/initrd/UKI 工件）..."
-# --format tar 覆盖主配置 Format=disk；tar 输出默认 zstd 压缩（mkosi
-# config_default_compression），命名 <ImageId>_<ver>.tar.zst = 设备侧
+# --format tar 覆盖主配置 Format=disk；xz 压缩（systemd 257 pull 流探测
+# 不支持 zstd，见下方 ROOT_TAR 注释），命名 <ImageId>_<ver>.tar.xz = 设备侧
 # 70-root.transfer 的 Source MatchPattern 同名契约
-mkosi "${MKOSI_ARGS[@]}" --format tar --split-artifacts uki,initrd,kernel build
+mkosi "${MKOSI_ARGS[@]}" --format tar --compress-output=xz \
+    --split-artifacts uki,initrd,kernel build
 
-# OTA 根载荷正名产物（tar.zst 直接可用，无二次压缩/解压中转）
-ROOT_TAR="${WORK_DIR}/${IMAGE_ID}_${VER}.tar.zst"
+# OTA 根载荷正名产物（tar.xz 直接可用，无二次压缩/解压中转）。xz 而非 zstd：
+# systemd 257 pull 流压缩探测仅支持 xz/gzip/bzip2（import-compress.c 无 zstd
+# 魔数分支），zstd 载荷会被原样喂给 tar 导致 url-tar 安装失败
+ROOT_TAR="${WORK_DIR}/${IMAGE_ID}_${VER}.tar.xz"
 [[ -f "${ROOT_TAR}" ]] || die "未找到 pass1 tar 载荷（${ROOT_TAR}）"
 # pass2 mkosi build 启动时清理 output 目录内同名旧产物（<ImageId>_<ver>.* 全集），
-# tar.zst 是 pass1 独有产物（pass2 为 disk 格式不重产）——立即移入 OUTPUT_DIR
+# tar.xz 是 pass1 独有产物（pass2 为 disk 格式不重产）——立即移入 OUTPUT_DIR
 #（build.sh 自有目录，mkosi 不触碰）以存活到导出阶段
 mv -f "${ROOT_TAR}" "${OUTPUT_DIR}/"
 
@@ -488,7 +492,7 @@ BUILT_RAW="$(latest_raw)"
 # 不入 BUILD_ARTIFACTS 与 SHA256SUMS：仅模块门禁消费，不入发布清单
 cp -f "${INITRD_FILE}" "${OUTPUT_DIR}/"
 
-# ROOT 工件（tar.zst）：CI 模块门禁第二参数（zstandard 解压 + tar 名录，
+# ROOT 工件（tar.xz）：CI 模块门禁第二参数（xz 流式解压 + tar 名录，
 # 无需挂载权限）的输入；不入 BUILD_ARTIFACTS 与发布清单（OTA 发布资产由
 # 下方 ROOT_TAR_FILE 承载）。tar 已在 pass1 后移入 OUTPUT_DIR（规避 pass2
 # mkosi 清理），无需再次拷贝
@@ -526,11 +530,11 @@ for f in "${formats[@]}"; do
 done
 
 # ── OTA 产物（sysupdate 版本枚举源）──
-# 版本化 tar.zst（70-root.transfer 的 Source MatchPattern）+ 版本化 UKI
+# 版本化 tar.xz（70-root.transfer 的 Source MatchPattern）+ 版本化 UKI
 # （80-uki.transfer 的 Source MatchPattern）
-ROOT_TAR_FILE="${OUTPUT_DIR}/${IMAGE_ID}_${VER}.tar.zst"
+ROOT_TAR_FILE="${OUTPUT_DIR}/${IMAGE_ID}_${VER}.tar.xz"
 UKI_FILE="${OUTPUT_DIR}/${IMAGE_ID}_${VER}.efi"
-info "导出 OTA 工件（${IMAGE_ID}_${VER}.tar.zst + ${IMAGE_ID}_${VER}.efi）..."
+info "导出 OTA 工件（${IMAGE_ID}_${VER}.tar.xz + ${IMAGE_ID}_${VER}.efi）..."
 uki_latest="$(ls -t "${WORK_DIR}"/${IMAGE_ID}*.efi | head -1)"
 cp -f "${uki_latest}" "${UKI_FILE}"
 BUILD_ARTIFACTS+=("${ROOT_TAR_FILE}" "${UKI_FILE}")
@@ -560,7 +564,7 @@ if [[ "${RUN_TEST}" != "none" ]]; then
 fi
 
 # ── 发布清单 ──
-# sysupdate 版本枚举源 = tar.zst + 版本化 UKI（SHA256SUMS 为 url-tar 源的
+# sysupdate 版本枚举源 = tar.xz + 版本化 UKI（SHA256SUMS 为 url-tar 源的
 # 完整性校验契约：下载 payload 无条件对清单校验，Verify= 只管清单签名）；
 # 工厂全盘 img(.xz) 仅供 dd 部署，不入清单
 ( cd "${OUTPUT_DIR}" && sha256sum \

@@ -97,7 +97,7 @@ stage_v2_install() {
     # sysupdate/ota-select）
     ota_fabricate_uki 2 "" "${FAB_DIR}/${IMAGE_ID}_2.efi"
     ota_serve_version 2 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.xz" \
         "${FAB_DIR}/${IMAGE_ID}_2.efi"
     local result
     result="$(ota_run_update)"
@@ -136,16 +136,16 @@ stage_v2_boot() {
 
 stage_v3_exhaust() {
     echo "== stage: v3 引导级坏版本（tar 内 init 清空）→ tries 耗尽 → 回退 =="
-    # 损坏注入：解包工厂 tar.zst → 清空 /usr/lib/systemd/systemd → 重打包。
+    # 损坏注入：解包工厂 tar.xz → 清空 /usr/lib/systemd/systemd → 重打包。
     # SHA256SUMS 由 ota_serve_version 重签（损坏在内容不在安装）；init 为空
     # 文件 → switch_root exec 失败 → 引导必败。契约不绑定失败阶段
     #（switch_root 失败 / kernel panic 均为合法形态）
     ota_fabricate_uki 3 "" "${FAB_DIR}/${IMAGE_ID}_3.efi"
     ota_fabricate_corrupt_tar 3 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
-        "${FAB_DIR}/${IMAGE_ID}_3.tar.zst"
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.xz" \
+        "${FAB_DIR}/${IMAGE_ID}_3.tar.xz"
     ota_serve_version 3 \
-        "${FAB_DIR}/${IMAGE_ID}_3.tar.zst" \
+        "${FAB_DIR}/${IMAGE_ID}_3.tar.xz" \
         "${FAB_DIR}/${IMAGE_ID}_3.efi"
     local result
     result="$(ota_run_update)"
@@ -170,7 +170,7 @@ stage_v4_exhaust() {
     # journal+console）
     ota_fabricate_uki 4 "systemd.mask=landscape-router.service" "${FAB_DIR}/${IMAGE_ID}_4.efi"
     ota_serve_version 4 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.xz" \
         "${FAB_DIR}/${IMAGE_ID}_4.efi"
     local result
     result="$(ota_run_update)"
@@ -205,7 +205,7 @@ stage_v5_enospc() {
     # 操作：更新写入 ENOSPC → 无害半状态（失败可重试）
     ota_fabricate_uki 5 "" "${FAB_DIR}/${IMAGE_ID}_5.efi"
     ota_serve_version 5 \
-        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst" \
+        "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.xz" \
         "${FAB_DIR}/${IMAGE_ID}_5.efi"
     local result
     result="$(ota_run_update)"
@@ -322,10 +322,10 @@ preflight() {
 
     V1="$(sed -n 's/^image_version=//p' "${PROJECT_DIR}/output/metadata/build-metadata.txt" | tr -d '[:space:]')"
     [[ -n "${V1}" ]] || { error "build-metadata.txt 缺少 image_version"; exit 2; }
-    local v1_tar="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.zst"
+    local v1_tar="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.xz"
     local v1_uki="${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.efi"
     [[ -f "${v1_tar}" && -f "${v1_uki}" ]] || {
-        error "缺少 OTA 原料工件（${v1_tar} / ${v1_uki}）；CI 需将 *.tar.zst/*.efi 纳入构建 artifact"
+        error "缺少 OTA 原料工件（${v1_tar} / ${v1_uki}）；CI 需将 *.tar.xz/*.efi 纳入构建 artifact"
         exit 2
     }
 

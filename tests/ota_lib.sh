@@ -224,7 +224,7 @@ EOF
         --output="${out}"
 }
 
-# 引导级坏版本载荷：解包工厂 tar.zst → 清空部署内 init（/usr/lib/systemd/
+# 引导级坏版本载荷：解包工厂 tar.xz → 清空部署内 init（/usr/lib/systemd/
 # systemd，/sbin/init 的目标）→ 重打包。安装侧 SHA256SUMS 由
 # ota_serve_version 重新生成（损坏在内容、不在安装——安装必然成功，
 # 引导必然失败，等价于旧管线的"EROFS 截断保留超级块"注入）
@@ -232,21 +232,21 @@ ota_fabricate_corrupt_tar() {
     local ver="$1" src="$2" out="$3"
     local d="${FAB_DIR}/corrupt-${ver}"
     rm -rf "${d}" && mkdir -p "${d}"
-    tar --zstd -xf "${src}" -C "${d}"
+    tar --xz -xf "${src}" -C "${d}"
     [[ -x "${d}/usr/lib/systemd/systemd" ]] || { error "工厂 tar 无 /usr/lib/systemd/systemd（载荷异常）"; return 1; }
     : > "${d}/usr/lib/systemd/systemd"
-    tar --zstd -cf "${out}" -C "${d}" .
+    tar --xz -cf "${out}" -C "${d}" .
 }
 
 ota_serve_version() {
     local ver="$1" tar_src="$2" uki_file="$3"
     rm -rf "${OTA_SERVE_DIR}"
     mkdir -p "${OTA_SERVE_DIR}"
-    # tar.zst 直接分发（sysupdate url-tar 源；与工厂 OTA 资产同格式）
-    cp -f "${tar_src}" "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.tar.zst"
+    # tar.xz 直接分发（sysupdate url-tar 源；与工厂 OTA 资产同格式）
+    cp -f "${tar_src}" "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.tar.xz"
     cp -f "${uki_file}" "${OTA_SERVE_DIR}/${IMAGE_ID}_${ver}.efi"
     ( cd "${OTA_SERVE_DIR}" && sha256sum \
-        "${IMAGE_ID}_${ver}.tar.zst" "${IMAGE_ID}_${ver}.efi" > SHA256SUMS )
+        "${IMAGE_ID}_${ver}.tar.xz" "${IMAGE_ID}_${ver}.efi" > SHA256SUMS )
 }
 
 # 注入测试 override 到 /etc/sysupdate.d/（产品覆盖机制：/etc 优先于 /usr/lib）。
@@ -265,7 +265,7 @@ Verify=no
 [Source]
 Type=url-tar
 Path=${url}
-MatchPattern=${IMAGE_ID}_@v.tar.zst
+MatchPattern=${IMAGE_ID}_@v.tar.xz
 
 [Target]
 Type=subvolume

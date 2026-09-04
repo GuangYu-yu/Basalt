@@ -4,8 +4,8 @@
 工件：
   initrd  mkosi 拆分产物（经 extract_pe_section 从 UKI 拆出的合并 initrd，
           build.sh 收集到 output/）；此处零抽取逻辑，只做解码与断言
-  root    pass1 Format=tar 产出的 OTA 根载荷 basalt_<v>.tar.zst（可选参数，
-          缺省跳过 ROOT 断言；zstandard 流式解压 + tar 名录，无需挂载权限）
+  root    pass1 Format=tar 产出的 OTA 根载荷 basalt_<v>.tar.xz（可选参数，
+          缺省跳过 ROOT 断言；xz 流式解压 + tar 名录，无需挂载权限）
 
 三态契约（与 mkosi.conf 的 KernelInitrdModules=/KernelModules= 对应；此处是
 验证端）：forbidden 前缀与 allowed-retained 由本脚本从 mkosi.conf 自动派生
@@ -268,29 +268,27 @@ def check_artifact(label: str, modules: set[str], forbidden: list[str],
 
 def root_tar_modules(root_tar: Path, forbidden: tuple[str, ...]
                      ) -> tuple[set[str], list[str], set[str]]:
-    """读取 OTA 根载荷 tar.zst 的模块名录（usr/lib/modules）。
+    """读取 OTA 根载荷 tar.xz 的模块名录（usr/lib/modules）。
 
     mkosi make_tar 为 GNU tar PAX 格式（--acls --selinux --xattrs），条目名
-    带 "./" 前缀。zstandard 流式解压 + tarfile 名录，无需挂载/FUSE 权限。
+    带 "./" 前缀。lzma 流式解压（stdlib）+ tarfile 名录，无需挂载/FUSE 权限。
     返回（模块名集, 违例路径, 全部 usr/lib/modules 路径集）。
     """
     paths: set[str] = set()
     builtin: set[str] = set()
-    with open(root_tar, "rb") as f:
-        with zstandard.ZstdDecompressor().stream_reader(f) as zfh:
-            with tarfile.open(fileobj=zfh, mode="r|") as tf:
-                for member in tf:
-                    name = member.name.lstrip("./")
-                    if "usr/lib/modules/" not in f"/{name}":
-                        continue
-                    paths.add(name)
-                    if member.name.rsplit("/", 1)[-1] == "modules.builtin":
-                        extract = tf.extractfile(member)
-                        if extract is not None:
-                            for line in extract.read().decode(
-                                    "utf-8", errors="replace").splitlines():
-                                if line.strip():
-                                    builtin.add(modname(line.strip()))
+    with tarfile.open(root_tar, mode="r|xz") as tf:
+        for member in tf:
+            name = member.name.lstrip("./")
+            if "usr/lib/modules/" not in f"/{name}":
+                continue
+            paths.add(name)
+            if member.name.rsplit("/", 1)[-1] == "modules.builtin":
+                extract = tf.extractfile(member)
+                if extract is not None:
+                    for line in extract.read().decode(
+                            "utf-8", errors="replace").splitlines():
+                        if line.strip():
+                            builtin.add(modname(line.strip()))
     modules, violations = modules_from_paths(paths, builtin, forbidden)
     return modules, violations, paths
 
@@ -362,7 +360,7 @@ def main() -> int:
     rc = check(blob, initrd_forbidden, initrd_retained)
 
     if len(sys.argv) > 2:
-        # ROOT 工件（pass1 Format=tar 的 OTA 根载荷 tar.zst）
+        # ROOT 工件（pass1 Format=tar 的 OTA 根载荷 tar.xz）
         root_modules, root_violations, root_paths = \
             root_tar_modules(Path(sys.argv[2]), root_forbidden)
         missing = check_artifact("root(tar)", root_modules,

@@ -4,6 +4,8 @@
 enable landscape-router.service
 enable basalt-state-init.service
 enable basalt-deployments-readonly.service
+# OTA 前置不变量：pool btrfs quota（见 unit 内注释）
+enable basalt-pool-quota.service
 enable ssh.service
 enable networking.service
 enable chrony.service

@@ -8,7 +8,7 @@
 #
 # 发布物（= 设备 OTA 源，Source = releases/latest/download/）：
 #   basalt.img.xz / basalt-docker.img.xz   工厂/dd 部署镜像（无 docker/docker 变体）
-#   basalt_<v>.tar.zst / basalt_<v>.efi    版本化 OTA 资产（设备 MatchPattern 同名：
+#   basalt_<v>.tar.xz / basalt_<v>.efi    版本化 OTA 资产（设备 MatchPattern 同名：
 #                                          70-root url-tar / 80-uki url-file）
 #   SHA256SUMS                              单一清单——sysupdate 源的版本枚举端点
 #                                          （GET Path/SHA256SUMS）
@@ -139,7 +139,7 @@ jobs:
           name: ${{ needs.build_docker.outputs.image_artifact }}
           path: artifacts/docker/
 
-      - name: 下载 OTA 资产（版本化 tar.zst 根载荷 + UKI）
+      - name: 下载 OTA 资产（版本化 tar.xz 根载荷 + UKI）
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build_no_docker.outputs.image_artifact }}-ota
@@ -152,15 +152,15 @@ jobs:
           # 双变体工厂镜像（重命名消歧——发布物名不可冲突）
           cp artifacts/no-docker/basalt.img.xz release/basalt.img.xz
           cp artifacts/docker/basalt.img.xz   release/basalt-docker.img.xz
-          # 版本化 OTA 资产（设备侧 MatchPattern 同名：basalt_<v>.tar.zst/.efi，
-          # tar.zst 由构建直接产出，无二次压缩）
-          cp artifacts/ota/basalt_${IMAGE_VERSION}.tar.zst release/
+          # 版本化 OTA 资产（设备侧 MatchPattern 同名：basalt_<v>.tar.xz/.efi，
+          # tar.xz 由构建直接产出，无二次压缩）
+          cp artifacts/ota/basalt_${IMAGE_VERSION}.tar.xz release/
           cp artifacts/ota/basalt_${IMAGE_VERSION}.efi      release/
 
           # 单一 SHA256SUMS：sysupdate 源的版本枚举端点——必须列出
           # 版本化资产（@v 解析来源）与全部发布物
           ( cd release && sha256sum \
-              basalt_${IMAGE_VERSION}.tar.zst \
+              basalt_${IMAGE_VERSION}.tar.xz \
               basalt_${IMAGE_VERSION}.efi \
               basalt.img.xz basalt-docker.img.xz > SHA256SUMS )
           cat release/SHA256SUMS
@@ -180,7 +180,7 @@ jobs:
           files: |
             release/basalt.img.xz
             release/basalt-docker.img.xz
-            release/basalt_${{ env.IMAGE_VERSION }}.tar.zst
+            release/basalt_${{ env.IMAGE_VERSION }}.tar.xz
             release/basalt_${{ env.IMAGE_VERSION }}.efi
             release/SHA256SUMS
 
