@@ -4,3 +4,11 @@
 # 分区级增长由 initrd 内 systemd-repart（92-var-grow.conf Weight=100）每次
 # boot 承载，不再于此重复调用。
 btrfs filesystem resize max /var
+
+# quota 启用（幂等，per-filesystem 持久标志，启后不再进入此分支开销）：
+# sysupdate url-tar → subvolume 目标会为临时部署子卷建立默认 qgroup 层级，
+# 内核 6.12+ 对 quota 关闭的 btrfs 的 qgroup ioctl 返回 -ENOTCONN，而
+# systemd-pull 仅容忍 -ENOTTY → 更新硬失败（首次 OTA 即触发）。machinectl
+# 对 /var/lib/machines 池同款前置（machine-pool.c）。失败时 sysupdate 必然
+# 同因失败，无需在此阻断
+btrfs quota enable /var/lib/basalt/pool
