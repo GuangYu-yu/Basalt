@@ -86,12 +86,6 @@ ota_wait_booted() {
     wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "Router" "${SSH_TIMEOUT}"
 }
 
-ota_reboot_guest() {
-    guest_run "systemctl reboot" || true
-    sleep 5
-    ota_wait_booted
-}
-
 # ── 断言 ──
 
 ota_check() {

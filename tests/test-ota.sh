@@ -111,7 +111,11 @@ stage_v2_install() {
 
 stage_v2_boot() {
     echo "== stage: v2 引导 + bless =="
-    ota_reboot_guest
+    # 硬复位承载（warm reboot 实测串口输出丢失——v2 boot 曾因此零观察面）；
+    # 断电安全：安装侧 sync 已由 ota_assert_pair_landed 保证。OneShot EFI 变量
+    # 随 QEMU 终止丢失，但 v2 为最高版本且带 tries，systemd-boot 默认排序仍选 v2
+    ota_hard_reset
+    ota_wait_booted
     ota_check "v2 cmdline 子卷绑定" \
         guest_run "grep -q 'subvol=root-basalt-2' /proc/cmdline"
     ota_check "根为 btrfs 部署子卷（FSTYPE + FSROOT）" \
