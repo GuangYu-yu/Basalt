@@ -122,8 +122,9 @@ jobs:
 
       - name: 构建构建容器
         # 构建流程容器化：依赖清单封装进 Dockerfile（与 build.sh require
-        # 断言同构），宿主仅保留 QEMU 测试栈
-        timeout-minutes: 15
+        # 断言同构），宿主仅保留 QEMU 测试栈。30min：apt 拉包瞬时抖动实测
+        # 超 15min 硬超时（无缓存冷启动偶发）
+        timeout-minutes: 30
         run: docker build -t basalt-builder:${{ github.sha }} .
 
       - name: 配置预检
