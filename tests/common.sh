@@ -874,6 +874,11 @@ landscape_router_stop_vm() {
             wait "${LANDSCAPE_ROUTER_PID}" 2>/dev/null || true
         fi
     fi
+
+    # passt 与 VM 同生命周期：硬复位轮次若不回收，旧实例占着 hostfwd 端口
+    # （3222/2222 Address already in use）和 unix socket，新实例绑定失败，
+    # bootstrap 连到 tap 对端已死的僵尸 passt 上空等超时
+    landscape_passt_stop_all
 }
 
 landscape_router_cleanup() {
