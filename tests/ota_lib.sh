@@ -354,11 +354,17 @@ ota_serve_version() {
 ota_inject_sysupdate_overrides() {
     local url="http://10.0.2.2:${OTA_SERVER_PORT}/"
     local root_b64 uki_b64
+    # ProtectVersion 用字面运行版本而非 %A：v3 更新实证删掉了"受保护"的
+    # 运行部署 root-basalt-2 却保留 root-basalt-1（emergency-dump 池账目）——
+    # %A 在 ProtectVersion= 上下文疑似不展开（空/字面量 → 无保护 → 裁剪
+    # 选中运行版本）。字面版本 = 注入时刻的运行版本（OTA_RUNNING_VER），
+    # 单变量实验：若 v2 不再被删即实锤 %A 失效（设备侧模板同样用 %A，坐实
+    # 则真机 OTA 亦会误删运行版本——需产品级修复决策）
     # 设备侧定义的本地镜像（URL + 显式 Verify=no：测试无 GPG 签名链路，
     # 排除发行版 Verify= 默认值差异的干扰）
     root_b64="$(base64 -w0 <<EOF
 [Transfer]
-ProtectVersion=%A
+ProtectVersion=${OTA_RUNNING_VER}
 Verify=no
 
 [Source]
@@ -375,7 +381,7 @@ EOF
 )"
     uki_b64="$(base64 -w0 <<EOF
 [Transfer]
-ProtectVersion=%A
+ProtectVersion=${OTA_RUNNING_VER}
 Verify=no
 
 [Source]

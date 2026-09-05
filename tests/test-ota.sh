@@ -133,9 +133,11 @@ stage_v2_boot() {
         test "$(guest_run "cat /etc/machine-id")" = "${OTA_V1_MACHINE_ID}"
     ota_check "SSH host key 跨版本不变（v1 → v2）" \
         test "$(guest_run "sha256sum /var/lib/basalt/state/ssh/ssh_host_ed25519_key.pub" | awk '{print $1}')" = "${OTA_V1_SSH_KEY_HASH}"
+    OTA_RUNNING_VER=2
     # /etc 随部署子卷版本化——v1 内注入的 sysupdate override 不随版本切换
     # 存活（旧 overlay 时代"注入一次跨重启有效"的前提已失效）。后续 v3/v4/v5
-    # 更新均发起于 v2，此处重注入（内容幂等）
+    # 更新均发起于 v2，此处重注入（ProtectVersion=字面运行版本，须先置
+    # OTA_RUNNING_VER=2 再注入）
     ota_inject_sysupdate_overrides
     # 更新过程串口可见化：sysupdate 输出默认只进 journal，SSH 死亡时（实测
     # v3 安装期 SSH 死 30 分钟、串口全静默）guest 内部不可观测。tee 到 console
@@ -146,7 +148,6 @@ stage_v2_boot() {
     # QEMU monitor sendkey 触发 SysRq-w/t 任务转储到串口——挂死调用点的
     # 决定性取证（D 状态任务 + 内核栈，不依赖任何 guest 网络）
     guest_run "echo 1 > /proc/sys/kernel/sysrq"
-    OTA_RUNNING_VER=2
 }
 
 # ── Stage 3：引导级坏版本 → tries 耗尽 → 回退 ──
