@@ -182,6 +182,10 @@ ota_wait_booted() {
     # slirp 不模拟真实互联网，NTP 属纯噪声；产品功能保留（真实设备 WAN 有
     # 真实上游）。首个 SSH 可达窗口即 mask，赶在 ~4min 死亡窗之前
     guest_run "systemctl mask --now chrony.service chronyd.service 2>/dev/null" || true
+    # journal 持久化兜底（tmpfiles 种子在 journald 启动后创建 → 需重启
+    # journald 才启用持久模式）：冻结 boot 的 sysupdate debug 日志靠它跨
+    # 硬复位存活，是"受保护部署为何被删"的决定性证据
+    guest_run "mkdir -p /var/log/journal && systemctl restart systemd-journald" || true
     wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "Router" "${SSH_TIMEOUT}"
 }
 
