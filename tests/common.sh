@@ -737,21 +737,22 @@ landscape_router_start_vm() {
     # 网络后端：passt 时每 netdev 一个实例（socket 在临时目录，QEMU 以
     # stream netdev 连接）。wan 保留 slirp 语义：guest WAN 地址 10.0.2.15
     # （DHCP 下发）、网关 10.0.2.2 → OTA_BASE_URL 等地址契约不变；
-    # bootstrap hostfwd（3222→guest 22）经 --map-host-tcp 异端口映射。
+    # bootstrap hostfwd（3222→guest 22）经 --tcp-ports 异端口映射。
     # mgmt：地址 = 注入目标 192.168.99.10（bootstrap 经 WAN 注入前 passt
     # 即以此为目标地址投递）；lan：镜像 10.0.2.0/24 DHCP 段。
     local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan,hostfwd=tcp::$(landscape_bootstrap_ssh_port)-:22}"
     local lan_netdev="${ROUTER_LAN_NETDEV:-user,id=lan}"
     if [[ "$(landscape_net_backend)" == "passt" ]]; then
+        # DHCP 默认开启（无 --dhcp 选项，conf.c 仅提供 --no-dhcp 关闭）；
         # -t host_port:guest_port = 异端口映射（conf.c conf_ports：
         # orig_range:mapped_range 语法，源码级核对）
-        landscape_passt_start wan --dhcp \
+        landscape_passt_start wan \
             --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 \
             --tcp-ports "$(landscape_bootstrap_ssh_port)":22 || return 1
         landscape_passt_start mgmt --no-dhcp \
             --address "${LANDSCAPE_MGMT_GUEST_IP}" --netmask 255.255.255.0 \
             --gateway 192.168.99.1 --tcp-ports "${SSH_PORT}":22 || return 1
-        landscape_passt_start lan --dhcp \
+        landscape_passt_start lan \
             --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 || return 1
         wan_netdev="stream,id=wan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-wan.sock"
         lan_netdev="stream,id=lan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-lan.sock"
