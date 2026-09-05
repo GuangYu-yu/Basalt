@@ -32,11 +32,11 @@ on:
         type: choice
         options: ['false', 'true']
       net_backend:
-        description: "测试网络后端：slirp（默认）/ passt（slirp 非确定性网络死亡的稳定出口）"
+        description: "测试网络后端：passt（默认，稳定性实测优于 slirp）/ slirp（回退用）"
         required: false
-        default: "slirp"
+        default: "passt"
         type: choice
-        options: ['slirp', 'passt']
+        options: ['passt', 'slirp']
   pull_request:
     branches: [main]
     paths:

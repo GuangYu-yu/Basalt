@@ -44,10 +44,10 @@ on:
         type: boolean
         default: false
       net_backend:
-        description: "测试网络后端：slirp（默认）/ passt（slirp 存在非确定性网络死亡时的稳定出口）"
+        description: "测试网络后端：passt（默认）/ slirp（回退用）"
         required: false
         type: string
-        default: "slirp"
+        default: "passt"
     outputs:
       image_artifact:
         description: "镜像产物 artifact 名"

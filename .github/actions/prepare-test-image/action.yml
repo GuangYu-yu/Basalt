@@ -43,8 +43,7 @@ runs:
         # 缺包时 ukify 报 FileNotFoundError（与 build.sh 宿主侧校验同源）
         sudo apt-get install -y sshpass socat curl jq \
           qemu-system-x86 ovmf qemu-utils \
-          systemd-ukify systemd-boot-efi binutils xz-utils zstd \
-          passt
+          systemd-ukify systemd-boot-efi binutils xz-utils zstd
 
     - name: 安装网络后端依赖（passt 固定 commit 源码构建层）
       shell: bash
