@@ -126,31 +126,30 @@ ota_sendkey_enter() {
     sleep 0.5
 }
 
-# emergency shell 探针：登录（initrd RootPassword，mkosi.images/initrd 注入）
-# → 挂 ESP → 枚举 UKI 清单 + bootctl 条目状态。失败 boot 的引导条目账目
-# （哪个 UKI 在列/谁是 default）由此直接实锤。输出全落串口，尾部增量回读
+# 控制台探针：SSH 失联时的 guest 交互取证（monitor sendkey，唯一不依赖
+# guest 网络的通道）。盲打序列按"真实根 getty 登录"形态设计（健康 boot 但
+# 网络死——实测网络路径死亡独立于 sysupdate），登录后执行网络态 + journal
+# 取证；initrd emergency 形态下前两行退化为失败登录尝试（该形态的账目由
+# emergency-dump ExecStartPre 钩子确定性承载），输出全落串口，尾部增量回读
 ota_emergency_probe() {
-    echo "[INFO] emergency shell 取证（sendkey 注入，串口承载输出）" >&2
+    echo "[INFO] console 取证（sendkey 注入，串口承载输出）" >&2
     local offset
     offset="$(ota_serial_offset)"
-    ota_sendkey_enter          # "Press Enter to continue"
+    ota_sendkey_enter          # 可能的 "Press Enter to continue"
     sleep 3
+    ota_sendkey_type "root"
+    ota_sendkey_enter
+    sleep 2
     ota_sendkey_type "${SSH_PASSWORD:-landscape}"
     ota_sendkey_enter
     sleep 3
-    ota_sendkey_type "mount /dev/vda1 /mnt"
+    ota_sendkey_type "ip -brief addr; ip -brief link; ip route"
     ota_sendkey_enter
-    sleep 2
-    ota_sendkey_type "ls /mnt/EFI/Linux"
+    sleep 4
+    ota_sendkey_type "journalctl --no-pager -n 120"
     ota_sendkey_enter
-    sleep 2
-    ota_sendkey_type "bootctl --esp-path=/mnt list"
-    ota_sendkey_enter
-    sleep 8
-    ota_sendkey_type "btrfs subvolume list /run/basalt-pool-tmp 2>/dev/null; mount -o subvolid=5 /dev/vda2 /mnt 2>/dev/null; ls /mnt"
-    ota_sendkey_enter
-    sleep 5
-    echo "=== [forensics] 串口增量（emergency probe）===" >&2
+    sleep 10
+    echo "=== [forensics] 串口增量（console probe）===" >&2
     tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | head -c 131072 >&2 || true
     echo "" >&2
 }

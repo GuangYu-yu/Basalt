@@ -727,6 +727,11 @@ landscape_router_bootstrap_mgmt() {
     done
 
     error "Bootstrap SSH never became reachable on port ${boot_port}"
+    # 终局复跑一次不吞输出：失败原因（认证/连接/命令级，如 "Cannot find
+    # device eth2"）直接进 CI 日志——实测网络路径死亡形态与 sysupdate 无关
+    #（首轮 boot 即复现），需命令级错误定位
+    "${boot_ssh[@]}" \
+        "ip addr replace ${LANDSCAPE_MGMT_GUEST_IP}/24 dev eth2 && ip link set eth2 up" || true
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "${label} serial log"
     return 1
 }
