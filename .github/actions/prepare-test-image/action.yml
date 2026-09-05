@@ -45,3 +45,18 @@ runs:
           qemu-system-x86 ovmf qemu-utils \
           systemd-ukify systemd-boot-efi binutils xz-utils zstd \
           passt
+
+    - name: 升级 passt（net_backend=passt 依赖 --map-host-tcp，noble 包过旧）
+      shell: bash
+      run: |
+        set -euo pipefail
+        # noble 的 passt 无 --map-host-tcp（bootstrap 3222→22 异端口映射硬依赖），
+        # 优先替换为 passt.top 官方静态构建；不可达时保留 apt 版本（后端能力
+        # 探测会自动回退 slirp，不阻塞测试）
+        if curl -fsSL --max-time 90 https://passt.top/static/build/latest/x86_64/passt -o /tmp/passt-bin; then
+          sudo install -m 0755 /tmp/passt-bin /usr/local/bin/passt
+        else
+          echo "passt.top 静态构建不可达，保留 apt 版本"
+        fi
+        passt --version 2>&1 | head -n1 || true
+        passt --help 2>&1 | grep -o -- '--map-host-tcp' || echo "NO --map-host-tcp（将回退 slirp）"
