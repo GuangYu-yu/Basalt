@@ -445,38 +445,35 @@ ota_run_update() {
 # ── tries 耗尽引擎（boot counting 回退契约）──
 
 ota_stage_exhaust() {
-    # 契约：恰好 OTA_TRIES 次"真坏版本 boot"后 boot counting 回退。控制流不
-    # 依赖串口（实测签名落点波动 225~430s，会丢/迟到）：每轮硬复位 → 等待
-    # 签名（纯取证，窗口覆盖健康门真实失败预算）→ bootstrap + SSH 探测 →
-    # bad 态文件在列 = 真回退。轮次上限 = OTA_TRIES+1 精确覆盖：OTA_TRIES
-    # 次失败 boot + 1 次回退 boot（try 在固件选条目时消耗，与等待无关）。
+    # 契约：恰好 OTA_TRIES 次"真坏版本 boot"后 boot counting 回退。
+    # try 在固件选条目时消耗（UKI 文件名 +N 递减，确定性、与观察无关）；
+    # 串口签名仅取证——健康门落点受 TCG 时钟滞后影响（实测 800s 窗口仍会
+    # 漏检：guest t=230s 的签名被推迟到窗口外），控制流若依赖签名计数会与
+    # 固件 try 记账脱节（实测 v4 轮 4 已是回退 boot 而引擎仍按坏 boot 对待）。
+    # 轮次推进：轮 1..OTA_TRIES = 坏版本 boot（等签名纯取证）；轮 OTA_TRIES+1
+    # 无条件按回退 boot 处理——直接 bootstrap + bad 态文件断言收敛，不等签名
+    # （健康 boot 无失败签名，等满窗口纯浪费且拉长 SSH 前的空闲期）。
     local ver="$1" settle="$2" pattern="$3"
-    local round sig=0 converged=0
+    local round sig=0
     for round in $(seq 1 $((OTA_TRIES + 1))); do
         echo "---- 硬复位轮次 ${round}（v${ver} 失败 boot 收敛，sig=${sig}）----"
         ota_hard_reset
-        local offset
-        offset="$(ota_serial_offset)"
-        if ota_serial_wait_evidence "${pattern}" "${settle}" "${offset}"; then
-            sig=$((sig + 1))
-            if [[ ${sig} -ge ${OTA_TRIES} ]]; then
-                ota_hard_reset   # 第 OTA_TRIES+1 次启动：tries 耗尽 → 旧版本
-                converged=1
-                break
+        if (( round <= OTA_TRIES )); then
+            local offset
+            offset="$(ota_serial_offset)"
+            if ota_serial_wait_evidence "${pattern}" "${settle}" "${offset}"; then
+                sig=$((sig + 1))
             fi
-            continue
-        fi
-        # 无签名：SSH 探测。**必须先 bootstrap**——eth2 的 IP 是运行时注入
-        # （/etc/network/interfaces 无此配置），重启即失；跳过 bootstrap 的
-        # 裸 SSH 探测对健康回退 boot 也必失败（实测导致引擎永不收敛）。
-        # v4（mask）下 bootstrap 180s 超时（预算内）；v2 回退 boot ~60s 成功。
-        if landscape_router_bootstrap_mgmt "Router" && setup_ssh; then
-            if guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
-                converged=1   # bad 态在列 = OTA_TRIES 次已消耗，本 boot 即回退
-                break
+        else
+            # 回退 boot：**必须先 bootstrap**——eth2 的 IP 是运行时注入
+            # （/etc/network/interfaces 无此配置），重启即失。bootstrap 达成 =
+            # 回退 boot 网络健康；bad 态文件在列 = OTA_TRIES 次消耗的物证。
+            if landscape_router_bootstrap_mgmt "Router" && setup_ssh && \
+               guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi" 2>/dev/null; then
+                echo "[INFO] v${ver} tries 耗尽 → 回退 boot 收敛（bad 态在列）"
+                return 0
             fi
         fi
     done
-    [[ ${converged} -eq 1 ]] && return 0
     return 1
 }
