@@ -256,7 +256,10 @@ stage_v5_enospc() {
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 
     # 操作：释放空间 → 重试；契约：成功 + 成对落盘
-    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-probe /run/ota-fill-done; sync; sleep 3"
+    # sync 有界（guest 侧 10s < SSH 15s 上限）：ENOSPC 边缘的 btrfs 事务提交
+    # 可能长时间挂起（实测 sync 卡死 → SSH 被 15s timeout 击杀 → rc=124 终止
+    # 测试）；空间释放在 rm 后事务提交天然可见，sync 仅加速，失败不影响重试
+    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
     result="$(ota_run_update)"
     ota_check "空间恢复后更新重试成功" test "${result}" = "success"
     ota_assert_pair_landed 5
