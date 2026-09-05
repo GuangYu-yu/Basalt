@@ -51,14 +51,14 @@ runs:
       run: |
         set -euo pipefail
         # noble 的 passt (2024.02) 无 --map-host-tcp（bootstrap 3222→22 异端口
-        # 映射硬依赖）。pin Debian trixie 的 2025.05 版：该版已含 --map-host-tcp
-        # 且早于最新版的 pesto 化改造（最新版已移除 -t/--map-host-tcp 静态转发）。
-        # 下载失败时保留 apt 版本（后端能力探测自动回退 slirp，不阻塞测试）
+        # 映射硬依赖）。固定 Debian 官方 pool 的 trixie 2025.05 版（版本 +
+        # SHA256 双锁定；该版早于最新版的 pesto 化改造）。校验失败即失败，
+        # 不静默换源；后端能力探测在测试内自动回退 slirp
         passt_deb="passt_0.0~git20250503.587980c-2+deb13u1_amd64.deb"
-        if curl -fsSL --max-time 90 "http://deb.debian.org/debian/pool/main/p/passt/${passt_deb}" -o "/tmp/${passt_deb}"; then
-          sudo apt-get install -y "/tmp/${passt_deb}"
-        else
-          echo "Debian passt deb 不可达，保留 apt 版本"
-        fi
-        passt --version 2>&1 | head -n1 || true
+        passt_url="http://deb.debian.org/debian/pool/main/p/passt/${passt_deb}"
+        passt_sha256="dfbca023b20c84a3345e36bbbe182c18bf262583d31386fc7e3050a708850f0d"
+        curl -fsSL --max-time 120 "${passt_url}" -o "/tmp/${passt_deb}"
+        echo "${passt_sha256}  /tmp/${passt_deb}" | sha256sum -c -
+        sudo apt-get install -y "/tmp/${passt_deb}"
+        passt --version 2>&1 | head -n1
         passt --help 2>&1 | grep -o -- '--map-host-tcp' || echo "NO --map-host-tcp（将回退 slirp）"
