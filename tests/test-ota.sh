@@ -231,11 +231,11 @@ stage_v4_exhaust() {
 # ── Stage 5：@data 塞满（ENOSPC 半状态可恢复）──
 
 stage_v5_enospc() {
-    echo "== stage: @data 塞满 → ENOSPC 半状态 → 清理重试 =="
-    # 填满 /var（@data；btrfs 单一空间池与部署子卷共享 → 更新写入同样 ENOSPC）。
+    echo "== stage: @data 塞满 → 盘下更新 → 清理恢复 =="
+    # 填满 /var（@data；btrfs 单一空间池与部署子卷共享 → 更新写入同样受挤压）。
     # 两段填充：64M 大块先塞，1M 小块收尾——大块分配失败即退出会残留至多
-    # 64M 空闲（叠加 btrfs 全零高压缩与异步回收时序，1M 探测是否 ENOSPC 变
-    # 成抽签，实测偶发"命令意外成功"），1M 收尾把残留压到分配粒度以下
+    # 64M 空闲（叠加 btrfs 全零高压缩与异步回收时序，1M dd 探测是否 ENOSPC
+    # 变成抽签，实测偶发"命令意外成功"），1M 收尾把残留压到分配粒度以下
     guest_run "nohup sh -c 'dd if=/dev/zero of=/var/lib/basalt-ota-fill bs=64M; dd if=/dev/zero of=/var/lib/basalt-ota-fill2 bs=1M; echo done > /run/ota-fill-done' >/dev/null 2>&1 &" || true
     wait_for_guest_command "磁盘填满" 900 10 \
         guest_run "test -f /run/ota-fill-done"
@@ -244,45 +244,57 @@ stage_v5_enospc() {
     ota_check "塞满后系统存活（SSH）" guest_run "echo ok"
     ota_check "塞满后 API 在线" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
-    # 盘满判定用 df（确定性）而非 dd 探测（受压缩比与异步回收时序影响，
-    # 实测抽签）："写入会 ENOSPC" 由随后 sysupdate 的 ENOSPC 失败实证
+    # 盘满判定用 df（确定性）
     ota_check "盘满状态（@data 剩余 < 64M）" \
         guest_run "test \"\$(df -B1M --output=avail /var | tail -n1 | tr -d ' ')\" -lt 64"
 
-    # 操作：更新写入 ENOSPC → 无害半状态（失败可重试）
+    # 操作：盘满下更新。sysupdate 内建 vacuum 先清理非保护旧版本（InstancesMax=2
+    # + ProtectVersion=运行版本）——实测两种合法结果：腾够 → 更新直接成功
+    # （root-basalt-3/4 被清、v5 成对落盘）；腾挪与解包的空间回收时序竞争 →
+    # ENOSPC 失败留半状态（另一次实测失败在 transfer 84%）。契约锚定在
+    # "盘下更新链路最终一致"：系统存活、API 在线、v5 成对落盘
     ota_fabricate_uki 5 "" "${FAB_DIR}/${IMAGE_ID}_5.efi"
     ota_serve_version 5 \
         "${PROJECT_DIR}/output/${IMAGE_ID}_${V1}.tar.xz" \
         "${FAB_DIR}/${IMAGE_ID}_5.efi"
     local result
     result="$(ota_run_update)"
-    ota_check "盘满时 sysupdate 失败（ENOSPC 半状态）" test "${result}" != "success"
-    ota_check "失败后半状态不伤运行（API 在线）" \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
-
-    # 操作：释放空间 → 重试；契约：成功 + 成对落盘
-    # sync 有界（guest 侧 10s < SSH 15s 上限）：ENOSPC 边缘的 btrfs 事务提交
-    # 可能长时间挂起（实测 sync 卡死 → SSH 被 15s timeout 击杀 → rc=124 终止
-    # 测试）；空间释放在 rm 后事务提交天然可见，sync 仅加速，失败不影响重试
-    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
-    result="$(ota_run_update)"
-    ota_check "空间恢复后更新重试成功" test "${result}" = "success"
+    if [[ "${result}" != "success" ]]; then
+        echo "[INFO] 盘满下更新失败（ENOSPC 半状态路径）"
+        ota_check "失败后半状态不伤运行（API 在线）" \
+            guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+        # 释放空间 → 重试；契约：成功 + 成对落盘
+        # sync 有界（guest 侧 10s < SSH 15s 上限）：ENOSPC 边缘的 btrfs 事务
+        # 提交可能长时间挂起（实测 sync 卡死 → SSH 被 15s timeout 击杀 →
+        # rc=124 终止测试）；空间释放在 rm 后事务提交天然可见
+        guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
+        result="$(ota_run_update)"
+        ota_check "空间恢复后更新重试成功" test "${result}" = "success"
+    else
+        echo "[INFO] 盘满下 vacuum 腾出旧版本空间 → 更新直接成功（合法路径）"
+    fi
     ota_assert_pair_landed 5
+    # 裁剪契约：sysupdate 安装期自动 vacuum 清理非保护旧版本（实测 v1/v3/v4
+    # 被清），受保护运行版本 v2 永在
+    ota_check "安装期自动裁剪非保护旧版本（v1/v3/v4 已清）" \
+        guest_run "test ! -e /var/lib/basalt/pool/root-basalt-1 -a ! -e /var/lib/basalt/pool/root-basalt-3 -a ! -e /var/lib/basalt/pool/root-basalt-4"
+    ota_check "受保护运行版本保留（root-basalt-2）" \
+        guest_run "test -e /var/lib/basalt/pool/root-basalt-2"
+    # 释放填充空间（后续 vacuum/rescue 阶段需要正常空间）
+    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
+    ota_check "盘满恢复后 API 在线" \
+        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 }
 
 # ── Stage 6：vacuum（破坏性，收尾）──
 
 stage_vacuum() {
     echo "== stage: vacuum（裁剪保留深度 + ProtectVersion）=="
-    # 前置状态：自然形成的多版本——运行版本 v2（受 ProtectVersion=%A 保护）；
-    # 非保护：v1（工厂）、v3/v4（bad 态）、v5（candidate）。不再 seed 人工
-    # 版本（旧流程 vacuum 先行 + seed 5 版本，已弃——破坏性操作应消费前面
-    # 自然形成的状态）
+    # 前置状态：v5 安装期 sysupdate 自动 vacuum 已清理非保护旧版本
+    # （实测 v1/v3/v4 被清），池 = 运行版本 v2（受 ProtectVersion 保护）+ v5。
+    # 不再 seed 人工版本（旧流程 vacuum 先行 + seed 5 版本，已弃）
     ota_check "前置：运行版本仍为 v2" \
         guest_run "grep -q 'subvol=root-basalt-2' /proc/cmdline"
-    local before n_before
-    before="$(guest_run "ls /var/lib/basalt/pool" 2>/dev/null || true)"
-    n_before="$(grep -c "^root-basalt-[0-9][0-9]*\$" <<<"${before}" || true)"
 
     # 操作：vacuum（池顶层挂载 rw，无属性窗口——旧 @images 机制已废弃；
     # systemd-sysupdate bin 不在 PATH，全路径调用）
@@ -291,14 +303,13 @@ stage_vacuum() {
         return 1
     fi
 
-    # 后置契约：发生裁剪 + 受保护版本（运行版本）永在 + 深度 ≤ InstancesMax+1
-    # + rescue UKI 不动
+    # 后置契约：受保护版本（运行版本）永在 + 深度 ≤ InstancesMax+1 + rescue UKI
+    # 不动。裁剪行为已在 v5 安装期实证（sysupdate 内建自动 vacuum 清理非保护
+    # 旧版本），手动 vacuum 此时池账目 ≤ 上限，no-op 是预期语义
     local after ukis n_after
     after="$(guest_run "ls /var/lib/basalt/pool" 2>/dev/null || true)"
     ukis="$(guest_run "ls /efi/EFI/Linux" 2>/dev/null || true)"
     n_after="$(grep -c "^root-basalt-[0-9][0-9]*\$" <<<"${after}" || true)"
-    ota_check "vacuum 发生裁剪（部署子卷 n=${n_before} → ${n_after}）" \
-        test "${n_after}" -lt "${n_before}"
     ota_check "受保护版本部署存在（运行版本 v${OTA_RUNNING_VER}）" \
         grep -q "^root-basalt-${OTA_RUNNING_VER}\$" <<<"${after}"
     ota_check "部署实例数 ≤ InstancesMax+1（保护版本可额外保留）" \
