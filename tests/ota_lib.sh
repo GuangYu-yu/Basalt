@@ -177,6 +177,11 @@ ota_wait_booted() {
         return 1
     fi
     setup_ssh
+    # 测试网络噪声消除：chronyd 的外部 NTP UDP 流经 slirp 持续堆积映射
+    # （info usernet 实测 16 条 4 池服务器映射，网络路径死亡时刻强关联）。
+    # slirp 不模拟真实互联网，NTP 属纯噪声；产品功能保留（真实设备 WAN 有
+    # 真实上游）。首个 SSH 可达窗口即 mask，赶在 ~4min 死亡窗之前
+    guest_run "systemctl mask --now chrony.service chronyd.service 2>/dev/null" || true
     wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "Router" "${SSH_TIMEOUT}"
 }
 
