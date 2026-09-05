@@ -5,10 +5,14 @@
 # 决策边界：本脚本只写 tests/tools/passt/bin/（项目本地），不安装进系统，
 # 不改动任何产品镜像内容。
 #
-# 流程：本机 passt 已具备 --map-host-tcp → 直接使用；
-#       否则下载 version 锁定的 commit 源码包 → sha256 校验 → 源码构建 →
-#       安装到 tests/tools/passt/bin/。
+# 流程：bin/ 已有可用二进制 → 直接使用；否则下载 version 锁定的 commit 源码
+# 包 → sha256 校验 → 源码构建 → 安装到 tests/tools/passt/bin/。
 # 消费方：tests/common.sh 的 landscape_passt_bin()（优先项目本地二进制）。
+#
+# commit 选择依据：587980c = Debian trixie 2025.05 版同源。该版 -t/--tcp-ports
+# 支持异端口映射语法（conf.c conf_ports：orig_range:mapped_range），满足
+# bootstrap 3222→22 / mgmt 2222→22 的重映射需求。最新版（2026.07+）已进入
+# pesto 化改造、用法变更，不采用。
 # =============================================================================
 set -euo pipefail
 
@@ -17,19 +21,8 @@ COMMIT="$(cat "${TOOL_DIR}/version")"
 EXPECTED_SHA256="$(cat "${TOOL_DIR}/sha256")"
 BIN="${TOOL_DIR}/bin/passt"
 
-capability() { "$1" --help 2>&1 | grep -q -- '--map-host-tcp'; }
-
-# commit 选择依据：--map-host-tcp 于 2024.05 引入、2026 版移除（pesto 化），
-# 587980c = Debian trixie 2025.05 版（二者之间，含该选项；与 Debian pool
-# 的 passt_0.0~git20250503.587980c 同源）
-
-if [[ -x "${BIN}" ]] && capability "${BIN}"; then
+if [[ -x "${BIN}" ]]; then
     echo "[OK] 项目本地 passt 已就绪：${BIN}"
-    exit 0
-fi
-
-if command -v passt >/dev/null 2>&1 && capability "$(command -v passt)"; then
-    echo "[OK] 系统 passt 已具备 --map-host-tcp，使用系统版本"
     exit 0
 fi
 
@@ -46,5 +39,5 @@ mkdir -p "${TOOL_DIR}/bin"
 install -m 0755 "${src}/passt" "${BIN}"
 rm -rf "${src}"
 
-capability "${BIN}" || { echo "[ERROR] 构建产物仍无 --map-host-tcp" >&2; exit 1; }
+"${BIN}" --version >/dev/null 2>&1 || { echo "[ERROR] 构建产物不可执行" >&2; exit 1; }
 echo "[OK] passt 构建完成：${BIN}"

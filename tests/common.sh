@@ -504,28 +504,22 @@ LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-2147
 LANDSCAPE_TEST_NET="${LANDSCAPE_TEST_NET:-slirp}"
 LANDSCAPE_PASST_PIDS=()
 
-# passt 二进制解析：项目本地（依赖层构建产物）优先，系统版本兜底
+# passt 二进制解析：项目本地（依赖层构建产物）优先；缺失时回退 slirp
+#（系统 passt 无异端口映射能力，不作为 passt 后端的替代二进制）
 landscape_passt_bin() {
     if [[ -x "${PROJECT_DIR}/tests/tools/passt/bin/passt" ]]; then
         echo "${PROJECT_DIR}/tests/tools/passt/bin/passt"
     else
-        echo "passt"
+        echo ""
     fi
 }
 
-# 实际生效的后端：passt 二进制需存在且支持 --map-host-tcp（bootstrap 端口
-# 3222→22 的异端口映射依赖它），任一不满足回退 slirp 并告警
+# 实际生效的后端：passt 后端要求依赖层二进制已构建（bootstrap 端口
+# 3222→22 的异端口映射由其 -t orig:mapped 语法承载），缺失回退 slirp
 landscape_net_backend() {
     [[ "${LANDSCAPE_TEST_NET}" == "passt" ]] || { echo slirp; return; }
-    local bin
-    bin="$(landscape_passt_bin)"
-    if ! command -v "${bin}" >/dev/null 2>&1; then
-        warn "passt 二进制不可用（${bin}），回退 slirp"
-        echo slirp
-        return
-    fi
-    if ! "${bin}" --help 2>&1 | grep -q -- '--map-host-tcp'; then
-        warn "passt 不支持 --map-host-tcp（${bin}），回退 slirp"
+    if [[ -z "$(landscape_passt_bin)" ]]; then
+        warn "passt 依赖层二进制未构建（tests/tools/passt/install.sh），回退 slirp"
         echo slirp
         return
     fi
@@ -533,12 +527,12 @@ landscape_net_backend() {
 }
 
 # 启动一个 passt 实例（每 netdev 一个）。socket 落测试临时目录，PID 入全局
-# 数组由 cleanup 回收。socket 文件就绪轮询（passt 启动早于 QEMU 连接）
+# 数组由 cleanup 统一回收。socket 文件就绪轮询（passt 启动早于 QEMU 连接）
 landscape_passt_start() {
     local id="$1"
     shift
     local sock="${LANDSCAPE_ROUTER_TEMP_DIR}/passt-${id}.sock"
-    info "Starting passt (${id}, $(landscape_passt_bin))..."
+    info "Starting passt (${id})..."
     "$(landscape_passt_bin)" --socket "${sock}" --foreground "$@" &
     LANDSCAPE_PASST_PIDS+=($!)
     local i=0
@@ -749,12 +743,14 @@ landscape_router_start_vm() {
     local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan,hostfwd=tcp::$(landscape_bootstrap_ssh_port)-:22}"
     local lan_netdev="${ROUTER_LAN_NETDEV:-user,id=lan}"
     if [[ "$(landscape_net_backend)" == "passt" ]]; then
+        # -t host_port:guest_port = 异端口映射（conf.c conf_ports：
+        # orig_range:mapped_range 语法，源码级核对）
         landscape_passt_start wan --dhcp \
             --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 \
-            --map-host-tcp "$(landscape_bootstrap_ssh_port)":22 || return 1
+            --tcp-ports "$(landscape_bootstrap_ssh_port)":22 || return 1
         landscape_passt_start mgmt --no-dhcp \
             --address "${LANDSCAPE_MGMT_GUEST_IP}" --netmask 255.255.255.0 \
-            --gateway 192.168.99.1 --map-host-tcp "${SSH_PORT}":22 || return 1
+            --gateway 192.168.99.1 --tcp-ports "${SSH_PORT}":22 || return 1
         landscape_passt_start lan --dhcp \
             --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 || return 1
         wan_netdev="stream,id=wan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-wan.sock"
