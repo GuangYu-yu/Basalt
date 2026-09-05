@@ -21,6 +21,17 @@ COMMIT="$(cat "${TOOL_DIR}/version")"
 EXPECTED_SHA256="$(cat "${TOOL_DIR}/sha256")"
 BIN="${TOOL_DIR}/bin/passt"
 
+# 环境准备：自建二进制无发行版 AppArmor profile（usr.bin.passt），Ubuntu 23.10+
+# 默认限制非特权 userns 时，passt 沙箱 unshare 会 EPERM 退出
+# （isolation.c isolate_prefork "Failed to detach isolating namespaces"）。
+# CI runner 有免密 sudo，关闭限制仅 runner 内生效；profile 受权环境自动跳过。
+# 每次调用都执行（bin/ 就绪早退路径同样需要）。
+restrict_file="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+if [[ -r "${restrict_file}" && "$(cat "${restrict_file}")" == "1" ]]; then
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null
+    echo "[OK] 已放开非特权 userns 限制（passt 沙箱 unshare 前提）"
+fi
+
 if [[ -x "${BIN}" ]]; then
     echo "[OK] 项目本地 passt 已就绪：${BIN}"
     exit 0
