@@ -19,6 +19,10 @@ BIN="${TOOL_DIR}/bin/passt"
 
 capability() { "$1" --help 2>&1 | grep -q -- '--map-host-tcp'; }
 
+# commit 选择依据：--map-host-tcp 于 2024.05 引入、2026 版移除（pesto 化），
+# 587980c = Debian trixie 2025.05 版（二者之间，含该选项；与 Debian pool
+# 的 passt_0.0~git20250503.587980c 同源）
+
 if [[ -x "${BIN}" ]] && capability "${BIN}"; then
     echo "[OK] 项目本地 passt 已就绪：${BIN}"
     exit 0
