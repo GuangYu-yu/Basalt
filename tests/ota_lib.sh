@@ -95,6 +95,64 @@ ota_sysrq_hang_dump() {
     echo "" >&2
 }
 
+# ── emergency shell 取证（SSH 死亡且 guest 停在 initrd emergency 时）──
+
+# sendkey 打字机：US 布局逐键注入。小写/数字直发；大写 shift 组合；
+# 符号按需映射。用于 emergency shell 命令输入（唯一不依赖 guest 网络的
+# guest 交互通道）
+ota_sendkey_type() {
+    local s="$1" c i
+    for (( i=0; i<${#s}; i++ )); do
+        c="${s:i:1}"
+        case "$c" in
+            [a-z0-9]) ota_monitor_cmd "sendkey $c" ;;
+            [A-Z])    ota_monitor_cmd "sendkey shift-${c,,}" ;;
+            /)        ota_monitor_cmd "sendkey slash" ;;
+            -)        ota_monitor_cmd "sendkey minus" ;;
+            _)        ota_monitor_cmd "sendkey shift-minus" ;;
+            .)        ota_monitor_cmd "sendkey dot" ;;
+            ' ')      ota_monitor_cmd "sendkey spc" ;;
+            =)        ota_monitor_cmd "sendkey equal" ;;
+            *)        ota_monitor_cmd "sendkey $c" ;;
+        esac
+        sleep 0.2
+    done
+}
+
+ota_sendkey_enter() {
+    ota_monitor_cmd "sendkey ret"
+    sleep 0.5
+}
+
+# emergency shell 探针：登录（initrd RootPassword，mkosi.images/initrd 注入）
+# → 挂 ESP → 枚举 UKI 清单 + bootctl 条目状态。失败 boot 的引导条目账目
+# （哪个 UKI 在列/谁是 default）由此直接实锤。输出全落串口，尾部增量回读
+ota_emergency_probe() {
+    echo "[INFO] emergency shell 取证（sendkey 注入，串口承载输出）" >&2
+    local offset
+    offset="$(ota_serial_offset)"
+    ota_sendkey_enter          # "Press Enter to continue"
+    sleep 3
+    ota_sendkey_type "${SSH_PASSWORD:-landscape}"
+    ota_sendkey_enter
+    sleep 3
+    ota_sendkey_type "mount /dev/vda1 /mnt"
+    ota_sendkey_enter
+    sleep 2
+    ota_sendkey_type "ls /mnt/EFI/Linux"
+    ota_sendkey_enter
+    sleep 2
+    ota_sendkey_type "bootctl --esp-path=/mnt list"
+    ota_sendkey_enter
+    sleep 8
+    ota_sendkey_type "btrfs subvolume list /run/basalt-pool-tmp 2>/dev/null; mount -o subvolid=5 /dev/vda2 /mnt 2>/dev/null; ls /mnt"
+    ota_sendkey_enter
+    sleep 5
+    echo "=== [forensics] 串口增量（emergency probe）===" >&2
+    tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | head -c 131072 >&2 || true
+    echo "" >&2
+}
+
 # ── VM 生命周期 ──
 
 ota_start_vm() {
@@ -111,7 +169,12 @@ ota_hard_reset() {
 
 ota_wait_booted() {
     # guest（重）启动后：bootstrap 口注入 eth2 → 主 SSH（mgmt 口）可用
-    landscape_router_bootstrap_mgmt "Router"
+    if ! landscape_router_bootstrap_mgmt "Router"; then
+        # bootstrap 失败 = guest 未达可网络管理态（initrd emergency 等早期
+        # 冻结形态）——emergency shell 探针直接实锤引导条目账目
+        ota_emergency_probe
+        return 1
+    fi
     setup_ssh
     wait_for_guest_ssh "${LANDSCAPE_ROUTER_PID}" "${LANDSCAPE_ROUTER_SERIAL_LOG}" "Router" "${SSH_TIMEOUT}"
 }
