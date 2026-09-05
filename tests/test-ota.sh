@@ -141,7 +141,7 @@ stage_v2_boot() {
     # v3 安装期 SSH 死 30 分钟、串口全静默）guest 内部不可观测。tee 到 console
     # 后串口承载下载/解包/裁剪旧版本全程 + 死亡时刻的最后输出（测试侧取证，
     # 不改产品默认行为）。/etc 属 v2，存活至 rescue 前的全部更新阶段
-    guest_run "mkdir -p /etc/systemd/system/systemd-sysupdate.service.d && printf '[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n' > /etc/systemd/system/systemd-sysupdate.service.d/10-console-tee.conf && systemctl daemon-reload"
+    guest_run "mkdir -p /etc/systemd/system/systemd-sysupdate.service.d && printf '[Service]\nEnvironment=SYSTEMD_LOG_LEVEL=debug\nStandardOutput=journal+console\nStandardError=journal+console\n' > /etc/systemd/system/systemd-sysupdate.service.d/10-console-tee.conf && systemctl daemon-reload"
     # 解锁全部 SysRq（Debian 默认掩码 438 不含 64=任务转储）：SSH 死亡时经
     # QEMU monitor sendkey 触发 SysRq-w/t 任务转储到串口——挂死调用点的
     # 决定性取证（D 状态任务 + 内核栈，不依赖任何 guest 网络）
@@ -153,14 +153,12 @@ stage_v2_boot() {
 
 stage_v3_exhaust() {
     echo "== stage: v3 引导级坏版本（tar 内 init 清空）→ tries 耗尽 → 回退 =="
-    # 外科实验：把「sysupdate 启动时的旧版本裁剪」（InstancesMax=2 → 删除 ro
-    # 的 root-basalt-1）从 sysupdate 内部剥离，手动执行同一操作定位冻结点：
-    #   - 删除即冻结 → 根因 = ro 子卷删除 + quota(qgroup 清理)
-    #   - 删除成功   → 冻结在 sysupdate 枚举/拉取路径（排除裁剪变量）
-    # 对后续状态机的影响：vacuum 断言消费自然形成的多版本状态（v2 + bad 态
-    # v3/v4 + v5 candidate），n_before > n_after 契约不受 v1 提前离场影响
-    ota_check "实验：手动删除 ro 旧部署 root-basalt-1（隔离 sysupdate 裁剪路径）" \
-        guest_run "btrfs subvolume delete /var/lib/basalt/pool/root-basalt-1"
+    # 冻结诊断轮：产品路径原样执行（不绕行 InstancesMax 裁剪——手动删除绕行
+    # 曾使 update 成功，已实锤冻结在 sysupdate 内部裁剪路径）。本轮目的 =
+    # 抓冻结前最后操作：SYSTEMD_LOG_LEVEL=debug 经 console-tee 直达串口 +
+    # journal 持久化于 /var（@data），冻结 → 硬复位 → 回退 boot 健康后经
+    # journalctl -b -1 读上一 boot 的完整 debug 日志（strace 需给产品根树加
+    # 包且冻结时刷盘不保证，journal 是更可靠的等价取证）
     # 损坏注入：解包工厂 tar.xz → 清空 /usr/lib/systemd/systemd → 重打包。
     # SHA256SUMS 由 ota_serve_version 重签（损坏在内容不在安装）；init 为空
     # 文件 → switch_root exec 失败 → 引导必败。契约不绑定失败阶段
@@ -174,6 +172,20 @@ stage_v3_exhaust() {
         "${FAB_DIR}/${IMAGE_ID}_3.efi"
     local result
     result="$(ota_run_update)"
+    if [[ "${result}" == "ssh-lost" ]]; then
+        # 冻结复现（update 内部裁剪路径）：硬复位 → 回退 boot 健康（v1 完整
+        # 在场，无悬空 UKI）→ 经 SSH 读冻结 boot 的持久化 journal（@data）
+        echo "[INFO] 冻结复现：硬复位恢复后读冻结 boot 的 journal 取证"
+        ota_hard_reset
+        ota_wait_booted || { echo "[FAIL] 恢复 boot 未达 SSH" >&2; return 1; }
+        echo "=== [forensics] 冻结 boot journal（sysupdate debug，-b -1）===" >&2
+        guest_run "journalctl -b -1 --no-pager -n 400 2>/dev/null | grep -iE 'sysupdate|pull|btrfs|sigkill|freeze' || echo 'journal 上一 boot 无匹配（journald 未持久化？）'" >&2 || true
+        echo "=== [forensics] 冻结 boot 全 journal 尾部 ===" >&2
+        guest_run "journalctl -b -1 --no-pager -n 60 2>/dev/null || true" >&2 || true
+        guest_run "sync" || true
+        echo "[FAIL] 诊断轮：sysupdate 裁剪路径冻结（取证已收集，见上）" >&2
+        return 1
+    fi
     ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
     ota_assert_pair_landed 3
 
