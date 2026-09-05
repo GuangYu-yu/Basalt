@@ -232,8 +232,11 @@ stage_v4_exhaust() {
 
 stage_v5_enospc() {
     echo "== stage: @data 塞满 → ENOSPC 半状态 → 清理重试 =="
-    # 填满 /var（@data；btrfs 单一空间池与部署子卷共享 → 更新写入同样 ENOSPC）
-    guest_run "nohup sh -c 'dd if=/dev/zero of=/var/lib/basalt-ota-fill bs=64M; echo done > /run/ota-fill-done' >/dev/null 2>&1 &" || true
+    # 填满 /var（@data；btrfs 单一空间池与部署子卷共享 → 更新写入同样 ENOSPC）。
+    # 两段填充：64M 大块先塞，1M 小块收尾——大块分配失败即退出会残留至多
+    # 64M 空闲（叠加 btrfs 全零高压缩与异步回收时序，1M 探测是否 ENOSPC 变
+    # 成抽签，实测偶发"命令意外成功"），1M 收尾把残留压到分配粒度以下
+    guest_run "nohup sh -c 'dd if=/dev/zero of=/var/lib/basalt-ota-fill bs=64M; dd if=/dev/zero of=/var/lib/basalt-ota-fill2 bs=1M; echo done > /run/ota-fill-done' >/dev/null 2>&1 &" || true
     wait_for_guest_command "磁盘填满" 900 10 \
         guest_run "test -f /run/ota-fill-done"
 
@@ -241,8 +244,10 @@ stage_v5_enospc() {
     ota_check "塞满后系统存活（SSH）" guest_run "echo ok"
     ota_check "塞满后 API 在线" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
-    ota_check_fails "盘满探测（@data 写入 ENOSPC）" \
-        guest_run "dd if=/dev/zero of=/var/lib/basalt-ota-probe bs=1M count=1"
+    # 盘满判定用 df（确定性）而非 dd 探测（受压缩比与异步回收时序影响，
+    # 实测抽签）："写入会 ENOSPC" 由随后 sysupdate 的 ENOSPC 失败实证
+    ota_check "盘满状态（@data 剩余 < 64M）" \
+        guest_run "test \"\$(df -B1M --output=avail /var | tail -n1 | tr -d ' ')\" -lt 64"
 
     # 操作：更新写入 ENOSPC → 无害半状态（失败可重试）
     ota_fabricate_uki 5 "" "${FAB_DIR}/${IMAGE_ID}_5.efi"
@@ -259,7 +264,7 @@ stage_v5_enospc() {
     # sync 有界（guest 侧 10s < SSH 15s 上限）：ENOSPC 边缘的 btrfs 事务提交
     # 可能长时间挂起（实测 sync 卡死 → SSH 被 15s timeout 击杀 → rc=124 终止
     # 测试）；空间释放在 rm 后事务提交天然可见，sync 仅加速，失败不影响重试
-    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
+    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
     result="$(ota_run_update)"
     ota_check "空间恢复后更新重试成功" test "${result}" = "success"
     ota_assert_pair_landed 5
