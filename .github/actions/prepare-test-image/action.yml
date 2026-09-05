@@ -50,13 +50,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # noble 的 passt 无 --map-host-tcp（bootstrap 3222→22 异端口映射硬依赖），
-        # 优先替换为 passt.top 官方静态构建；不可达时保留 apt 版本（后端能力
-        # 探测会自动回退 slirp，不阻塞测试）
-        if curl -fsSL --max-time 90 https://passt.top/builds/latest/x86_64/passt -o /tmp/passt-bin; then
-          sudo install -m 0755 /tmp/passt-bin /usr/local/bin/passt
+        # noble 的 passt (2024.02) 无 --map-host-tcp（bootstrap 3222→22 异端口
+        # 映射硬依赖）。pin Debian trixie 的 2025.05 版：该版已含 --map-host-tcp
+        # 且早于最新版的 pesto 化改造（最新版已移除 -t/--map-host-tcp 静态转发）。
+        # 下载失败时保留 apt 版本（后端能力探测自动回退 slirp，不阻塞测试）
+        passt_deb="passt_0.0~git20250503.587980c-2+deb13u1_amd64.deb"
+        if curl -fsSL --max-time 90 "http://deb.debian.org/debian/pool/main/p/passt/${passt_deb}" -o "/tmp/${passt_deb}"; then
+          sudo apt-get install -y "/tmp/${passt_deb}"
         else
-          echo "passt.top 静态构建不可达，保留 apt 版本"
+          echo "Debian passt deb 不可达，保留 apt 版本"
         fi
         passt --version 2>&1 | head -n1 || true
         passt --help 2>&1 | grep -o -- '--map-host-tcp' || echo "NO --map-host-tcp（将回退 slirp）"
