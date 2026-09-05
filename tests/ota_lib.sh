@@ -352,7 +352,7 @@ ota_serve_version() {
 # 内容与设备侧模板同构，仅两处测试性差异：Verify=no（无签名链路）+ 本地源
 # URL。InstancesMax=2/TriesLeft=3 为架构常量（与设备侧模板同值）
 ota_inject_sysupdate_overrides() {
-    local url="http://10.0.2.2:${OTA_SERVER_PORT}/"
+    local url="http://$(landscape_ota_guest_host):${OTA_SERVER_PORT}/"
     local root_b64 uki_b64
     # ProtectVersion 用字面运行版本而非 %A：v3 更新实证删掉了"受保护"的
     # 运行部署 root-basalt-2 却保留 root-basalt-1（emergency-dump 池账目）——

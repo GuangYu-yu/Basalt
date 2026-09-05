@@ -14,7 +14,7 @@ on:
         type: choice
         options: ['false', 'true']
       run_test:
-        description: "测试选择：none / readiness / readiness,dataplane / readiness,ota / ota"
+        description: "测试选择：none / readiness / readiness,dataplane / readiness,ota / ota / netstress"
         required: false
         default: "readiness"
       landscape_version:
@@ -31,6 +31,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      net_backend:
+        description: "测试网络后端：slirp（默认）/ passt（slirp 非确定性网络死亡的稳定出口）"
+        required: false
+        default: "slirp"
+        type: choice
+        options: ['slirp', 'passt']
   pull_request:
     branches: [main]
     paths:
@@ -57,3 +63,4 @@ jobs:
       landscape_version: ${{ inputs.landscape_version || '' }}
       root_password: ${{ inputs.root_password || 'landscape' }}
       diag_cmdline: ${{ inputs.diag_cmdline == 'true' }}
+      net_backend: ${{ inputs.net_backend || 'slirp' }}

@@ -43,4 +43,5 @@ runs:
         # 缺包时 ukify 报 FileNotFoundError（与 build.sh 宿主侧校验同源）
         sudo apt-get install -y sshpass socat curl jq \
           qemu-system-x86 ovmf qemu-utils \
-          systemd-ukify systemd-boot-efi binutils xz-utils zstd
+          systemd-ukify systemd-boot-efi binutils xz-utils zstd \
+          passt

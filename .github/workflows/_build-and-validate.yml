@@ -43,6 +43,11 @@ on:
         required: false
         type: boolean
         default: false
+      net_backend:
+        description: "测试网络后端：slirp（默认）/ passt（slirp 存在非确定性网络死亡时的稳定出口）"
+        required: false
+        type: string
+        default: "slirp"
     outputs:
       image_artifact:
         description: "镜像产物 artifact 名"
@@ -104,6 +109,9 @@ jobs:
             ota)
               # OTA 矩阵内含初始就绪检查，独立跑不附加 readiness job
               run_ota=true ;;
+            netstress)
+              # 网络后端压力 POC（passt A/B 验证）：独立 job，互斥其他测试
+              run_netstress=true ;;
             *) echo "不支持的 run_test 值: $requested" >&2; exit 1 ;;
           esac
           # 三开关统一显式兜底：set -u 下未赋值分支直接报错而非静默空
@@ -112,6 +120,7 @@ jobs:
             echo "run_readiness=${run_readiness:-false}"
             echo "run_dataplane=${run_dataplane:-false}"
             echo "run_ota=${run_ota:-false}"
+            echo "run_netstress=${run_netstress:-false}"
           } >> "$GITHUB_OUTPUT"
 
       - name: 缓存 APT 包下载
@@ -267,6 +276,7 @@ jobs:
           SSH_TIMEOUT: '120'
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ env.INCLUDE_DOCKER }}
           LANDSCAPE_TEST_RUN_TEST: readiness
+          LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
         run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
 
       - name: 上传就绪检查日志片段
@@ -343,6 +353,7 @@ jobs:
         env:
           SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
           SSH_TIMEOUT: '180'
+          LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
         run: timeout --foreground 80m ./tests/test-ota.sh "${IMAGE_PATH}"
 
       - name: 上传 OTA 测试日志片段
@@ -350,6 +361,43 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.build_image.outputs.log_artifact }}-ota
+          path: ${{ env.TEST_LOG_DIR }}/
+          retention-days: 7
+
+  test_netstress:
+    name: 网络后端压力 POC
+    needs: build_image
+    if: ${{ needs.build_image.outputs.run_netstress == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载镜像构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.image_artifact }}
+          path: output/
+
+      - name: 准备测试镜像
+        timeout-minutes: 15
+        uses: ./.github/actions/prepare-test-image
+
+      - name: 运行网络压力 POC
+        env:
+          SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
+          SSH_TIMEOUT: '180'
+          LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
+          ITERATIONS: '6'
+          DWELL: '300'
+        run: timeout --foreground 80m ./tests/test-net-stress.sh "${IMAGE_PATH}"
+
+      - name: 上传网络压力日志片段
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.build_image.outputs.log_artifact }}-netstress
           path: ${{ env.TEST_LOG_DIR }}/
           retention-days: 7
 

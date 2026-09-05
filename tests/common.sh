@@ -492,6 +492,61 @@ LANDSCAPE_TEST_NAME="${LANDSCAPE_TEST_NAME:-test}"
 # truncate 稀疏扩展 = 模拟更大的部署盘，GPT 备份头由 systemd-repart 迁移到新盘尾
 LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-2147483648}"
 
+# ── 测试网络后端（slirp | passt）──
+# passt = QEMU 官方 slirp 替代（out-of-process、rootless、独立于 QEMU 进程）。
+# 实测 slirp 存在非确定性网络路径死亡（guest 健康、sshd 在列、TCP hostfwd
+# 在列但新建连接不通，info usernet 可见 UDP 映射堆积；~4min guest uptime
+# 起，随机命中任意测试阶段）——passt 为稳定性出口，slirp 保留为 fallback。
+# passt 实例按 netdev 一一对应（wan/lan/mgmt 各一个独立 L2，socket 均在
+# 测试临时目录），进程 PID 记录于 LANDSCAPE_PASST_PIDS，cleanup 统一回收。
+LANDSCAPE_TEST_NET="${LANDSCAPE_TEST_NET:-slirp}"
+LANDSCAPE_PASST_PIDS=()
+
+# 实际生效的后端：passt 需二进制存在且支持 --map-host-tcp（bootstrap 端口
+# 3222→guest 22 的异端口映射依赖它），任一不满足回退 slirp 并告警
+landscape_net_backend() {
+    [[ "${LANDSCAPE_TEST_NET}" == "passt" ]] || { echo slirp; return; }
+    if ! command -v passt >/dev/null 2>&1; then
+        warn "LANDSCAPE_TEST_NET=passt 但 passt 未安装，回退 slirp"
+        echo slirp
+        return
+    fi
+    if ! passt --help 2>&1 | grep -q -- '--map-host-tcp'; then
+        warn "passt 不支持 --map-host-tcp（$(passt --version 2>&1 | head -n1)），回退 slirp"
+        echo slirp
+        return
+    fi
+    echo passt
+}
+
+# 启动一个 passt 实例（每 netdev 一个）。socket 落测试临时目录，PID 入全局
+# 数组由 cleanup 回收。socket 文件就绪轮询（passt 启动早于 QEMU 连接）
+landscape_passt_start() {
+    local id="$1"
+    shift
+    local sock="${LANDSCAPE_ROUTER_TEMP_DIR}/passt-${id}.sock"
+    info "Starting passt (${id})..."
+    passt --socket "${sock}" --foreground "$@" &
+    LANDSCAPE_PASST_PIDS+=($!)
+    local i=0
+    while [[ ! -S "${sock}" && ${i} -lt 50 ]]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
+    if [[ ! -S "${sock}" ]]; then
+        error "passt (${id}) socket 未创建（参数或环境问题，见上方输出）"
+        return 1
+    fi
+}
+
+landscape_passt_stop_all() {
+    local p
+    for p in "${LANDSCAPE_PASST_PIDS[@]:-}"; do
+        [[ -n "${p}" ]] && kill "${p}" 2>/dev/null || true
+    done
+    LANDSCAPE_PASST_PIDS=()
+}
+
 landscape_expand_raw_image() {
     local image_path="$1"
     local expand_bytes="$2"
@@ -599,11 +654,29 @@ landscape_bootstrap_ssh_port() {
     echo $(( ${SSH_PORT:-${LANDSCAPE_DEFAULT_SSH_PORT}} + 1000 ))
 }
 
+# guest 侧访问宿主服务的地址（本地 OTA 源等）：
+#   slirp → 10.0.2.2（内建网关别名，直通宿主端口）
+#   passt → 宿主主地址（passt 模型：guest 流量以宿主身份出网，网关即宿主；
+#           宿主服务监听 0.0.0.0 → 经网关地址可达）
+landscape_ota_guest_host() {
+    if [[ "$(landscape_net_backend)" == "passt" ]]; then
+        ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1
+    else
+        echo "10.0.2.2"
+    fi
+}
+
 landscape_mgmt_netdev() {
     # 仅 SSH hostfwd：测试全部经 guest 内 curl 访问 API（guest_run），
-    # 宿主侧无 web 端口消费方
-    printf 'user,id=mgmt,net=%s,hostfwd=tcp::%s-%s:22' \
-        "${LANDSCAPE_MGMT_SUBNET}" "${SSH_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}"
+    # 宿主侧无 web 端口消费方。passt：socket 由 landscape_router_start_vm
+    # 启动的 mgmt passt 实例提供（本函数仅回 QEMU 侧 stream netdev）
+    if [[ "$(landscape_net_backend)" == "passt" ]]; then
+        printf 'stream,id=mgmt,server=off,addr.type=unix,addr.path=%s/passt-mgmt.sock' \
+            "${LANDSCAPE_ROUTER_TEMP_DIR}"
+    else
+        printf 'user,id=mgmt,net=%s,hostfwd=tcp::%s-%s:22' \
+            "${LANDSCAPE_MGMT_SUBNET}" "${SSH_PORT}" "${LANDSCAPE_MGMT_GUEST_IP}"
+    fi
 }
 
 landscape_router_start_vm() {
@@ -653,6 +726,36 @@ landscape_router_start_vm() {
 
     local kvm_args=()
     read -r -a kvm_args <<< "$(detect_kvm)"
+
+    # 网络后端：passt 时每 netdev 一个实例（socket 在临时目录，QEMU 以
+    # stream netdev 连接）。wan 保留 slirp 语义：guest WAN 地址 10.0.2.15
+    # （DHCP 下发）、网关 10.0.2.2 → OTA_BASE_URL 等地址契约不变；
+    # bootstrap hostfwd（3222→guest 22）经 --map-host-tcp 异端口映射。
+    # mgmt：地址 = 注入目标 192.168.99.10（bootstrap 经 WAN 注入前 passt
+    # 即以此为目标地址投递）；lan：镜像 10.0.2.0/24 DHCP 段。
+    local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan,hostfwd=tcp::$(landscape_bootstrap_ssh_port)-:22}"
+    local lan_netdev="${ROUTER_LAN_NETDEV:-user,id=lan}"
+    if [[ "$(landscape_net_backend)" == "passt" ]]; then
+        landscape_passt_start wan --dhcp \
+            --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 \
+            --map-host-tcp "$(landscape_bootstrap_ssh_port)":22 || return 1
+        landscape_passt_start mgmt --no-dhcp \
+            --address "${LANDSCAPE_MGMT_GUEST_IP}" --netmask 255.255.255.0 \
+            --gateway 192.168.99.1 --map-host-tcp "${SSH_PORT}":22 || return 1
+        landscape_passt_start lan --dhcp \
+            --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 || return 1
+        wan_netdev="stream,id=wan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-wan.sock"
+        lan_netdev="stream,id=lan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-lan.sock"
+        info "Network backend: passt (3 instances: wan/mgmt/lan)"
+    else
+        info "Network backend: slirp"
+    fi
+    local wan_device_opts="${ROUTER_WAN_DEVICE_OPTS:-}"
+    local lan_device_opts="${ROUTER_LAN_DEVICE_OPTS:-}"
+    local mgmt_device_opts="${ROUTER_MGMT_DEVICE_OPTS:-}"
+    local qemu_mem="${QEMU_MEM:-1024}"
+    local qemu_smp="${QEMU_SMP:-2}"
+    local qemu_label="${ROUTER_LABEL:-Router}"
 
     local ovmf=""
     local bios_args=()
@@ -765,6 +868,7 @@ landscape_router_stop_vm() {
 
 landscape_router_cleanup() {
     set +e
+    landscape_passt_stop_all
     landscape_router_stop_vm
 
     [[ -n "${LANDSCAPE_ROUTER_TEMP_DIR}" ]] && rm -rf "${LANDSCAPE_ROUTER_TEMP_DIR}"
