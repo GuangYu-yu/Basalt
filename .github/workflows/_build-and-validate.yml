@@ -61,6 +61,8 @@ on:
         value: ${{ jobs.build_image.outputs.run_dataplane }}
       run_ota:
         value: ${{ jobs.build_image.outputs.run_ota }}
+      run_netstress:
+        value: ${{ jobs.build_image.outputs.run_netstress }}
 
 env:
   TEST_LOG_DIR: output/test-logs
@@ -78,6 +80,7 @@ jobs:
       run_readiness: ${{ steps.tests.outputs.run_readiness }}
       run_dataplane: ${{ steps.tests.outputs.run_dataplane }}
       run_ota: ${{ steps.tests.outputs.run_ota }}
+      run_netstress: ${{ steps.tests.outputs.run_netstress }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
