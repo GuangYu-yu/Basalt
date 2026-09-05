@@ -53,7 +53,7 @@ runs:
         # noble 的 passt 无 --map-host-tcp（bootstrap 3222→22 异端口映射硬依赖），
         # 优先替换为 passt.top 官方静态构建；不可达时保留 apt 版本（后端能力
         # 探测会自动回退 slirp，不阻塞测试）
-        if curl -fsSL --max-time 90 https://passt.top/static/build/latest/x86_64/passt -o /tmp/passt-bin; then
+        if curl -fsSL --max-time 90 https://passt.top/builds/latest/x86_64/passt -o /tmp/passt-bin; then
           sudo install -m 0755 /tmp/passt-bin /usr/local/bin/passt
         else
           echo "passt.top 静态构建不可达，保留 apt 版本"
