@@ -46,11 +46,10 @@ runs:
           systemd-ukify systemd-boot-efi binutils xz-utils zstd \
           passt
 
-    - name: 安装网络后端依赖（passt 版本固定层）
+    - name: 安装网络后端依赖（passt 固定 commit 源码构建层）
       shell: bash
       run: |
         set -euo pipefail
-        # 逻辑封装于 tests/setup-net-backend-deps.sh（版本+SHA256 双锁定，
-        # 幂等）。hosted runner 无更高 Ubuntu 镜像（latest=24.04，apt passt
-        # 2024.02 无 --map-host-tcp），故由本依赖层 pin Debian trixie 版
-        bash tests/setup-net-backend-deps.sh
+        # 逻辑封装于 tests/tools/passt/install.sh（version/sha256 锁定 commit，
+        # 构建产物装到 tests/tools/passt/bin/，不进系统、不进产品镜像）
+        bash tests/tools/passt/install.sh

@@ -497,22 +497,35 @@ LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-2147
 # 实测 slirp 存在非确定性网络路径死亡（guest 健康、sshd 在列、TCP hostfwd
 # 在列但新建连接不通，info usernet 可见 UDP 映射堆积；~4min guest uptime
 # 起，随机命中任意测试阶段）——passt 为稳定性出口，slirp 保留为 fallback。
+# passt 二进制由测试依赖层提供：tests/tools/passt/install.sh（固定 commit
+# 源码构建，安装到 tests/tools/passt/bin/，不进系统、不进产品镜像）。
 # passt 实例按 netdev 一一对应（wan/lan/mgmt 各一个独立 L2，socket 均在
 # 测试临时目录），进程 PID 记录于 LANDSCAPE_PASST_PIDS，cleanup 统一回收。
 LANDSCAPE_TEST_NET="${LANDSCAPE_TEST_NET:-slirp}"
 LANDSCAPE_PASST_PIDS=()
 
-# 实际生效的后端：passt 需二进制存在且支持 --map-host-tcp（bootstrap 端口
-# 3222→guest 22 的异端口映射依赖它），任一不满足回退 slirp 并告警
+# passt 二进制解析：项目本地（依赖层构建产物）优先，系统版本兜底
+landscape_passt_bin() {
+    if [[ -x "${PROJECT_DIR}/tests/tools/passt/bin/passt" ]]; then
+        echo "${PROJECT_DIR}/tests/tools/passt/bin/passt"
+    else
+        echo "passt"
+    fi
+}
+
+# 实际生效的后端：passt 二进制需存在且支持 --map-host-tcp（bootstrap 端口
+# 3222→22 的异端口映射依赖它），任一不满足回退 slirp 并告警
 landscape_net_backend() {
     [[ "${LANDSCAPE_TEST_NET}" == "passt" ]] || { echo slirp; return; }
-    if ! command -v passt >/dev/null 2>&1; then
-        warn "LANDSCAPE_TEST_NET=passt 但 passt 未安装，回退 slirp"
+    local bin
+    bin="$(landscape_passt_bin)"
+    if ! command -v "${bin}" >/dev/null 2>&1; then
+        warn "passt 二进制不可用（${bin}），回退 slirp"
         echo slirp
         return
     fi
-    if ! passt --help 2>&1 | grep -q -- '--map-host-tcp'; then
-        warn "passt 不支持 --map-host-tcp（$(passt --version 2>&1 | head -n1)），回退 slirp"
+    if ! "${bin}" --help 2>&1 | grep -q -- '--map-host-tcp'; then
+        warn "passt 不支持 --map-host-tcp（${bin}），回退 slirp"
         echo slirp
         return
     fi
@@ -525,8 +538,8 @@ landscape_passt_start() {
     local id="$1"
     shift
     local sock="${LANDSCAPE_ROUTER_TEMP_DIR}/passt-${id}.sock"
-    info "Starting passt (${id})..."
-    passt --socket "${sock}" --foreground "$@" &
+    info "Starting passt (${id}, $(landscape_passt_bin))..."
+    "$(landscape_passt_bin)" --socket "${sock}" --foreground "$@" &
     LANDSCAPE_PASST_PIDS+=($!)
     local i=0
     while [[ ! -S "${sock}" && ${i} -lt 50 ]]; do
