@@ -533,7 +533,7 @@ landscape_passt_start() {
     shift
     local sock="${LANDSCAPE_ROUTER_TEMP_DIR}/passt-${id}.sock"
     info "Starting passt (${id})..."
-    "$(landscape_passt_bin)" --socket "${sock}" --foreground "$@" &
+    "$(landscape_passt_bin)" --debug --socket "${sock}" --foreground "$@" &
     LANDSCAPE_PASST_PIDS+=($!)
     local i=0
     while [[ ! -S "${sock}" && ${i} -lt 50 ]]; do

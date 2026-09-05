@@ -169,6 +169,17 @@ ota_hard_reset() {
 }
 
 ota_wait_booted() {
+    # bootstrap 偶发 passt 流转发 reset（实测 ~5%：DHCP offer/ack 正常后
+    # kex 仍 reset，无空闲期规律，同镜像硬复位重试即恢复）——infra 级瞬态，
+    # 硬复位一次重试；stage-exhaust 引擎走自身 bootstrap 路径，不受此影响
+    if ! _ota_wait_booted_once; then
+        warn "bootstrap 未达（疑似 passt 转发瞬态），硬复位重试一次"
+        ota_hard_reset
+        _ota_wait_booted_once
+    fi
+}
+
+_ota_wait_booted_once() {
     # guest（重）启动后：bootstrap 口注入 eth2 → 主 SSH（mgmt 口）可用
     if ! landscape_router_bootstrap_mgmt "Router"; then
         # bootstrap 失败 = guest 未达可网络管理态（initrd emergency 等早期
