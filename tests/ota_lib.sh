@@ -72,7 +72,7 @@ ota_serial_expect() {
 # 走 stderr：ota_run_update 在命令替换中调用本函数族，stdout 污染会破坏
 # 其 "ssh-lost" 返回值语义（实测冻结恢复分支因此失活）
 ota_monitor_cmd() {
-    ( printf '%s\n' "$1"; sleep 3 ) | socat -T5 - UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" 2>&1 >&2 || true
+    ( printf '%s\n' "$1"; sleep 3 ) | socat -T5 - UNIX-CONNECT:"${LANDSCAPE_ROUTER_MONITOR}" >&2 2>/dev/null || true
 }
 
 # SSH 失联时的挂死取证（不依赖 guest 网络）：
