@@ -261,6 +261,7 @@ cleanup_staged() {
     # 会被本次构建的 CopyFiles 静默烘焙进镜像
     rm -rf "${STAGED_LANDSCAPE_DIR}"
     rm -f "${STAGED_STATIC_ZIP}" "${STAGED_RESCUE_UKI}"
+    [[ -n "${STAGED_PRESET:-}" && -f "${STAGED_PRESET}.orig" ]] && mv -f "${STAGED_PRESET}.orig" "${STAGED_PRESET}"
     for conf in "${STAGED_REPART_CONFS[@]:-}"; do
         [[ -n "$conf" && -f "$conf.orig" ]] && mv -f "$conf.orig" "$conf"
     done
@@ -291,6 +292,12 @@ trap 'exit 130' INT
 if [[ "${INCLUDE_DOCKER}" == "true" ]]; then
     # CLI 逐包注入，配置文件保持单一事实
     MKOSI_ARGS+=(--package docker.io)
+    # docker.io 不带 preset 启用（30-landscape.preset 是镜像内服务启用的唯一
+    # 事实来源，仅列常驻服务）→ daemon disabled，首启 is-active 永远 inactive
+    # （实测 docker 变体 readiness 失败根因）。变体专属启用在此条件化追加：
+    STAGED_PRESET="${SCRIPT_DIR}/mkosi/mkosi.extra/etc/systemd/system-preset/30-landscape.preset"
+    cp "${STAGED_PRESET}" "${STAGED_PRESET}.orig"
+    printf '\n# docker 变体（build.sh include_docker 条件化追加）\nenable docker.service\nenable containerd.service\n' >> "${STAGED_PRESET}"
 fi
 
 echo "============================================================"
