@@ -261,6 +261,7 @@ cleanup_staged() {
     # 会被本次构建的 CopyFiles 静默烘焙进镜像
     rm -rf "${STAGED_LANDSCAPE_DIR}"
     rm -f "${STAGED_STATIC_ZIP}" "${STAGED_RESCUE_UKI}"
+    [[ -n "${STAGED_DOCKER_CONF:-}" && -f "${STAGED_DOCKER_CONF}" ]] && rm -rf "$(dirname "${STAGED_DOCKER_CONF}")"
     [[ -n "${STAGED_PRESET:-}" && -f "${STAGED_PRESET}.orig" ]] && mv -f "${STAGED_PRESET}.orig" "${STAGED_PRESET}"
     for conf in "${STAGED_REPART_CONFS[@]:-}"; do
         [[ -n "$conf" && -f "$conf.orig" ]] && mv -f "$conf.orig" "$conf"
@@ -292,6 +293,11 @@ trap 'exit 130' INT
 if [[ "${INCLUDE_DOCKER}" == "true" ]]; then
     # dockerd + docker CLI
     MKOSI_ARGS+=(--package docker.io --package docker-cli)
+    # docker0 固定 172.18.1.1/24：默认 172.17.0.1/16 与常见 LAN 撞网时
+    # dockerd 无法创建默认网桥直接启动失败
+    STAGED_DOCKER_CONF="${SCRIPT_DIR}/mkosi/mkosi.extra/etc/docker/daemon.json"
+    mkdir -p "$(dirname "${STAGED_DOCKER_CONF}")"
+    printf '{\n    "bip": "172.18.1.1/24",\n    "dns": ["172.18.1.1"]\n}\n' > "${STAGED_DOCKER_CONF}"
     # docker 变体专属启用：30-landscape.preset（镜像内服务启用的唯一事实
     # 来源）仅列常驻服务，装包不等于启用——不同入此行，daemon 保持 disabled，
     # 首启 systemctl is-active docker 恒 inactive
