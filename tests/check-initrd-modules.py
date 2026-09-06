@@ -306,9 +306,8 @@ def check(blob: bytes, forbidden: tuple[str, ...],
             print(f"  MISS-DIR {r}")
             missing.append(f"缺保留目录 {r}")
 
-    name_set = set(names)
     for unit in sorted(REQUIRED_UNITS):
-        ok = unit in name_set
+        ok = unit in paths
         print(f"  {'OK ' if ok else 'MISS'} {unit}")
         if not ok:
             missing.append(unit)

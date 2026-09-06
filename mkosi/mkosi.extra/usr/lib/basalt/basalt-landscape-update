@@ -2,12 +2,12 @@
 # basalt-landscape-update — @landscape 载荷独立更新（最小下载单元）
 # 载荷 = landscape-webserver + static/（landscape_init.toml 为构建期 CI 注入
 # 的工厂种子，不随上游 release 分发，不在此更新；设备 home 内已初始化配置
-# 更不受影响）。与 root OTA 解耦：不引入 sysupdate 第三组 transfer/版本状态机。
+# 更不受影响）。与 root OTA 解耦：不引入额外的 sysupdate transfer/版本状态机。
 #
 # 源与校验：复用上游 Landscape GitHub Releases（build.sh 同一获取方式），
 # 源 URL 经 /etc/basalt/landscape-update.conf 的 LANDSCAPE_RELEASE_URL 覆盖
-# （缺省上游 latest/download）。SHA256SUMS 若存在于源目录则强校验；
-# 清单缺失时退化为 curl -f 传输级校验并显式告警。
+# （缺省上游 latest/download）。SHASUM256sum.txt（上游资产名）若存在则强校验
+# 本次下载项；清单缺失时退化为 curl -f 传输级校验并显式告警。
 # 原子落盘：全部资源先落临时目录并校验，staging 完整成形后逐项 rename
 # 到位（同子卷内 rename 原子），最后按需重启 landscape-router 换新进程。
 set -eu
@@ -28,12 +28,15 @@ fetch static.zip "${TMP}/static.zip"
 unzip -oq "${TMP}/static.zip" -d "${TMP}/"
 [ -d "${TMP}/static" ] || { echo "static.zip 解压后无 static/ 目录" >&2; exit 1; }
 
-# 可选完整性校验：源目录存在 SHA256SUMS 即强校验（仅校验本次下载项）
-if fetch SHA256SUMS "${TMP}/SHA256SUMS" 2>/dev/null; then
-    ( cd "${TMP}" && grep -E 'landscape-webserver-x86_64|static\.zip' SHA256SUMS \
-        | sha256sum -c - ) || { echo "SHA256SUMS 校验失败" >&2; exit 1; }
+# 可选完整性校验：源目录存在 SHASUM256sum.txt 即强校验（仅校验本次下载项）。
+# 清单条目用上游资产名（landscape-webserver-x86_64），本地落盘名为
+# landscape-webserver（服务引用名），校验前经 sed 把清单文件名改写为本地名
+if fetch SHASUM256sum.txt "${TMP}/SHASUM256sum.txt" 2>/dev/null; then
+    ( cd "${TMP}" && grep -E 'landscape-webserver-x86_64$|static\.zip$' SHASUM256sum.txt \
+        | sed 's/  landscape-webserver-x86_64$/  landscape-webserver/' \
+        | sha256sum -c - ) || { echo "SHASUM256sum.txt 校验失败" >&2; exit 1; }
 else
-    echo "basalt-landscape-update: 源无 SHA256SUMS，跳过逐文件校验（传输级校验已过）" >&2
+    echo "basalt-landscape-update: 源无 SHASUM256sum.txt，跳过逐文件校验（传输级校验已过）" >&2
 fi
 
 # 逐项原子替换：每个 rename 原子，整体替换非原子——短暂窗口内旧二进制与

@@ -38,7 +38,7 @@ ensure_image_exists "${IMAGE_PATH}" || { error "镜像不存在: ${IMAGE_PATH}";
 require_commands qemu-system-x86_64 sshpass socat jq || {
     error "Install test dependencies: sudo apt install qemu-system-x86 ovmf sshpass socat jq"; exit 2;
 }
-if ! ensure_local_ports_free "${SSH_PORT}" "$(landscape_bootstrap_ssh_port)" "${WEB_PORT:-9800}"; then
+if ! ensure_local_ports_free "${SSH_PORT}" "$(landscape_bootstrap_ssh_port)" "${WEB_PORT:-${LANDSCAPE_DEFAULT_WEB_PORT}}"; then
     exit 2
 fi
 source "${PROJECT_DIR}/build.env"   # IMAGE_ID

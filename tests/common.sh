@@ -242,7 +242,7 @@ wait_for_guest_ssh() {
 
     # 墙钟计时：单次探测本身可阻塞数十秒，按 sleep 累加会严重低估耗时
     local t0=${SECONDS}
-    local elapsed=0
+    local elapsed
     while [[ $(( SECONDS - t0 )) -lt $timeout ]]; do
         if ! kill -0 "${pid}" 2>/dev/null; then
             error "${label} VM died unexpectedly"
@@ -484,19 +484,17 @@ LANDSCAPE_ROUTER_DIAGNOSTICS_FILE=""
 LANDSCAPE_TEST_METADATA_FILE=""
 LANDSCAPE_ROUTER_API_TOKEN=""
 LANDSCAPE_TEST_NAME="${LANDSCAPE_TEST_NAME:-test}"
-# 首启 repart 需真实空闲空间扩 B 槽（=A 槽实测尺寸）与 var（Weight=100），
-# 实测最小需约 195M（582M 镜像 → 777M），默认扩 2G：OTA 生命周期池内同时
-# 存在 3 个 ~450MB 部署子卷（v1 ro + v2 运行 + v3 安装临时）+ btrfs 元数据，
-# 1G 扩容下 var≈1.5G 已 90% 满（v3 安装期 SSH 失联疑点，消解 ENOSPC 混淆
-# 变量；受控 ENOSPC 场景由 stage_v5 dd 填充承载）；
+# 首启 repart 需真实空闲空间扩 B 槽与 var（Weight=100），默认扩 2G：OTA
+# 生命周期池内同时存在 3 个 ~450MB 部署子卷（v1 ro + v2 运行 + v3 安装临时）
+# + btrfs 元数据，1G 扩容下 var≈1.5G 已 90% 满，故扩 2G 消解 ENOSPC 混淆
+# （受控 ENOSPC 场景由 stage_v5 dd 填充承载）；
 # truncate 稀疏扩展 = 模拟更大的部署盘，GPT 备份头由 systemd-repart 迁移到新盘尾
 LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-2147483648}"
 
 # ── 测试网络后端（slirp | passt）──
 # passt = QEMU 官方 slirp 替代（out-of-process、rootless、独立于 QEMU 进程）。
-# 实测 slirp 存在非确定性网络路径死亡（guest 健康、sshd 在列、TCP hostfwd
-# 在列但新建连接不通，info usernet 可见 UDP 映射堆积；~4min guest uptime
-# 起，随机命中任意测试阶段）——passt 为稳定性出口，slirp 保留为 fallback。
+# slirp 存在非确定性网络路径死亡（guest 健康、sshd/hostfwd 在列但新建连接不通，
+# ~4min 起随机命中）——passt 为稳定性出口，slirp 保留为 fallback。
 # passt 二进制由测试依赖层提供：tests/tools/passt/install.sh（固定 commit
 # 源码构建，安装到 tests/tools/passt/bin/，不进系统、不进产品镜像）。
 # passt 实例按 netdev 一一对应（wan/lan/mgmt 各一个独立 L2，socket 均在
@@ -693,15 +691,6 @@ landscape_router_start_vm() {
     # appliance 的标准管理姿势。WAN 仅承载数据面（SLIRP 提供 DHCP 与出网），
     # 外加一条 bootstrap hostfwd（独立端口）用于首启后经 SSH 给 eth2 注入
     # 管理 IP；注入完成后所有测试流量走 mgmt 口，WAN 稳定性不再影响控制通道
-    local wan_netdev="${ROUTER_WAN_NETDEV:-user,id=wan,hostfwd=tcp::$(landscape_bootstrap_ssh_port)-:22}"
-    local lan_netdev="${ROUTER_LAN_NETDEV:-user,id=lan}"
-    local wan_device_opts="${ROUTER_WAN_DEVICE_OPTS:-}"
-    local lan_device_opts="${ROUTER_LAN_DEVICE_OPTS:-}"
-    local mgmt_device_opts="${ROUTER_MGMT_DEVICE_OPTS:-}"
-    local qemu_mem="${QEMU_MEM:-1024}"
-    local qemu_smp="${QEMU_SMP:-2}"
-    local qemu_label="${ROUTER_LABEL:-Router}"
-
     mkdir -p "${LANDSCAPE_TEST_LOG_DIR}"
 
     # bash 收到 TERM/INT 默认不执行 EXIT trap（CI 硬超时发送 TERM），各测试脚本入口
@@ -841,7 +830,7 @@ landscape_router_bootstrap_mgmt() {
 
     error "Bootstrap SSH never became reachable on port ${boot_port}"
     # 终局复跑一次不吞输出：失败原因（认证/连接/命令级，如 "Cannot find
-    # device eth2"）直接进 CI 日志——实测网络路径死亡形态与 sysupdate 无关
+    # device eth2"）直接进 CI 日志——网络路径死亡与 sysupdate 无关
     #（首轮 boot 即复现），需命令级错误定位
     "${boot_ssh[@]}" \
         "ip addr replace ${LANDSCAPE_MGMT_GUEST_IP}/24 dev eth2 && ip link set eth2 up" || true
@@ -883,7 +872,6 @@ landscape_router_stop_vm() {
 
 landscape_router_cleanup() {
     set +e
-    landscape_passt_stop_all
     landscape_router_stop_vm
 
     [[ -n "${LANDSCAPE_ROUTER_TEMP_DIR}" ]] && rm -rf "${LANDSCAPE_ROUTER_TEMP_DIR}"

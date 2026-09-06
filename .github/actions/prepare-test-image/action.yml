@@ -3,7 +3,7 @@
 # 前置：output/ 目录已含 *.img.xz 镜像产物
 # 产出：GITHUB_ENV.IMAGE_PATH 指向解压后的 raw 镜像
 # =============================================================================
-name: 'Prepare test image'
+name: '准备测试镜像'
 description: '解压 xz 镜像并安装 QEMU 测试依赖'
 
 runs:
@@ -38,7 +38,7 @@ runs:
         set -euo pipefail
         sudo apt-get update
         # systemd-ukify/binutils/xz/zstd：OTA 测试伪造版本物料
-        # （objcopy 抽 PE 段 + ukify 重排 + tar --zstd 重打包根载荷）
+        # （objcopy 抽 PE 段 + ukify 重排 + tar --xz 重打包根载荷）
         # systemd-boot-efi：ukify 的 PE stub（/usr/lib/systemd/boot/efi/linuxx64.efi.stub），
         # 缺包时 ukify 报 FileNotFoundError（与 build.sh 宿主侧校验同源）
         sudo apt-get install -y sshpass socat curl jq \

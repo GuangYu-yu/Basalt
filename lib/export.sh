@@ -19,7 +19,7 @@ export_vmdk() {
 export_ova() {
     info "打包 ova ..."
     local work="${WORK_DIR}/ova.d"
-    local raw_size_bytes sectors_512 vm_name escaped_vm_name
+    local raw_size_bytes sectors_512 escaped_vm_name
     local cpu_cores=2 memory_mb=2048 nic_model="virtio" nic_desc="VirtIO ethernet adapter"
     rm -rf "${work}" && mkdir -p "${work}"
     qemu-img convert -f raw -O vmdk -o subformat=streamOptimized \
@@ -27,8 +27,7 @@ export_ova() {
 
     raw_size_bytes=$(stat -c '%s' "${RAW_FILE}")
     sectors_512=$(( raw_size_bytes / 512 ))
-    vm_name="${BUILD_NAME}"
-    escaped_vm_name=$(xml_escape "${vm_name}")
+    escaped_vm_name=$(xml_escape "${BUILD_NAME}")
     cat > "${work}/landscape.ovf" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/1"

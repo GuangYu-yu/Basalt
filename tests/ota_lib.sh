@@ -213,17 +213,6 @@ ota_check() {
     fi
 }
 
-ota_check_fails() {
-    # 断言命令必须失败（ENOSPC 探测等）；意外成功同样终止
-    local desc="$1"
-    shift
-    if "$@" &>/dev/null; then
-        echo "[FAIL] ${desc}（命令意外成功）"
-        exit 1
-    fi
-    echo "[PASS] ${desc}"
-}
-
 # 安装后置契约：成对落盘（Result=success 是服务级结果，不保证资源落盘——
 # 可能 no-op/未枚举/装错路径）+ sync（硬复位断电语义要求）。
 # 子卷断言用 btrfs subvolume show 而非 test -d：sysupdate.d(5) 明示

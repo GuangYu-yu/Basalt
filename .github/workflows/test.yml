@@ -26,6 +26,12 @@ on:
         description: "复测用 SSH 密码（默认与构建时一致）"
         required: false
         default: "landscape"
+      net_backend:
+        description: "测试网络后端：passt（默认，与 CI 一致）/ slirp"
+        required: false
+        default: "passt"
+        type: choice
+        options: ['passt', 'slirp']
 
 jobs:
   resolve:
@@ -92,6 +98,7 @@ jobs:
           SSH_TIMEOUT: '120'
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ inputs.include_docker }}
           LANDSCAPE_TEST_RUN_TEST: readiness
+          LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
         run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
 
       - name: 运行数据平面测试
@@ -101,6 +108,7 @@ jobs:
           SSH_TIMEOUT: '120'
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ inputs.include_docker }}
           LANDSCAPE_TEST_RUN_TEST: readiness,dataplane
+          LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
         run: timeout --foreground 30m ./tests/test-dataplane.sh "${IMAGE_PATH}"
 
       - name: 上传复测日志

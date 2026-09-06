@@ -26,12 +26,12 @@ fi
 # ExecStartPre 守卫会显式失败暴露）
 gen_key() {
     # $1 = 类型, $2 = rsa 位数（ed25519 传空）
-    k="${STATE}/ssh/ssh_host_${1}_key"
-    [ -f "${k}" ] && return 0
+    key="${STATE}/ssh/ssh_host_${1}_key"
+    [ -f "${key}" ] && return 0
     if [ -n "${2:-}" ]; then
-        ssh-keygen -q -t "${1}" -b "${2}" -N '' -f "${k}" </dev/null >/dev/null 2>&1
+        ssh-keygen -q -t "${1}" -b "${2}" -N '' -f "${key}" </dev/null >/dev/null 2>&1
     else
-        ssh-keygen -q -t "${1}" -N '' -f "${k}" </dev/null >/dev/null 2>&1
+        ssh-keygen -q -t "${1}" -N '' -f "${key}" </dev/null >/dev/null 2>&1
     fi || echo "basalt-state-init: ssh_host_${1}_key 生成失败" >&2
 }
 gen_key ed25519 ""

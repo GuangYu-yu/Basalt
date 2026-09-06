@@ -59,9 +59,10 @@ jobs:
           set -euo pipefail
           # landscape 版本：输入优先；缺省解析上游 latest tag（与 build.sh 的
           # 解析口径一致——tag 不再需要与上游版本号重合）
+          source build.env   # LANDSCAPE_REPO（上游仓库单一事实源，与 build.sh 同源）
           landscape="${IN_LANDSCAPE}"
           if [[ -z "${landscape}" ]]; then
-            landscape="$(curl -fsSL --retry 3 https://api.github.com/repos/ThisSeanZhang/landscape/releases/latest \
+            landscape="$(curl -fsSL --retry 3 https://api.github.com/repos/${LANDSCAPE_REPO#https://github.com/}/releases/latest \
               | grep -oP '"tag_name":\s*"\K[^"]+')"
           fi
           [[ -n "${landscape}" ]] || { echo "无法解析 Landscape 版本" >&2; exit 1; }
@@ -209,4 +210,4 @@ jobs:
           SSH_TIMEOUT: '120'
         run: |
           timeout --foreground 15m ./tests/release-smoke.sh \
-            output/basalt.img "${{ needs.prepare.outputs.image_version }}"
+            "${IMAGE_PATH}" "${{ needs.prepare.outputs.image_version }}"

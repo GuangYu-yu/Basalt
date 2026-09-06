@@ -143,7 +143,7 @@ stage_v2_boot() {
     # v3 安装期 SSH 死 30 分钟、串口全静默）guest 内部不可观测。tee 到 console
     # 后串口承载下载/解包/裁剪旧版本全程 + 死亡时刻的最后输出（测试侧取证，
     # 不改产品默认行为）。/etc 属 v2，存活至 rescue 前的全部更新阶段
-    guest_run "mkdir -p /etc/systemd/system/systemd-sysupdate.service.d && printf '[Service]\nEnvironment=SYSTEMD_LOG_LEVEL=debug\nStandardOutput=journal+console\nStandardError=journal+console\n' > /etc/systemd/system/systemd-sysupdate.service.d/10-console-tee.conf && systemctl daemon-reload"
+    guest_run "mkdir -p /etc/systemd/system/systemd-sysupdate.service.d && printf '[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n' > /etc/systemd/system/systemd-sysupdate.service.d/10-console-tee.conf && systemctl daemon-reload"
     # 解锁全部 SysRq（Debian 默认掩码 438 不含 64=任务转储）：SSH 死亡时经
     # QEMU monitor sendkey 触发 SysRq-w/t 任务转储到串口——挂死调用点的
     # 决定性取证（D 状态任务 + 内核栈，不依赖任何 guest 网络）
@@ -154,12 +154,6 @@ stage_v2_boot() {
 
 stage_v3_exhaust() {
     echo "== stage: v3 引导级坏版本（tar 内 init 清空）→ tries 耗尽 → 回退 =="
-    # 冻结诊断轮：产品路径原样执行（不绕行 InstancesMax 裁剪——手动删除绕行
-    # 曾使 update 成功，已实锤冻结在 sysupdate 内部裁剪路径）。本轮目的 =
-    # 抓冻结前最后操作：SYSTEMD_LOG_LEVEL=debug 经 console-tee 直达串口 +
-    # journal 持久化于 /var（@data），冻结 → 硬复位 → 回退 boot 健康后经
-    # journalctl -b -1 读上一 boot 的完整 debug 日志（strace 需给产品根树加
-    # 包且冻结时刷盘不保证，journal 是更可靠的等价取证）
     # 损坏注入：解包工厂 tar.xz → 清空 /usr/lib/systemd/systemd → 重打包。
     # SHA256SUMS 由 ota_serve_version 重签（损坏在内容不在安装）；init 为空
     # 文件 → switch_root exec 失败 → 引导必败。契约不绑定失败阶段
@@ -171,23 +165,8 @@ stage_v3_exhaust() {
     ota_serve_version 3 \
         "${FAB_DIR}/${IMAGE_ID}_3.tar.xz" \
         "${FAB_DIR}/${IMAGE_ID}_3.efi"
-    local result
-    result="$(ota_run_update)"
-    if [[ "${result}" == "ssh-lost" ]]; then
-        # 冻结复现（update 内部裁剪路径）：硬复位 → 回退 boot 健康（v1 完整
-        # 在场，无悬空 UKI）→ 经 SSH 读冻结 boot 的持久化 journal（@data）
-        echo "[INFO] 冻结复现：硬复位恢复后读冻结 boot 的 journal 取证"
-        ota_hard_reset
-        ota_wait_booted || { echo "[FAIL] 恢复 boot 未达 SSH" >&2; return 1; }
-        echo "=== [forensics] 冻结 boot journal（sysupdate debug，-b -1）===" >&2
-        guest_run "journalctl -b -1 --no-pager -n 400 2>/dev/null | grep -iE 'sysupdate|pull|btrfs|sigkill|freeze' || echo 'journal 上一 boot 无匹配（journald 未持久化？）'" >&2 || true
-        echo "=== [forensics] 冻结 boot 全 journal 尾部 ===" >&2
-        guest_run "journalctl -b -1 --no-pager -n 60 2>/dev/null || true" >&2 || true
-        guest_run "sync" || true
-        echo "[FAIL] 诊断轮：sysupdate 裁剪路径冻结（取证已收集，见上）" >&2
-        return 1
-    fi
-    ota_check "坏版本安装成功（损坏在内容，不在安装）" test "${result}" = "success"
+    ota_check "坏版本安装成功（损坏在内容，不在安装）" \
+        test "$(ota_run_update)" = "success"
     ota_assert_pair_landed 3
 
     # 操作：OTA_TRIES 次失败 boot（硬复位承载）→ 契约：回退 v2。
@@ -267,7 +246,7 @@ stage_v5_enospc() {
         # sync 有界（guest 侧 10s < SSH 15s 上限）：ENOSPC 边缘的 btrfs 事务
         # 提交可能长时间挂起（实测 sync 卡死 → SSH 被 15s timeout 击杀 →
         # rc=124 终止测试）；空间释放在 rm 后事务提交天然可见
-        guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
+        guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
         result="$(ota_run_update)"
         ota_check "空间恢复后更新重试成功" test "${result}" = "success"
     else
@@ -281,7 +260,7 @@ stage_v5_enospc() {
     ota_check "受保护运行版本保留（root-basalt-2）" \
         guest_run "test -e /var/lib/basalt/pool/root-basalt-2"
     # 释放填充空间（后续 vacuum/rescue 阶段需要正常空间）
-    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /var/lib/basalt-ota-probe /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
+    guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
     ota_check "盘满恢复后 API 在线" \
         guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
 }
@@ -384,8 +363,8 @@ preflight() {
         exit 2
     }
 
-    if ! require_commands qemu-system-x86_64 sshpass curl socat jq awk truncate objcopy ukify python3 xz base64 zstd tar; then
-        error "Install test dependencies: sudo apt install qemu-system-x86 ovmf sshpass socat jq systemd-ukify binutils zstd"
+    if ! require_commands qemu-system-x86_64 sshpass curl socat jq awk truncate objcopy ukify python3 xz base64 tar; then
+        error "Install test dependencies: sudo apt install qemu-system-x86 ovmf sshpass socat jq systemd-ukify binutils"
         exit 2
     fi
 
@@ -413,13 +392,13 @@ preflight() {
     FAB_DIR="$(mktemp -d "${LANDSCAPE_TEST_TMP_ROOT}/basalt-ota-fab-XXXXXX")"
     OTA_SERVE_DIR="$(mktemp -d "${LANDSCAPE_TEST_TMP_ROOT}/basalt-ota-serve-XXXXXX")"
 
-    # 本地更新源（guest 经 WAN slirp 网关 10.0.2.2 访问宿主）
+    # 本地更新源（guest 经 WAN 网关访问宿主）
     python3 -m http.server "${OTA_SERVER_PORT}" --bind 0.0.0.0 \
         --directory "${OTA_SERVE_DIR}" >/dev/null 2>&1 &
     OTA_HTTP_PID=$!
     sleep 1
     kill -0 "${OTA_HTTP_PID}" 2>/dev/null || { error "OTA HTTP 服务启动失败（端口 ${OTA_SERVER_PORT}）"; exit 2; }
-    info "OTA update server: http://10.0.2.2:${OTA_SERVER_PORT}/ (pid ${OTA_HTTP_PID})"
+    info "OTA update server: http://$(landscape_ota_guest_host):${OTA_SERVER_PORT}/ (pid ${OTA_HTTP_PID})"
 
     ok "Preflight passed"
 }
@@ -441,7 +420,8 @@ main() {
     # 失败取证由 wait_ready 内部完成（readiness_fail 含快照+诊断）
     landscape_router_wait_ready "Router" || exit 1
 
-    # 注入测试 override（/etc 优先于 /usr/lib；持久，跨重启有效）
+    # 注入测试 override（/etc 优先于 /usr/lib；版本内跨重启存活，
+    # 跨版本由各 stage 重注入——/etc 随部署子卷版本化）
     ota_inject_sysupdate_overrides
 
     # 状态机：2 安装 → 2 引导 → v3 耗尽 → v4 耗尽 → ENOSPC → vacuum → rescue

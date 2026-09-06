@@ -59,8 +59,8 @@ jobs:
     uses: ./.github/workflows/_build-and-validate.yml
     with:
       include_docker: ${{ inputs.include_docker == 'true' }}
-      run_test: ${{ inputs.run_test || 'readiness' }}
+      run_test: ${{ inputs.run_test }}
       landscape_version: ${{ inputs.landscape_version || '' }}
-      root_password: ${{ inputs.root_password || 'landscape' }}
+      root_password: ${{ inputs.root_password }}
       diag_cmdline: ${{ inputs.diag_cmdline == 'true' }}
-      net_backend: ${{ inputs.net_backend || 'slirp' }}
+      net_backend: ${{ inputs.net_backend }}

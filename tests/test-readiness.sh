@@ -140,7 +140,9 @@ run_smoke_checks() {
     # initrd 能力组（mkosi.conf KernelInitrdModules= 白名单）在目标内核实际
     # 可加载断言：modinfo 依赖闭包不含符号依赖（btrfs↔crc32c_generic 实例），
     # 启动链未覆盖的模块在此显式加载，符号/依赖缺失立即暴露（modprobe 幂等）
-    run_check "initrd capability modules load" guest_run 'for m in nvme virtio_blk btrfs crc32c_generic vfat; do modprobe "$m" || exit 1; done; for m in nvme virtio_blk btrfs crc32c_generic vfat; do grep -q "^$m " /proc/modules || exit 1; done'
+    local cap_mods="nvme virtio_blk btrfs crc32c_generic vfat"
+    run_check "initrd capability modules load" \
+        guest_run "for m in ${cap_mods}; do modprobe \"\$m\" || exit 1; done; for m in ${cap_mods}; do grep -q \"^\$m \" /proc/modules || exit 1; done"
     run_check "PCI/NIC diagnostics tools installed" guest_run "command -v lspci >/dev/null 2>&1 && command -v ethtool >/dev/null 2>&1"
 
     if landscape_test_requires_docker; then

@@ -57,7 +57,6 @@ landscape_dir_is_writable() {
 
     if [[ -d "$target_dir" ]]; then
         [[ -w "$target_dir" ]]
-        return
     fi
 
     parent_dir="$(dirname "$target_dir")"
@@ -72,6 +71,8 @@ landscape_assign_auto_mac_addresses() {
     local alloc_id="$1"
     local value=""
 
+    # 仅变体化 WAN/LAN/CLIENT 三个 MAC；ROUTER_MGMT_MAC 保持默认——mgmt 段为
+    # 独立 L2（专用 passt/slirp 网络），无跨实例 IP/MAC 冲突，无需变体化
     value=$((alloc_id & 255))
     printf -v ROUTER_WAN_MAC '52:54:00:12:34:%02x' "$value"
     printf -v ROUTER_LAN_MAC '52:54:00:12:35:%02x' "$value"

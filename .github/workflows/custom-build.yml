@@ -28,7 +28,7 @@ on:
         required: false
         default: "landscape"
       run_test:
-        description: "测试选择：none / readiness / readiness,dataplane"
+        description: "测试选择：none / readiness / readiness,dataplane / readiness,ota / ota / netstress"
         required: false
         default: "none"
 
@@ -37,7 +37,7 @@ jobs:
     uses: ./.github/workflows/_build-and-validate.yml
     with:
       include_docker: ${{ inputs.include_docker == 'true' }}
-      run_test: ${{ inputs.run_test || 'none' }}
+      run_test: ${{ inputs.run_test }}
       output_formats: ${{ inputs.output_formats || 'img' }}
       landscape_version: ${{ inputs.landscape_version || '' }}
-      root_password: ${{ inputs.root_password || 'landscape' }}
+      root_password: ${{ inputs.root_password }}

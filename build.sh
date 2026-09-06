@@ -29,6 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "  $*"; }
+warn() { echo "WARN: $*" >&2; }
 
 usage() {
     sed -n '/^# 用法：$/,/^# ===/p' "${BASH_SOURCE[0]}" | sed '$d;s/^# \{0,1\}//'

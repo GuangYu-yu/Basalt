@@ -1,6 +1,6 @@
 # =============================================================================
-# 构建并校验镜像（可复用子工作流，入口见 ci.yml）
-# 流水线：容器化构建 → 模块门禁 → readiness → dataplane → OTA 矩阵 → 日志合并
+# 构建并校验镜像（可复用子工作流，入口见 ci.yml / release.yml / custom-build.yml）
+# 流水线：容器化构建 → 模块门禁 → readiness → dataplane → OTA/netstress 矩阵 → 日志合并
 # =============================================================================
 
 name: 构建并校验镜像
@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
       run_test:
-        description: "测试选择，可选值：none / readiness / readiness,dataplane / readiness,ota"
+        description: "测试选择，可选值：none / readiness / readiness,dataplane / readiness,ota / ota / netstress"
         required: false
         type: string
         default: "readiness"
@@ -113,11 +113,11 @@ jobs:
               # OTA 矩阵内含初始就绪检查，独立跑不附加 readiness job
               run_ota=true ;;
             netstress)
-              # 网络后端压力 POC（passt A/B 验证）：独立 job，互斥其他测试
+              # 网络后端稳定性回归：独立 job，互斥其他测试
               run_netstress=true ;;
             *) echo "不支持的 run_test 值: $requested" >&2; exit 1 ;;
           esac
-          # 三开关统一显式兜底：set -u 下未赋值分支直接报错而非静默空
+          # 各开关统一显式兜底：set -u 下未赋值分支直接报错而非静默空
           {
             echo "run_test=$normalized"
             echo "run_readiness=${run_readiness:-false}"
@@ -144,7 +144,9 @@ jobs:
           set -euo pipefail
           bash -n build.sh lib/export.sh mkosi/mkosi.finalize \
               mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
-              tests/ota_lib.sh tests/test-readiness.sh tests/test-dataplane.sh tests/test-ota.sh
+              tests/ota_lib.sh tests/test-readiness.sh tests/test-dataplane.sh \
+              tests/test-ota.sh tests/test-net-stress.sh tests/release-smoke.sh \
+              tests/tools/passt/install.sh
           # mkosi 配置解析在容器内执行（宿主不再安装 mkosi）
           docker run --rm -v "${PWD}:/src" -w /src \
             basalt-builder:${{ github.sha }} mkosi -C mkosi summary > /dev/null
@@ -171,7 +173,7 @@ jobs:
             docker run --rm --privileged \
               -v "${PWD}:/src" -w /src \
               -e COMPRESS_OUTPUT -e RUN_TEST -e GITHUB_TOKEN \
-              -e OUTPUT_FORMATS -e DIAG_CMDLINE -e OTA_BASE_URL \
+              -e OUTPUT_FORMATS -e DIAG_CMDLINE \
               -e EFFECTIVE_CONFIG_PATH="/src/configs/landscape_init.toml" \
               basalt-builder:${{ github.sha }} ./build.sh "${args[@]}"
           }
@@ -316,6 +318,7 @@ jobs:
           SSH_TIMEOUT: '120'
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ env.INCLUDE_DOCKER }}
           LANDSCAPE_TEST_RUN_TEST: readiness,dataplane
+          LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
         run: timeout --foreground 30m ./tests/test-dataplane.sh "${IMAGE_PATH}"
 
       - name: 上传数据平面测试日志片段
@@ -368,7 +371,7 @@ jobs:
           retention-days: 7
 
   test_netstress:
-    name: 网络后端压力 POC
+    name: 网络后端稳定性回归
     needs: build_image
     if: ${{ needs.build_image.outputs.run_netstress == 'true' }}
     runs-on: ubuntu-24.04
@@ -387,7 +390,7 @@ jobs:
         timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
-      - name: 运行网络压力 POC
+      - name: 运行网络后端回归
         env:
           SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
           SSH_TIMEOUT: '180'
@@ -396,7 +399,7 @@ jobs:
           DWELL: '300'
         run: timeout --foreground 80m ./tests/test-net-stress.sh "${IMAGE_PATH}"
 
-      - name: 上传网络压力日志片段
+      - name: 上传网络后端回归日志片段
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -406,7 +409,7 @@ jobs:
 
   merge_validation_logs:
     name: 合并校验日志
-    needs: [build_image, test_readiness, test_dataplane, test_ota]
+    needs: [build_image, test_readiness, test_dataplane, test_ota, test_netstress]
     if: ${{ always() && needs.build_image.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
