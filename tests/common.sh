@@ -1004,6 +1004,9 @@ landscape_router_dump_diagnostics() {
         echo "== guest ip_forward =="
         guest_run "cat /proc/sys/net/ipv4/ip_forward" 2>&1 || true
         echo ""
+        echo "== landscape.toml（auth/persistence 取证）=="
+        guest_run "cat /var/lib/landscape/landscape.toml 2>&1" || true
+        echo ""
         echo "== systemd status: landscape-router =="
         guest_run "systemctl status landscape-router --no-pager -l" 2>&1 || true
         echo ""
