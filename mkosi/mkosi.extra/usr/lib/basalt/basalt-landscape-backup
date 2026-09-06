@@ -9,7 +9,7 @@
 # （不进 systemd/不 enable），对 boot/OTA 测试零影响。
 # 一致性：sqlite 为 WAL 模式（sea-orm SqliteJournalMode::Wal），运行中 copy 的
 # DB 不含 WAL 未合并提交 → 备份前必须停服务（restore 同理，见 restore 脚本）。
-# 用法：basalt-landscape-backup.sh [目标目录]（默认 /var/lib/basalt/landscape-backups）
+# 用法：basalt-landscape-backup [目标目录]（默认 /var/lib/basalt/landscape-backups）
 set -eu
 
 SRC=/var/lib/landscape
@@ -36,4 +36,4 @@ fi
 systemctl start landscape-router.service || echo "basalt-landscape-backup: 恢复 landscape-router 启动失败（手动检查）" >&2
 
 echo "basalt-landscape-backup: 完成 → ${OUT}"
-echo "basalt-landscape-backup: 恢复用 basalt-landscape-restore.sh ${OUT}"
+echo "basalt-landscape-backup: 恢复用 basalt-landscape-restore ${OUT}"

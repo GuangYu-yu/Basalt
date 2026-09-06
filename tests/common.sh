@@ -499,7 +499,7 @@ LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES="${LANDSCAPE_ROUTER_EXPAND_IMAGE_BYTES:-2147
 # 源码构建，安装到 tests/tools/passt/bin/，不进系统、不进产品镜像）。
 # passt 实例按 netdev 一一对应（wan/lan/mgmt 各一个独立 L2，socket 均在
 # 测试临时目录），进程 PID 记录于 LANDSCAPE_PASST_PIDS，cleanup 统一回收。
-LANDSCAPE_TEST_NET="${LANDSCAPE_TEST_NET:-slirp}"
+LANDSCAPE_TEST_NET="${LANDSCAPE_TEST_NET:-passt}"
 LANDSCAPE_PASST_PIDS=()
 
 # passt 二进制解析：项目本地（依赖层构建产物）优先；缺失时回退 slirp

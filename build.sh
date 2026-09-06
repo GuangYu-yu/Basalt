@@ -38,7 +38,9 @@ usage() {
 # ── 配置 ──
 [[ -f "${SCRIPT_DIR}/build.env" ]] || die "缺少 build.env（配置单一声明文件）"
 source "${SCRIPT_DIR}/build.env"
-# 全部可调参数的默认值均在 build.env 声明，此处不再重复
+# 可调参数默认值均在 build.env 声明，此处不再重复；以下由环境直接注入、不经
+# build.env：OTA_BASE_URL / DIAG_CMDLINE / MKOSI_DEBUG / GITHUB_TOKEN /
+# EFFECTIVE_CONFIG_PATH（CI 契约，见各自消费点）
 MB=$(( 1024 * 1024 ))                      # 字节算术统一单位，杜绝裸字面量
 SMOKE=false
 # 部署保留深度 = 架构常量（需求：任意时刻最多两个部署共存——当前 rw + 一个
@@ -48,9 +50,6 @@ INSTANCES_MAX=2
 CLI_FORMATS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --base-system)   # 仅支持 debian（mkosi 管线不提供其他系统后端）
-            [[ "$2" == "debian" ]] || die "mkosi 管线仅支持 debian，收到 '$2'"
-            shift 2 ;;
         --include-docker) INCLUDE_DOCKER="$2"; shift 2 ;;
         --output-format)  CLI_FORMATS+=("$2"); shift 2 ;;
         --version)        LANDSCAPE_VERSION="$2"; shift 2 ;;
@@ -102,7 +101,7 @@ fi
 # 缺失则 vacuum 保护静默失效（见 70-root.transfer 头注）
 VER="${IMAGE_VERSION:-1}"
 [[ "${VER}" =~ ^[0-9]+$ ]] || die "镜像版本须为纯数字（收到 '${VER}'）"
-[[ ${#VER} -le 16 ]] || echo "WARN: 镜像版本 '${VER}' 偏长（UKI/镜像文件名预算）" >&2
+[[ ${#VER} -le 16 ]] || warn "镜像版本 '${VER}' 偏长（UKI/镜像文件名预算）"
 
 require() { command -v "$1" >/dev/null || die "缺少 '$1'（安装: apt install $2）"; }
 require mkosi   mkosi
@@ -160,8 +159,8 @@ rm -rf "${STAGED_LANDSCAPE_DIR}"
 # 注入落点为 @landscape-staging 暂存树（三静态资源之一），必须延迟到 pass1
 # 之后灌装：pass1 的 tar 无排除面，暂存提前就位会被打包进根载荷
 if [[ -n "${EFFECTIVE_CONFIG_PATH:-}" ]]; then
+    # 仅校验存在性；实际灌装见 pass1 后的载荷暂存段
     [[ -f "${EFFECTIVE_CONFIG_PATH}" ]] || die "EFFECTIVE_CONFIG_PATH 不存在: ${EFFECTIVE_CONFIG_PATH}"
-    :   # 仅校验存在性；实际灌装见 pass1 后的载荷暂存段
 fi
 
 # ── mkosi 参数拼装 ──
@@ -500,10 +499,10 @@ BUILT_RAW="$(latest_raw)"
 # 不入 BUILD_ARTIFACTS 与 SHA256SUMS：仅模块门禁消费，不入发布清单
 cp -f "${INITRD_FILE}" "${OUTPUT_DIR}/"
 
-# ROOT 工件（tar.xz）：CI 模块门禁第二参数（xz 流式解压 + tar 名录，
-# 无需挂载权限）的输入；不入 BUILD_ARTIFACTS 与发布清单（OTA 发布资产由
-# 下方 ROOT_TAR_FILE 承载）。tar 已在 pass1 后移入 OUTPUT_DIR（规避 pass2
-# mkosi 清理），无需再次拷贝
+# ROOT 工件（tar.xz）身兼两职：① CI 模块门禁第二参数（xz 流式解压 + tar 名录，
+# 无需挂载权限）的输入；② OTA 发布资产（下方 ROOT_TAR_FILE，进入
+# BUILD_ARTIFACTS 与 SHA256SUMS）。tar 已在 pass1 后移入 OUTPUT_DIR（规避
+# pass2 mkosi 清理），无需再次拷贝
 
 # BUILT_RAW 已是最终产物名（显式版本恒注入，与 RAW_FILE 同名）
 [[ "${BUILT_RAW}" -ef "${RAW_FILE}" ]] || mv -f "${BUILT_RAW}" "${RAW_FILE}"

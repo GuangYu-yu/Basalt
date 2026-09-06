@@ -9,10 +9,15 @@ xml_escape() {
     sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' <<<"$1"
 }
 
+# raw → streamOptimized vmdk（vmdk 与 ova 共用同一转换，subformat 需调整时仅改此处）
+raw_to_vmdk() {
+    qemu-img convert -f raw -O vmdk -o subformat=streamOptimized \
+        "${RAW_FILE}" "$1"
+}
+
 export_vmdk() {
     info "转换 vmdk ..."
-    qemu-img convert -f raw -O vmdk -o subformat=streamOptimized \
-        "${RAW_FILE}" "${VMDK_FILE}"
+    raw_to_vmdk "${VMDK_FILE}"
     BUILD_ARTIFACTS+=("${VMDK_FILE}")
 }
 
@@ -22,8 +27,7 @@ export_ova() {
     local raw_size_bytes sectors_512 escaped_vm_name
     local cpu_cores=2 memory_mb=2048 nic_model="virtio" nic_desc="VirtIO ethernet adapter"
     rm -rf "${work}" && mkdir -p "${work}"
-    qemu-img convert -f raw -O vmdk -o subformat=streamOptimized \
-        "${RAW_FILE}" "${work}/disk.vmdk"
+    raw_to_vmdk "${work}/disk.vmdk"
 
     raw_size_bytes=$(stat -c '%s' "${RAW_FILE}")
     sectors_512=$(( raw_size_bytes / 512 ))

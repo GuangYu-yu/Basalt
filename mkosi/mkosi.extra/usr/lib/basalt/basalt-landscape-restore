@@ -4,16 +4,22 @@
 # 安全前提：sqlite WAL 模式 → 必须停止 landscape-router 后整体替换目录内容，
 # 避免运行中覆盖（DB 锁 / WAL -wal/-shm 与主文件不一致）。覆盖即整目录
 # 一致性恢复（与 backup 同粒度，规避"只还原 toml 漏 DB"）。
-# 用法：basalt-landscape-restore.sh <备份 tar 路径>
+# 用法：basalt-landscape-restore <备份 tar 路径>
 set -eu
 
 SRC=/var/lib/landscape
-[ $# -ge 1 ] || { echo "用法: basalt-landscape-restore.sh <backup.tar>" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "用法: basalt-landscape-restore <backup.tar>" >&2; exit 2; }
 TAR="$1"
 [ -f "${TAR}" ] || { echo "basalt-landscape-restore: 备份文件不存在: ${TAR}" >&2; exit 1; }
 
 echo "恢复前停止 landscape-router（WAL 一致性 + 避免 DB 锁）..."
 systemctl stop landscape-router.service
+
+# 预校验：备份 tar 须含顶层 landscape/ 条目，避免错误 tar 在清空后解出错误内容
+if ! tar -tf "${TAR}" | grep -q '^landscape/'; then
+    echo "basalt-landscape-restore: ${TAR} 不含顶层 landscape/ 条目，拒绝恢复" >&2
+    exit 1
+fi
 
 # 整目录清空后解回：保留目录本身（fstab 挂载点 / WorkingDirectory 依赖），
 # 清空其内容。含 -wal/-shm 一并移除（旧 WAL 与旧主文件配套，恢复时用 tar

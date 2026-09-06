@@ -222,7 +222,7 @@ stage_v5_enospc() {
     # 后置契约：系统存活 + API 在线（@data 满不阻塞运行）
     ota_check "塞满后系统存活（SSH）" guest_run "echo ok"
     ota_check "塞满后 API 在线" \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+        guest_run "curl -skI --max-time 5 https://localhost:${LANDSCAPE_CONTROL_PORT}/ -o /dev/null"
     # 盘满判定用 df（确定性）
     ota_check "盘满状态（@data 剩余 < 64M）" \
         guest_run "test \"\$(df -B1M --output=avail /var | tail -n1 | tr -d ' ')\" -lt 64"
@@ -241,7 +241,7 @@ stage_v5_enospc() {
     if [[ "${result}" != "success" ]]; then
         echo "[INFO] 盘满下更新失败（ENOSPC 半状态路径）"
         ota_check "失败后半状态不伤运行（API 在线）" \
-            guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+            guest_run "curl -skI --max-time 5 https://localhost:${LANDSCAPE_CONTROL_PORT}/ -o /dev/null"
         # 释放空间 → 重试；契约：成功 + 成对落盘
         # sync 有界（guest 侧 10s < SSH 15s 上限）：ENOSPC 边缘的 btrfs 事务
         # 提交可能长时间挂起（实测 sync 卡死 → SSH 被 15s timeout 击杀 →
@@ -262,7 +262,7 @@ stage_v5_enospc() {
     # 释放填充空间（后续 vacuum/rescue 阶段需要正常空间）
     guest_run "rm -f /var/lib/basalt-ota-fill /var/lib/basalt-ota-fill2 /run/ota-fill-done; timeout -s KILL 10 sync || true; sleep 3" || true
     ota_check "盘满恢复后 API 在线" \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+        guest_run "curl -skI --max-time 5 https://localhost:${LANDSCAPE_CONTROL_PORT}/ -o /dev/null"
 }
 
 # ── Stage 6：vacuum（破坏性，收尾）──

@@ -31,20 +31,30 @@ ota_serial_offset() {
     [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && stat -c %s "${LANDSCAPE_ROUTER_SERIAL_LOG}" || echo 0
 }
 
-# 串口取证（非判定）：等待已知失败签名；命中返回 0、超时返回 1。仅在 if
-# 上下文消费（调用点须 || true 或 if 包裹，防 set -e 终止）。测试断言不绑定
-# 具体错误文本——签名只证明"boot 已进入失败阶段，可安全硬复位"
-ota_serial_wait_evidence() {
+# 串口轮询核心：等待 pattern 出现在 offset 之后的新增串口输出；命中 0、超时 1。
+# 不打印成功/失败消息——由调用方（取证/断言）按各自语义包装
+ota_serial_poll() {
     local pattern="$1" timeout="$2" offset="$3"
     local t0=${SECONDS}
     while (( SECONDS - t0 < timeout )); do
         if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && \
            tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -Eq "${pattern}"; then
-            echo "[INFO] 失败签名取证（boot 已进入失败阶段）"
             return 0
         fi
         sleep 5
     done
+    return 1
+}
+
+# 串口取证（非判定）：等待已知失败签名；命中返回 0、超时返回 1。仅在 if
+# 上下文消费（调用点须 || true 或 if 包裹，防 set -e 终止）。测试断言不绑定
+# 具体错误文本——签名只证明"boot 已进入失败阶段，可安全硬复位"
+ota_serial_wait_evidence() {
+    local pattern="$1" timeout="$2" offset="$3"
+    if ota_serial_poll "$@"; then
+        echo "[INFO] 失败签名取证（boot 已进入失败阶段）"
+        return 0
+    fi
     echo "[WARN] 未捕获失败签名（仅取证记录，不影响控制流）"
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
     return 1
@@ -54,14 +64,9 @@ ota_serial_wait_evidence() {
 # rescue.target 的稳定产品行为，非偶然日志）
 ota_serial_expect() {
     local pattern="$1" timeout="$2" offset="$3"
-    local t0=${SECONDS}
-    while (( SECONDS - t0 < timeout )); do
-        if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && \
-           tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -Eq "${pattern}"; then
-            return 0
-        fi
-        sleep 5
-    done
+    if ota_serial_poll "$@"; then
+        return 0
+    fi
     error "串口 ${SERIAL_GEN} 轮内未出现: ${pattern}（${timeout}s）"
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "router serial log"
     return 1
@@ -238,9 +243,9 @@ ota_assert_fallback() {
         guest_run "test -f /efi/EFI/Linux/${IMAGE_ID}_${ver}+0-${OTA_TRIES}.efi"
     # 轮询等待（TCG 下 landscape-webserver 启动 30s+，单发 curl 时序脆弱）
     wait_for_guest_command "回退后 API 恢复在线" 120 5 \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+        guest_run "curl -skI --max-time 5 https://localhost:${LANDSCAPE_CONTROL_PORT}/ -o /dev/null"
     ota_check "回退后 API 恢复在线" \
-        guest_run "curl -skI --max-time 5 https://localhost:6443/ -o /dev/null"
+        guest_run "curl -skI --max-time 5 https://localhost:${LANDSCAPE_CONTROL_PORT}/ -o /dev/null"
 }
 
 # ── 统一取证（仅失败路径调用：EXIT trap）──

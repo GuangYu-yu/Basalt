@@ -56,7 +56,8 @@ landscape_dir_is_writable() {
     local parent_dir=""
 
     if [[ -d "$target_dir" ]]; then
-        [[ -w "$target_dir" ]]
+        [[ -w "$target_dir" ]] && return 0
+        return 1
     fi
 
     parent_dir="$(dirname "$target_dir")"

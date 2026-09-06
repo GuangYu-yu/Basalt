@@ -160,6 +160,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_FORMATS: ${{ inputs.output_formats }}
           DIAG_CMDLINE: ${{ inputs.diag_cmdline == true && '1' || '0' }}
+          ROOT_PASSWORD: ${{ inputs.root_password }}
         shell: bash
         run: |
           set -euo pipefail
@@ -173,7 +174,7 @@ jobs:
             docker run --rm --privileged \
               -v "${PWD}:/src" -w /src \
               -e COMPRESS_OUTPUT -e RUN_TEST -e GITHUB_TOKEN \
-              -e OUTPUT_FORMATS -e DIAG_CMDLINE \
+              -e OUTPUT_FORMATS -e DIAG_CMDLINE -e ROOT_PASSWORD \
               -e EFFECTIVE_CONFIG_PATH="/src/configs/landscape_init.toml" \
               basalt-builder:${{ github.sha }} ./build.sh "${args[@]}"
           }

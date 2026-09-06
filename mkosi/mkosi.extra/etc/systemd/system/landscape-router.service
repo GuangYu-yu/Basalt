@@ -15,17 +15,17 @@ Type=exec
 # StateDirectory 首启自动创建工作目录（/var 独立分区，构建期不保证存在）
 StateDirectory=landscape
 WorkingDirectory=/var/lib/landscape
-# 有工厂/存量拓扑则导入启动，否则 Web 引导（运行期按实际文件判定，
-# 无需构建期预渲染开关文件）
-ExecStart=/bin/sh -ec 'if [ -f /var/lib/landscape/landscape_init.toml ]; then exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static; else exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static --auto; fi'
+# 工厂默认拓扑 → home（var 独立分区构建期不带业务文件；工厂默认 toml 随
+# @landscape 载荷分发，home 已有配置/已初始化则不动，工厂重置=清 /var）。
+# 工厂种子（copy-if-missing）与启动判定（有 toml 则导入，否则 Web 引导）
+# 在同一次 shell 内完成——业务规则单一事实源，运行期按实际文件判定，无需
+# 构建期预渲染开关文件
+ExecStart=/bin/sh -ec 'if [ ! -e /var/lib/landscape/landscape_init.toml ] && [ -e /var/lib/basalt/landscape/landscape_init.toml ]; then cp /var/lib/basalt/landscape/landscape_init.toml /var/lib/landscape/; fi; if [ -f /var/lib/landscape/landscape_init.toml ]; then exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static; else exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static --auto; fi'
 Restart=always
 RestartSec=2
 LimitMEMLOCK=infinity
 # eBPF map pin（/sys/fs/bpf 为 tmpfs 语义，天然可写）
 ExecStartPre=/bin/sh -c 'mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf'
-# 工厂默认拓扑 → home（var 独立分区构建期不带业务文件；工厂默认 toml 随
-# @landscape 载荷分发，home 已有配置/已初始化则不动，工厂重置=清 /var）
-ExecStartPre=/bin/sh -c 'if [ ! -e /var/lib/landscape/landscape_init.toml ] && [ -e /var/lib/basalt/landscape/landscape_init.toml ]; then cp /var/lib/basalt/landscape/landscape_init.toml /var/lib/landscape/; fi'
 
 [Install]
 WantedBy=multi-user.target

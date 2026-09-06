@@ -55,12 +55,14 @@ concurrency:
 
 jobs:
   build_and_validate:
-    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.repository.fork }}
+    # fork PR 的 head repo 才是真正来源；workflow_dispatch 无 PR 上下文恒放行
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.head.repo.fork }}
     uses: ./.github/workflows/_build-and-validate.yml
     with:
       include_docker: ${{ inputs.include_docker == 'true' }}
-      run_test: ${{ inputs.run_test }}
+      # pull_request 事件下 inputs 为空，显式兜底默认值，避免空串覆盖 workflow_call 默认
+      run_test: ${{ inputs.run_test || 'readiness' }}
       landscape_version: ${{ inputs.landscape_version || '' }}
-      root_password: ${{ inputs.root_password }}
+      root_password: ${{ inputs.root_password || 'landscape' }}
       diag_cmdline: ${{ inputs.diag_cmdline == 'true' }}
-      net_backend: ${{ inputs.net_backend }}
+      net_backend: ${{ inputs.net_backend || 'passt' }}
