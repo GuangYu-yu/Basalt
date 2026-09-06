@@ -46,8 +46,7 @@ cp "${SRC}" "${DEST}"
 [[ -z "${DHCP_POOL_START}" ]] || sed -i "s#^ip_range_start = .*#ip_range_start = \"${DHCP_POOL_START}\"#" "${DEST}"
 [[ -z "${DHCP_POOL_END}" ]] || sed -i "s#^ip_range_end = .*#ip_range_end = \"${DHCP_POOL_END}\"#" "${DEST}"
 
-# Web 凭据（InitConfig.config.auth 是普通命名字段而非 flatten，顶层 [auth]
-# 会被 serde 静默忽略 → 必须挂在 [config] 表下才随首启导入写入 landscape.toml）
+# Web 凭据 → [config.auth] 挂在 InitConfig.config 下
 if [[ -n "${WEB_ADMIN_USER}" ]]; then
     cat >> "${DEST}" <<EOF
 
