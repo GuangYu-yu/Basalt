@@ -4,9 +4,14 @@
 # 递增），且必须整体不带 root=——残留 root=（无 subvol）会让 fstab-generator
 # 生成挂 DefaultSubvolume=@data 的 sysroot.mount（@data 无系统，必死），且
 # 与本单元的挂载冲突（EBUSY）。无 root= 时本单元是 /sysroot 的唯一提供者。
-# 机制（systemd initrd 官方结构核对）：initrd.target 达成 → 自动 isolate
-# initrd-switch-root.target → systemctl switch-root 对已挂载的 /sysroot 执行
-# 换根（无需存在 sysroot.mount 单元）。本单元排在其前完成挂载即可。
+# 机制（systemd initrd 官方结构核对）：/sysroot 挂载完成 → initrd-root-fs.target
+# 达成 → initrd-fs.target → initrd.target → initrd-cleanup isolate
+# initrd-switch-root.target → switch-root。本单元必须接入 initrd-root-fs.target
+# 完成链（Wants + 让 initrd-root-fs.target After= 本单元，见配套 drop-in）才能
+# 阻塞 cleanup/switch-root；仅 initrd.target Wants= 只保证启动不保证完成——
+# 实测 initrd.target 在挂载未完成即达成，cleanup isolate 抢先 SIGTERM 本单元，
+# /sysroot 空 → switch-root 失败 "os-release file is missing"。本单元 Before=
+# initrd-root-fs.target 排在其达成之前，配合 root-fs.target 的 Wants+After 拉起。
 # 枚举为空（池损坏/无部署）：exit 1 → 单元失败 → initrd emergency（rescue
 # 语义的最后兜底，不 panic 不阻塞）。选中部署若为 ro（deployments-readonly
 # 收敛过）先翻 rw——应急维护需要可写根。
@@ -15,7 +20,8 @@ Description=Basalt rescue: discover and mount newest deployment
 DefaultDependencies=no
 ConditionKernelCommandLine=basalt.rescue=1
 After=dev-disk-by\x2dpartlabel-var.device
-Before=initrd-switch-root.target
+Wants=initrd-root-fs.target
+Before=initrd-root-fs.target initrd-switch-root.target
 
 [Service]
 Type=oneshot
