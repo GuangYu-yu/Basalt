@@ -40,8 +40,8 @@
 #     例外，不作唯一兜底）
 #
 # 更新源：宿主 python3 http.server（SHA256SUMS + 版本化工件），guest 经 WAN
-# slirp 网关 10.0.2.2 访问；设备侧定义以 /etc/sysupdate.d/ 同名覆盖
-# （sysupdate.d(5)：/etc 优先于 /usr/lib）。
+# 网关访问（地址由 landscape_ota_guest_host 按后端自适应）；设备侧定义以
+# /etc/sysupdate.d/ 同名覆盖（sysupdate.d(5)：/etc 优先于 /usr/lib）。
 # =============================================================================
 set -euo pipefail
 

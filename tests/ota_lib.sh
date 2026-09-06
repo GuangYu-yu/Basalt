@@ -176,7 +176,8 @@ ota_hard_reset() {
 ota_wait_booted() {
     # bootstrap 偶发 passt 流转发 reset（实测 ~5%：DHCP offer/ack 正常后
     # kex 仍 reset，无空闲期规律，同镜像硬复位重试即恢复）——infra 级瞬态，
-    # 硬复位一次重试；stage-exhaust 引擎走自身 bootstrap 路径，不受此影响
+    # 硬复位一次重试；stage-exhaust 引擎走自身 bootstrap 路径，自带等价的
+    # 回退 boot 重试（见 ota_stage_exhaust）
     if ! _ota_wait_booted_once; then
         warn "bootstrap 未达（疑似 passt 转发瞬态），硬复位重试一次"
         ota_hard_reset
@@ -456,11 +457,14 @@ ota_stage_exhaust() {
     # 漏检：guest t=230s 的签名被推迟到窗口外），控制流若依赖签名计数会与
     # 固件 try 记账脱节（实测 v4 轮 4 已是回退 boot 而引擎仍按坏 boot 对待）。
     # 轮次推进：轮 1..OTA_TRIES = 坏版本 boot（等签名纯取证）；轮 OTA_TRIES+1
-    # 无条件按回退 boot 处理——直接 bootstrap + bad 态文件断言收敛，不等签名
-    # （健康 boot 无失败签名，等满窗口纯浪费且拉长 SSH 前的空闲期）。
+    # 起无条件按回退 boot 处理——直接 bootstrap + bad 态文件断言收敛，不等签名
+    # （健康 boot 无失败签名，等满窗口纯浪费且拉长 SSH 前的空闲期）。回退 boot
+    # 至多尝试 2 次：TCG boot 时长为分布（实测快侧 ~60s、慢尾 ~430s），单发
+    # SSH 窗口（180s）落在慢尾即超时，且 bootstrap 失败可能是 passt 转发瞬态
+    # ——硬复位重来一次即恢复（与 ota_wait_booted/readiness 的瞬态重试同构）。
     local ver="$1" settle="$2" pattern="$3"
     local round sig=0
-    for round in $(seq 1 $((OTA_TRIES + 1))); do
+    for round in $(seq 1 $((OTA_TRIES + 2))); do
         echo "---- 硬复位轮次 ${round}（v${ver} 失败 boot 收敛，sig=${sig}）----"
         ota_hard_reset
         if (( round <= OTA_TRIES )); then
