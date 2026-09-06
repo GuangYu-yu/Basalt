@@ -741,11 +741,19 @@ landscape_router_start_vm() {
         landscape_passt_start mgmt --no-dhcp \
             --address "${LANDSCAPE_MGMT_GUEST_IP}" --netmask 255.255.255.0 \
             --gateway 192.168.99.1 --tcp-ports "${SSH_PORT}":22 || return 1
-        landscape_passt_start lan \
-            --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 || return 1
+        # lan：显式 ROUTER_LAN_NETDEV 优先——dataplane 等测试自带 LAN 拓扑
+        # （client 与 eth1 同挂 mcast hub），passt-lan 不参与该拓扑，不实例化
+        local passt_lan="/lan"
+        if [[ -n "${ROUTER_LAN_NETDEV:-}" ]]; then
+            lan_netdev="${ROUTER_LAN_NETDEV}"
+            passt_lan=""
+        else
+            landscape_passt_start lan \
+                --address 10.0.2.15 --netmask 255.255.255.0 --gateway 10.0.2.2 || return 1
+            lan_netdev="stream,id=lan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-lan.sock"
+        fi
         wan_netdev="stream,id=wan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-wan.sock"
-        lan_netdev="stream,id=lan,server=off,addr.type=unix,addr.path=${LANDSCAPE_ROUTER_TEMP_DIR}/passt-lan.sock"
-        info "Network backend: passt (3 instances: wan/mgmt/lan)"
+        info "Network backend: passt (wan/mgmt${passt_lan})"
     else
         info "Network backend: slirp"
     fi
