@@ -19,6 +19,10 @@ Before=initrd-switch-root.target
 
 [Service]
 Type=oneshot
-# 单行命令：unit 语法引号不可跨行。sort -V 取版本号最高者
-ExecStart=/bin/sh -c 'exec >/dev/console 2>&1; mkdir -p /run/basalt-rescue-pool /sysroot; mount -t btrfs -o subvolid=5 /dev/disk/by-partlabel/var /run/basalt-rescue-pool || { echo "basalt-rescue-select: pool mount failed"; exit 1; }; latest="$(ls -d /run/basalt-rescue-pool/root-basalt-[0-9]* 2>/dev/null | sort -V | tail -1)"; [ -n "$latest" ] || { echo "basalt-rescue-select: no root-basalt-* deployment found"; exit 1; }; subvol="$(basename "$latest")"; if btrfs property get -ts "$latest" ro 2>/dev/null | grep -q "^ro=true$"; then btrfs property set -ts "$latest" ro false || { echo "basalt-rescue-select: ro->rw failed for $subvol"; exit 1; }; fi; mount -t btrfs -o "subvol=$subvol,compress=zstd:1,noatime,rw" /dev/disk/by-partlabel/var /sysroot && echo "basalt-rescue-select: sysroot=$subvol" || { echo "basalt-rescue-select: sysroot mount failed"; exit 1; }'
+# 单行命令：unit 语法引号不可跨行。sort -V 取版本号最高者。
+# 设备等待：After= 对从未激活的 device 单元是空排序（rescue 无 root=，udev
+# 处理时序不受 fstab-generator 约束，实测 by-partlabel 符号链接可能晚于本
+# 单元就绪——一次 "does not exist"、一次探测成 fuseblk），脚本内轮询兜底；
+# -t btrfs 显式指定（fs 类型由 mkosi.repart 单一事实源决定）
+ExecStart=/bin/sh -c 'exec >/dev/console 2>&1; mkdir -p /run/basalt-rescue-pool /sysroot; i=0; while [ ! -e /dev/disk/by-partlabel/var ] && [ "$i" -lt 60 ]; do sleep 1; i=$((i+1)); done; mount -t btrfs -o subvolid=5 /dev/disk/by-partlabel/var /run/basalt-rescue-pool || { echo "basalt-rescue-select: pool mount failed"; exit 1; }; latest="$(ls -d /run/basalt-rescue-pool/root-basalt-[0-9]* 2>/dev/null | sort -V | tail -1)"; [ -n "$latest" ] || { echo "basalt-rescue-select: no root-basalt-* deployment found"; exit 1; }; subvol="$(basename "$latest")"; if btrfs property get -ts "$latest" ro 2>/dev/null | grep -q "^ro=true$"; then btrfs property set -ts "$latest" ro false || { echo "basalt-rescue-select: ro->rw failed for $subvol"; exit 1; }; fi; mount -t btrfs -o "subvol=$subvol,compress=zstd:1,noatime,rw" /dev/disk/by-partlabel/var /sysroot && echo "basalt-rescue-select: sysroot=$subvol" || { echo "basalt-rescue-select: sysroot mount failed"; exit 1; }'
 RemainAfterExit=yes
