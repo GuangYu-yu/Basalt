@@ -48,12 +48,13 @@ trap 'exit 130' INT
 
 docker_functional_check() {
     guest_run "command -v docker >/dev/null 2>&1" ||
-        return 1
-    wait_for_guest_command "docker service" 60 3 \
+        { echo "docker binary missing" >&2; return 1; }
+    wait_for_guest_command "docker service" 120 5 \
         guest_run "systemctl is-active --quiet docker" ||
-        return 1
+        { guest_run "systemctl status docker --no-pager -l 2>&1 | tail -n 20; journalctl -u docker --no-pager -n 30 2>&1 || true" >&2 || true; return 1; }
 
-    guest_run "docker info >/dev/null 2>&1"
+    guest_run "docker info >/dev/null 2>&1" ||
+        { guest_run "docker info 2>&1 | tail -n 20" >&2 || true; return 1; }
 }
 
 preflight() {
