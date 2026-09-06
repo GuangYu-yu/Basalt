@@ -341,6 +341,25 @@ stage_rescue() {
     offset="$(ota_serial_offset)"
     guest_run "systemctl reboot --boot-loader-entry=${rescue_id}" || true
     sleep 10
+    # 重启确认：TCG CPU 饥饿下 guest 内核间歇停摆（实测 SYN-ACK 停发、SSH
+    # 命令被 15s 超时杀死而未送达），固件 banner 是"真重启了"的唯一可靠
+    # 信号——60s 未出现则重试 reboot 一次
+    local b_offset i rebooted
+    b_offset="$(ota_serial_offset)"
+    i=0; rebooted=0
+    while (( i < 12 )); do
+        if tail -c +$((b_offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -q "BdsDxe"; then
+            rebooted=1
+            break
+        fi
+        sleep 5
+        i=$((i + 1))
+    done
+    if [[ ${rebooted} -eq 0 ]]; then
+        warn "rescue 重启未生效（疑似 guest 假死），重试 reboot"
+        guest_run "systemctl reboot --boot-loader-entry=${rescue_id}" || true
+        sleep 10
+    fi
 
     # 契约：rescue.target 无 sshd/网络 → SSH 不可达；sulogin 提示上串口
     # （串口是 rescue 的唯一观察面；sulogin 提示是稳定产品行为，非偶然日志）
