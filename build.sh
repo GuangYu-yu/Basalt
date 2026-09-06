@@ -423,9 +423,8 @@ VERSION_ID=${VER}
 IMAGE_ID=${IMAGE_ID}
 IMAGE_VERSION=${VER}
 EOF
-# 诊断参数仅 DIAG_CMDLINE=1 注入（rescue initrd journal 全量落 console——
-# rescue-select 零 console 输出的根因取证：没跑/跑了 console 失效/设备未就绪
-# 三分支现有串口无法区分；常规构建产物保持 quiet 语义）
+# 诊断参数仅 DIAG_CMDLINE=1 注入（rescue UKI 叠加 initrd debug → journal 全量
+# 落 console；rescue 链路的常规产物为 quiet，串口是排障唯一观察面）
 RESCUE_DIAG_ARGS=""
 if [[ "${DIAG_CMDLINE:-0}" == 1 ]]; then
     RESCUE_DIAG_ARGS="loglevel=7 systemd.log_level=debug systemd.log_target=console udev.log_level=debug"
