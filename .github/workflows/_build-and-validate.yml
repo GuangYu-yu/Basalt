@@ -48,6 +48,36 @@ on:
         required: false
         type: string
         default: "passt"
+      lan_gateway:
+        description: "自定义工厂拓扑：LAN 网关 IPv4（留空用仓库默认拓扑）"
+        required: false
+        type: string
+        default: ""
+      lan_prefix:
+        description: "自定义工厂拓扑：LAN 前缀长度（0-32，须与 lan_gateway 同给）"
+        required: false
+        type: string
+        default: ""
+      dhcp_pool_start:
+        description: "自定义工厂拓扑：DHCP 池起始 IPv4（须与网关同网段）"
+        required: false
+        type: string
+        default: ""
+      dhcp_pool_end:
+        description: "自定义工厂拓扑：DHCP 池结束 IPv4"
+        required: false
+        type: string
+        default: ""
+      web_admin_user:
+        description: "自定义 Web 管理用户（与密码成对提供；烘进 [auth] 表）"
+        required: false
+        type: string
+        default: ""
+      web_admin_password:
+        description: "自定义 Web 管理密码（与用户成对提供）"
+        required: false
+        type: string
+        default: ""
     outputs:
       image_artifact:
         description: "镜像产物 artifact 名"
@@ -146,10 +176,21 @@ jobs:
               mkosi/mkosi.postinst.chroot tests/common.sh tests/local-runtime.sh \
               tests/ota_lib.sh tests/test-readiness.sh tests/test-dataplane.sh \
               tests/test-ota.sh tests/test-net-stress.sh tests/release-smoke.sh \
-              tests/tools/passt/install.sh
+              tests/tools/passt/install.sh .github/scripts/render-effective-topology.sh
           # mkosi 配置解析在容器内执行（宿主不再安装 mkosi）
           docker run --rm -v "${PWD}:/src" -w /src \
             basalt-builder:${{ github.sha }} mkosi -C mkosi summary > /dev/null
+
+      - name: 渲染自定义工厂拓扑（可选）
+        id: render_topology
+        uses: ./.github/actions/render-effective-topology
+        with:
+          lan_gateway: ${{ inputs.lan_gateway }}
+          lan_prefix: ${{ inputs.lan_prefix }}
+          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
+          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          web_admin_user: ${{ inputs.web_admin_user }}
+          web_admin_password: ${{ inputs.web_admin_password }}
 
       - name: 构建镜像
         timeout-minutes: 60
@@ -164,6 +205,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 自定义拓扑已渲染 → 烘焙对象切到渲染副本；否则用仓库默认拓扑
+          effective="/src/configs/landscape_init.toml"
+          [[ -n "${{ steps.render_topology.outputs.effective_config_path }}" ]] && effective="/src/work/effective-landscape_init.toml"
           build_once() {
             local args=(--output-format "${OUTPUT_FORMATS:-img}")
             [[ "${INCLUDE_DOCKER}" == "true" ]] && args+=(--include-docker true)
@@ -175,13 +219,18 @@ jobs:
               -v "${PWD}:/src" -w /src \
               -e COMPRESS_OUTPUT -e RUN_TEST -e GITHUB_TOKEN \
               -e OUTPUT_FORMATS -e DIAG_CMDLINE -e ROOT_PASSWORD \
-              -e EFFECTIVE_CONFIG_PATH="/src/configs/landscape_init.toml" \
+              -e EFFECTIVE_CONFIG_PATH="${effective}" \
               basalt-builder:${{ github.sha }} ./build.sh "${args[@]}"
           }
           if ! build_once; then
             echo "首次构建失败，重置 work/ 后重试..." >&2
+            # 渲染副本在 work/ 内，随重置暂存到 /tmp 后还原（自定义拓扑重试不丢）
+            rendered_topo=""
+            [[ -n "${{ steps.render_topology.outputs.effective_config_path }}" ]] && \
+              { rendered_topo="/tmp/effective-landscape_init.toml"; cp work/effective-landscape_init.toml "${rendered_topo}"; }
             sudo rm -rf work
             mkdir -p work output
+            [[ -n "${rendered_topo}" ]] && cp "${rendered_topo}" work/effective-landscape_init.toml
             build_once
           fi
 
@@ -276,6 +325,17 @@ jobs:
         timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
+      - name: 渲染自定义工厂拓扑（可选）
+        id: render_topology
+        uses: ./.github/actions/render-effective-topology
+        with:
+          lan_gateway: ${{ inputs.lan_gateway }}
+          lan_prefix: ${{ inputs.lan_prefix }}
+          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
+          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          web_admin_user: ${{ inputs.web_admin_user }}
+          web_admin_password: ${{ inputs.web_admin_password }}
+
       - name: 运行就绪检查
         env:
           SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
@@ -283,6 +343,9 @@ jobs:
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ env.INCLUDE_DOCKER }}
           LANDSCAPE_TEST_RUN_TEST: readiness
           LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
+          LANDSCAPE_INIT_CONFIG: ${{ steps.render_topology.outputs.effective_config_path }}
+          API_USERNAME: ${{ inputs.web_admin_user || 'root' }}
+          API_PASSWORD: ${{ inputs.web_admin_password || 'root' }}
         run: timeout --foreground 25m ./tests/test-readiness.sh "${IMAGE_PATH}"
 
       - name: 上传就绪检查日志片段
@@ -313,6 +376,17 @@ jobs:
         timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
+      - name: 渲染自定义工厂拓扑（可选）
+        id: render_topology
+        uses: ./.github/actions/render-effective-topology
+        with:
+          lan_gateway: ${{ inputs.lan_gateway }}
+          lan_prefix: ${{ inputs.lan_prefix }}
+          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
+          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          web_admin_user: ${{ inputs.web_admin_user }}
+          web_admin_password: ${{ inputs.web_admin_password }}
+
       - name: 运行数据平面测试
         env:
           SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
@@ -320,6 +394,9 @@ jobs:
           LANDSCAPE_TEST_INCLUDE_DOCKER: ${{ env.INCLUDE_DOCKER }}
           LANDSCAPE_TEST_RUN_TEST: readiness,dataplane
           LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
+          LANDSCAPE_INIT_CONFIG: ${{ steps.render_topology.outputs.effective_config_path }}
+          API_USERNAME: ${{ inputs.web_admin_user || 'root' }}
+          API_PASSWORD: ${{ inputs.web_admin_password || 'root' }}
         run: timeout --foreground 30m ./tests/test-dataplane.sh "${IMAGE_PATH}"
 
       - name: 上传数据平面测试日志片段
@@ -356,11 +433,25 @@ jobs:
         timeout-minutes: 15
         uses: ./.github/actions/prepare-test-image
 
+      - name: 渲染自定义工厂拓扑（可选）
+        id: render_topology
+        uses: ./.github/actions/render-effective-topology
+        with:
+          lan_gateway: ${{ inputs.lan_gateway }}
+          lan_prefix: ${{ inputs.lan_prefix }}
+          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
+          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          web_admin_user: ${{ inputs.web_admin_user }}
+          web_admin_password: ${{ inputs.web_admin_password }}
+
       - name: 运行 OTA 更新矩阵测试
         env:
           SSH_PASSWORD: ${{ env.ROOT_PASSWORD }}
           SSH_TIMEOUT: '180'
           LANDSCAPE_TEST_NET: ${{ inputs.net_backend }}
+          LANDSCAPE_INIT_CONFIG: ${{ steps.render_topology.outputs.effective_config_path }}
+          API_USERNAME: ${{ inputs.web_admin_user || 'root' }}
+          API_PASSWORD: ${{ inputs.web_admin_password || 'root' }}
         run: timeout --foreground 80m ./tests/test-ota.sh "${IMAGE_PATH}"
 
       - name: 上传 OTA 测试日志片段

@@ -1,7 +1,8 @@
 # =============================================================================
 # 自定义构建：手动按参数构建专属镜像，产物留存 30 天供下载
-# （需自定义 LAN 网段等配置时：本地以 EFFECTIVE_CONFIG_PATH 指向渲染好的
-#   landscape_init.toml 运行 build.sh，或提 PR 修改 configs 内默认配置）
+# （LAN 网段 / DHCP 池 / Web 管理凭据可选自定义，经渲染脚本改写工厂拓扑后
+#   烘焙进镜像；留空 = 仓库默认拓扑。本地构建等价路径：EFFECTIVE_CONFIG_PATH
+#   指向自备 toml）
 # =============================================================================
 
 name: 自定义构建
@@ -31,6 +32,30 @@ on:
         description: "测试选择：none / readiness / readiness,dataplane / readiness,ota / ota / netstress"
         required: false
         default: "none"
+      lan_gateway:
+        description: "自定义 LAN 网关 IPv4（留空用默认 192.168.10.1；须与 DHCP 池同网段）"
+        required: false
+        default: ""
+      lan_prefix:
+        description: "自定义 LAN 前缀长度（默认 24；与网关同给才生效）"
+        required: false
+        default: ""
+      dhcp_pool_start:
+        description: "自定义 DHCP 池起始 IPv4（默认 .2）"
+        required: false
+        default: ""
+      dhcp_pool_end:
+        description: "自定义 DHCP 池结束 IPv4（默认 .254）"
+        required: false
+        default: ""
+      web_admin_user:
+        description: "自定义 Web 管理用户（默认 root；须与密码成对提供）"
+        required: false
+        default: ""
+      web_admin_password:
+        description: "自定义 Web 管理密码（默认 root；须与用户成对提供）"
+        required: false
+        default: ""
 
 jobs:
   build_and_validate:
@@ -41,3 +66,9 @@ jobs:
       output_formats: ${{ inputs.output_formats || 'img' }}
       landscape_version: ${{ inputs.landscape_version || '' }}
       root_password: ${{ inputs.root_password }}
+      lan_gateway: ${{ inputs.lan_gateway }}
+      lan_prefix: ${{ inputs.lan_prefix }}
+      dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
+      dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+      web_admin_user: ${{ inputs.web_admin_user }}
+      web_admin_password: ${{ inputs.web_admin_password }}

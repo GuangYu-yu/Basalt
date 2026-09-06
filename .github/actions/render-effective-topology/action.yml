@@ -1,0 +1,53 @@
+name: '渲染自定义工厂拓扑'
+description: '按可选输入改写工厂拓扑副本；无自定义输入时为 no-op。输出生效配置路径（host 侧，未自定义时为空）'
+inputs:
+  lan_gateway:
+    description: 'LAN 网关 IPv4'
+    required: false
+    default: ''
+  lan_prefix:
+    description: 'LAN 前缀长度（0-32）'
+    required: false
+    default: ''
+  dhcp_pool_start:
+    description: 'DHCP 池起始 IPv4'
+    required: false
+    default: ''
+  dhcp_pool_end:
+    description: 'DHCP 池结束 IPv4'
+    required: false
+    default: ''
+  web_admin_user:
+    description: 'Web 管理用户'
+    required: false
+    default: ''
+  web_admin_password:
+    description: 'Web 管理密码'
+    required: false
+    default: ''
+outputs:
+  effective_config_path:
+    description: '生效工厂拓扑路径；未自定义时为空（消费方回退仓库默认）'
+    value: ${{ steps.render.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - id: render
+      shell: bash
+      env:
+        TOPOLOGY_SRC: ${{ github.workspace }}/configs/landscape_init.toml
+        TOPOLOGY_DEST: ${{ github.workspace }}/work/effective-landscape_init.toml
+        LAN_GATEWAY: ${{ inputs.lan_gateway }}
+        LAN_PREFIX: ${{ inputs.lan_prefix }}
+        DHCP_POOL_START: ${{ inputs.dhcp_pool_start }}
+        DHCP_POOL_END: ${{ inputs.dhcp_pool_end }}
+        WEB_ADMIN_USER: ${{ inputs.web_admin_user }}
+        WEB_ADMIN_PASSWORD: ${{ inputs.web_admin_password }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${LAN_GATEWAY}" && -z "${DHCP_POOL_START}" && -z "${WEB_ADMIN_USER}" ]]; then
+          echo "path=" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+        bash "${GITHUB_ACTION_PATH}/../../scripts/render-effective-topology.sh"
+        echo "path=${TOPOLOGY_DEST}" >> "${GITHUB_OUTPUT}"
