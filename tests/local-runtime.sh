@@ -39,17 +39,9 @@ fi
 if [[ -z "${CLIENT_MAC+x}" ]]; then
     CLIENT_MAC="${LANDSCAPE_DEFAULT_CLIENT_MAC}"
 fi
-if [[ -z "${CIRROS_CACHE_DIR+x}" ]]; then
-    CIRROS_CACHE_DIR="${WORK_DIR}/downloads/cirros"
-fi
 
 export SSH_PORT WEB_PORT LANDSCAPE_CONTROL_PORT MCAST_PORT MCAST_ADDR
-export ROUTER_WAN_MAC ROUTER_LAN_MAC ROUTER_MGMT_MAC CLIENT_MAC CIRROS_CACHE_DIR
-
-landscape_port_in_use() {
-    local port="$1"
-    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -Eq "(^|[.:])${port}$"
-}
+export ROUTER_WAN_MAC ROUTER_LAN_MAC ROUTER_MGMT_MAC CLIENT_MAC
 
 landscape_dir_is_writable() {
     local target_dir="$1"

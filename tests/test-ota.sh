@@ -52,8 +52,6 @@ source "${SCRIPT_DIR}/local-runtime.sh"
 source "${SCRIPT_DIR}/ota_lib.sh"
 
 IMAGE_PATH="${1:-${PROJECT_DIR}/output/basalt.img}"
-QEMU_MEM="${QEMU_MEM:-1024}"
-QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-180}"
 SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-15}"
@@ -111,8 +109,8 @@ stage_v2_install() {
 
 stage_v2_boot() {
     echo "== stage: v2 引导 + bless =="
-    # 硬复位承载（warm reboot 实测串口输出丢失——v2 boot 曾因此零观察面）；
-    # 断电安全：安装侧 sync 已由 ota_assert_pair_landed 保证。OneShot EFI 变量
+    # 硬复位承载：warm reboot 不保证串口可观察；断电安全：安装侧 sync 已由
+    # ota_assert_pair_landed 保证。OneShot EFI 变量
     # 随 QEMU 终止丢失，但 v2 为最高版本且带 tries，systemd-boot 默认排序仍选 v2
     ota_hard_reset
     ota_wait_booted
@@ -269,14 +267,12 @@ stage_v5_enospc() {
 
 stage_vacuum() {
     echo "== stage: vacuum（裁剪保留深度 + ProtectVersion）=="
-    # 前置状态：v5 安装期 sysupdate 自动 vacuum 已清理非保护旧版本
-    # （实测 v1/v3/v4 被清），池 = 运行版本 v2（受 ProtectVersion 保护）+ v5。
-    # 不再 seed 人工版本（旧流程 vacuum 先行 + seed 5 版本，已弃）
+    # 前置状态：v5 安装期 sysupdate 自动 vacuum 已清理非保护旧版本，
+    # 池 = 运行版本 v2（受 ProtectVersion 保护）+ v5。
     ota_check "前置：运行版本仍为 v2" \
         guest_run "grep -q 'subvol=root-basalt-2' /proc/cmdline"
 
-    # 操作：vacuum（池顶层挂载 rw，无属性窗口——旧 @images 机制已废弃；
-    # systemd-sysupdate bin 不在 PATH，全路径调用）
+    # 操作：vacuum（池顶层挂载 rw；systemd-sysupdate bin 不在 PATH，全路径调用）
     if ! guest_run "/usr/lib/systemd/systemd-sysupdate vacuum"; then
         echo "[FAIL] vacuum 失败" >&2
         return 1

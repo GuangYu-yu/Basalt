@@ -25,8 +25,6 @@ source "${SCRIPT_DIR}/common.sh"
 source "${SCRIPT_DIR}/local-runtime.sh"
 
 IMAGE_PATH="${1:-${PROJECT_DIR}/output/basalt.img}"
-QEMU_MEM="${QEMU_MEM:-1024}"
-QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
 API_USERNAME="${API_USERNAME:-root}"
 API_PASSWORD="${API_PASSWORD:-root}"
@@ -190,14 +188,8 @@ main() {
         exit 2
     fi
 
-    # bootstrap 偶发 passt 流转发 reset（实测 ~5%：DHCP offer/ack 正常后 kex
-    # 仍 reset，无规律，同镜像硬复位重试即恢复）——infra 级瞬态，重试一次
-    if ! landscape_router_bootstrap_mgmt "Router"; then
-        warn "bootstrap 未达（疑似 passt 转发瞬态），硬复位重试一次"
-        landscape_router_stop_vm
-        landscape_router_start_vm "${IMAGE_PATH}" || exit 2
-        landscape_router_bootstrap_mgmt "Router" || exit 2
-    fi
+    landscape_router_bootstrap_transient_retry \
+        landscape_router_bootstrap_mgmt landscape_router_hard_reset "Router" || exit 2
 
     setup_ssh
 

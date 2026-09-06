@@ -183,7 +183,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_FORMATS: ${{ inputs.output_formats }}
           DIAG_CMDLINE: ${{ inputs.diag_cmdline == true && '1' || '0' }}
-          ROOT_PASSWORD: ${{ inputs.root_password }}
         shell: bash
         run: |
           set -euo pipefail

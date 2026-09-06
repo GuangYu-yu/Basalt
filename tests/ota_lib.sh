@@ -9,13 +9,14 @@
 #     注意 /etc 随部署子卷版本化：override 不跨版本切换存活，版本切换后
 #     须重注入（test-ota.sh stage_v2_boot）
 #
-# 实证教训（保留背景，防回归）：
+# 测试环境行为约束：
 #   - 硬复位 = kill -9 QEMU（断电语义）：install 后必须 sync 刷盘，否则页缓存
-#     中的新版本文件丢失（实测 v3 从未落盘、四轮全部引导 v2）
-#   - warm reboot（SSH systemctl reboot）实测可能未执行；失败 boot 一律硬复位
-#     承载；且 warm reboot 后新 boot 的串口输出可能丢失
-#   - 串口签名是取证不是契约：实测会丢/迟到。boot counting 回退的判定以
-#     SSH 可达 + bad 态文件存在为准（稳定契约），串口仅作取证与失败形态同步
+#     中的新版本文件丢失，复位后仍引导旧版本
+#   - 失败 boot 一律硬复位承载：warm reboot 不保证执行，且复位后串口输出
+#     可能丢失
+#   - 串口签名是取证不是契约：串口输出可能丢失或迟到。boot counting 回退的
+#     判定以 SSH 可达 + bad 态文件存在为准（稳定契约），串口仅作取证与失败
+#     形态同步
 
 # ── 串口 ──
 
@@ -174,15 +175,10 @@ ota_hard_reset() {
 }
 
 ota_wait_booted() {
-    # bootstrap 偶发 passt 流转发 reset（实测 ~5%：DHCP offer/ack 正常后
-    # kex 仍 reset，无空闲期规律，同镜像硬复位重试即恢复）——infra 级瞬态，
-    # 硬复位一次重试；stage-exhaust 引擎走自身 bootstrap 路径，自带等价的
+    # bootstrap passt 瞬态重试下沉于 common（landscape_router_bootstrap_transient_retry）；
+    # stage-exhaust 引擎走自身 bootstrap 路径，自带等价的
     # 回退 boot 重试（见 ota_stage_exhaust）
-    if ! _ota_wait_booted_once; then
-        warn "bootstrap 未达（疑似 passt 转发瞬态），硬复位重试一次"
-        ota_hard_reset
-        _ota_wait_booted_once
-    fi
+    landscape_router_bootstrap_transient_retry _ota_wait_booted_once ota_hard_reset
 }
 
 _ota_wait_booted_once() {
@@ -310,7 +306,7 @@ ota_fabricate_uki() {
 
     # .osrel 独立生成（与 build.sh rescue 同一契约）：VERSION_ID == IMAGE_VERSION
     # == OTA 版本，是 systemd-boot Type 2 条目排序键。ukify --os-release=@PATH
-    # 读文件（缺省回退构建宿主机 /etc/os-release——实测曾嵌入 Ubuntu 身份）
+    # 必须显式 @PATH——ukify 缺省会读构建宿主机 /etc/os-release，嵌入错误身份
     cat > "${d}/osrel" <<EOF
 ID=basalt
 NAME="Basalt"
@@ -360,12 +356,10 @@ ota_serve_version() {
 ota_inject_sysupdate_overrides() {
     local url="http://$(landscape_ota_guest_host):${OTA_SERVER_PORT}/"
     local root_b64 uki_b64
-    # ProtectVersion 用字面运行版本而非 %A：v3 更新实证删掉了"受保护"的
-    # 运行部署 root-basalt-2 却保留 root-basalt-1（emergency-dump 池账目）——
-    # %A 在 ProtectVersion= 上下文疑似不展开（空/字面量 → 无保护 → 裁剪
-    # 选中运行版本）。字面版本 = 注入时刻的运行版本（OTA_RUNNING_VER），
-    # 单变量实验：若 v2 不再被删即实锤 %A 失效（设备侧模板同样用 %A，坐实
-    # 则真机 OTA 亦会误删运行版本——需产品级修复决策）
+    # ProtectVersion 用字面运行版本而非 %A：%A 在 ProtectVersion= 上下文
+    # 不展开（空/字面量 → 无保护 → 裁剪会选中运行版本）。字面版本 =
+    # 注入时刻的运行版本（OTA_RUNNING_VER）。设备侧模板同样用字面版本，
+    # 两处须同步演进
     # 设备侧定义的本地镜像（URL + 显式 Verify=no：测试无 GPG 签名链路，
     # 排除发行版 Verify= 默认值差异的干扰）
     root_b64="$(base64 -w0 <<EOF
@@ -399,7 +393,7 @@ MatchPattern=${IMAGE_ID}_@v.efi
 Type=regular-file
 Path=/efi/EFI/Linux
 # @l/@d 通配：枚举时匹配任意计数状态（+3-0 全新 / 中间态 / +0-3 bad），
-# 字面量形态曾致实例不可见 → 账目错乱 → 裁掉运行中版本（实测）
+# 固定字面量会使实例枚举不到 → 池账目错乱 → 裁剪波及运行中版本
 MatchPattern=${IMAGE_ID}_@v+@l-@d.efi ${IMAGE_ID}_@v.efi
 TriesLeft=${OTA_TRIES}
 TriesDone=0

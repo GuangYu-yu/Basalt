@@ -18,8 +18,6 @@ source "${SCRIPT_DIR}/local-runtime.sh"
 
 IMAGE_PATH="${1:?用法: release-smoke.sh <image-path> <expected-version>}"
 EXPECTED_VERSION="${2:?缺少 expected-image-version}"
-QEMU_MEM="${QEMU_MEM:-1024}"
-QEMU_SMP="${QEMU_SMP:-2}"
 SSH_PASSWORD="${SSH_PASSWORD:-landscape}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-180}"
 SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-15}"

@@ -131,10 +131,15 @@ ensure_image_exists() {
     fi
 }
 
+landscape_port_in_use() {
+    local port="$1"
+    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -Eq "(^|[.:])${port}$"
+}
+
 ensure_local_ports_free() {
     local port
     for port in "$@"; do
-        if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+        if landscape_port_in_use "$port"; then
             error "Port ${port} is already in use. Is another QEMU instance running?"
             return 1
         fi
@@ -838,8 +843,7 @@ landscape_router_bootstrap_mgmt() {
 
     error "Bootstrap SSH never became reachable on port ${boot_port}"
     # 终局复跑一次不吞输出：失败原因（认证/连接/命令级，如 "Cannot find
-    # device eth2"）直接进 CI 日志——网络路径死亡与 sysupdate 无关
-    #（首轮 boot 即复现），需命令级错误定位
+    # device eth2"）直接进 CI 日志，供命令级错误定位
     "${boot_ssh[@]}" \
         "ip addr replace ${LANDSCAPE_MGMT_GUEST_IP}/24 dev eth2 && ip link set eth2 up" || true
     dump_log_tail "${LANDSCAPE_ROUTER_SERIAL_LOG}" "${label} serial log"
@@ -876,6 +880,25 @@ landscape_router_stop_vm() {
     # （3222/2222 Address already in use）和 unix socket，新实例绑定失败，
     # bootstrap 连到 tap 对端已死的僵尸 passt 上空等超时
     landscape_passt_stop_all
+}
+
+landscape_router_hard_reset() {
+    landscape_router_stop_vm
+    landscape_router_start_vm "${LANDSCAPE_IMAGE_PATH}"
+}
+
+# bootstrap 偶发 passt 流转发 reset（实测 ~5%：DHCP offer/ack 正常后 kex 仍
+# reset，无规律，同镜像硬复位重试即恢复）——infra 级瞬态，统一在此重试一次。
+# 复位动作由调用方注入：OTA 路径复位前需轮换串口日志（取证偏移依赖），
+# 不能共用裸 stop/start
+landscape_router_bootstrap_transient_retry() {
+    local bootstrap_fn="$1" reset_fn="$2"
+    shift 2
+    if ! "$bootstrap_fn" "$@"; then
+        warn "bootstrap 未达（疑似 passt 转发瞬态），硬复位重试一次"
+        "$reset_fn"
+        "$bootstrap_fn" "$@"
+    fi
 }
 
 landscape_router_cleanup() {
@@ -1162,9 +1185,6 @@ _landscape_api_preferred_prefixes() {
     case "${API_LAYOUT:-}" in
         v1)
             printf '%s\n' 'v1' 'src'
-            ;;
-        src)
-            printf '%s\n' 'src' 'v1'
             ;;
         *)
             printf '%s\n' 'src' 'v1'

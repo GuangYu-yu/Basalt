@@ -62,7 +62,6 @@ main() {
 
     trap ota_exit_handler EXIT
     landscape_prepare_test_environment
-    source "${PROJECT_DIR}/build.env"
     landscape_router_init_paths "netstress"
 
     # 本地 HTTP 源（guest 经网关访问——OTA 数据路径的替身）
