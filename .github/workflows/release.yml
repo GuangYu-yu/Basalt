@@ -71,8 +71,11 @@ jobs:
           image="${IN_IMAGE}"
           if [[ -z "${image}" ]]; then
             land="${landscape#v}"
+            # 首次发布仓库无 v<land>-* tag → grep 无匹配 exit 1 + pipefail 传播，
+            # 显式捕获 pipeline 失败归零，兜底 image=0 后 +1 得 1
             image="$(git ls-remote --tags origin "v${land}-*" \
-              | grep -oE -- "-[0-9]+\$" | tr -d '-' | sort -n | tail -1)"
+              | grep -oE -- "-[0-9]+\$" | tr -d '-' | sort -n | tail -1)" \
+              || image=""
             image=$(( ${image:-0} + 1 ))
           fi
           [[ "${image}" =~ ^[0-9]+$ ]] || { echo "镜像版本须为纯数字: ${image}" >&2; exit 1; }
