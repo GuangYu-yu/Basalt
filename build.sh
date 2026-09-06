@@ -292,9 +292,9 @@ trap 'exit 130' INT
 if [[ "${INCLUDE_DOCKER}" == "true" ]]; then
     # CLI 逐包注入，配置文件保持单一事实
     MKOSI_ARGS+=(--package docker.io)
-    # docker.io 不带 preset 启用（30-landscape.preset 是镜像内服务启用的唯一
-    # 事实来源，仅列常驻服务）→ daemon disabled，首启 is-active 永远 inactive
-    # （实测 docker 变体 readiness 失败根因）。变体专属启用在此条件化追加：
+    # docker 变体专属启用：30-landscape.preset（镜像内服务启用的唯一事实
+    # 来源）仅列常驻服务，装包不等于启用——不同入此行，daemon 保持 disabled，
+    # 首启 systemctl is-active docker 恒 inactive
     STAGED_PRESET="${SCRIPT_DIR}/mkosi/mkosi.extra/etc/systemd/system-preset/30-landscape.preset"
     cp "${STAGED_PRESET}" "${STAGED_PRESET}.orig"
     printf '\n# docker 变体（build.sh include_docker 条件化追加）\nenable docker.service\nenable containerd.service\n' >> "${STAGED_PRESET}"
