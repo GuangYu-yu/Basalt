@@ -48,23 +48,8 @@ on:
         required: false
         type: string
         default: "passt"
-      lan_gateway:
-        description: "自定义工厂拓扑：LAN 网关 IPv4（留空用仓库默认拓扑）"
-        required: false
-        type: string
-        default: ""
-      lan_prefix:
-        description: "自定义工厂拓扑：LAN 前缀长度（0-32，须与 lan_gateway 同给）"
-        required: false
-        type: string
-        default: ""
-      dhcp_pool_start:
-        description: "自定义工厂拓扑：DHCP 池起始 IPv4（须与网关同网段）"
-        required: false
-        type: string
-        default: ""
-      dhcp_pool_end:
-        description: "自定义工厂拓扑：DHCP 池结束 IPv4"
+      lan_cidr:
+        description: "自定义工厂拓扑：LAN 网段 CIDR（网关/DHCP 池自动推导；留空用仓库默认拓扑）"
         required: false
         type: string
         default: ""
@@ -185,10 +170,7 @@ jobs:
         id: render_topology
         uses: ./.github/actions/render-effective-topology
         with:
-          lan_gateway: ${{ inputs.lan_gateway }}
-          lan_prefix: ${{ inputs.lan_prefix }}
-          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
-          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          lan_cidr: ${{ inputs.lan_cidr }}
           web_admin_user: ${{ inputs.web_admin_user }}
           web_admin_password: ${{ inputs.web_admin_password }}
 
@@ -329,10 +311,7 @@ jobs:
         id: render_topology
         uses: ./.github/actions/render-effective-topology
         with:
-          lan_gateway: ${{ inputs.lan_gateway }}
-          lan_prefix: ${{ inputs.lan_prefix }}
-          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
-          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          lan_cidr: ${{ inputs.lan_cidr }}
           web_admin_user: ${{ inputs.web_admin_user }}
           web_admin_password: ${{ inputs.web_admin_password }}
 
@@ -380,10 +359,7 @@ jobs:
         id: render_topology
         uses: ./.github/actions/render-effective-topology
         with:
-          lan_gateway: ${{ inputs.lan_gateway }}
-          lan_prefix: ${{ inputs.lan_prefix }}
-          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
-          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          lan_cidr: ${{ inputs.lan_cidr }}
           web_admin_user: ${{ inputs.web_admin_user }}
           web_admin_password: ${{ inputs.web_admin_password }}
 
@@ -437,10 +413,7 @@ jobs:
         id: render_topology
         uses: ./.github/actions/render-effective-topology
         with:
-          lan_gateway: ${{ inputs.lan_gateway }}
-          lan_prefix: ${{ inputs.lan_prefix }}
-          dhcp_pool_start: ${{ inputs.dhcp_pool_start }}
-          dhcp_pool_end: ${{ inputs.dhcp_pool_end }}
+          lan_cidr: ${{ inputs.lan_cidr }}
           web_admin_user: ${{ inputs.web_admin_user }}
           web_admin_password: ${{ inputs.web_admin_password }}
 
