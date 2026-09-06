@@ -187,8 +187,13 @@ main() {
         exit 2
     fi
 
+    # bootstrap 偶发 passt 流转发 reset（实测 ~5%：DHCP offer/ack 正常后 kex
+    # 仍 reset，无规律，同镜像硬复位重试即恢复）——infra 级瞬态，重试一次
     if ! landscape_router_bootstrap_mgmt "Router"; then
-        exit 2
+        warn "bootstrap 未达（疑似 passt 转发瞬态），硬复位重试一次"
+        landscape_router_stop_vm
+        landscape_router_start_vm "${IMAGE_PATH}" || exit 2
+        landscape_router_bootstrap_mgmt "Router" || exit 2
     fi
 
     setup_ssh
