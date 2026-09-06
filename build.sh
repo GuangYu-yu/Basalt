@@ -290,8 +290,9 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 if [[ "${INCLUDE_DOCKER}" == "true" ]]; then
-    # CLI 逐包注入，配置文件保持单一事实
-    MKOSI_ARGS+=(--package docker.io)
+    # CLI 逐包注入，配置文件保持单一事实。Debian trixie 拆包：docker.io 只含
+    # dockerd，/usr/bin/docker CLI 在 docker-cli（同源码包同版本）
+    MKOSI_ARGS+=(--package docker.io --package docker-cli)
     # docker 变体专属启用：30-landscape.preset（镜像内服务启用的唯一事实
     # 来源）仅列常驻服务，装包不等于启用——不同入此行，daemon 保持 disabled，
     # 首启 systemctl is-active docker 恒 inactive
