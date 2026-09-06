@@ -153,9 +153,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          # 双变体工厂镜像（重命名消歧——发布物名不可冲突）
-          cp artifacts/no-docker/basalt.img.xz release/basalt.img.xz
-          cp artifacts/docker/basalt.img.xz   release/basalt-docker.img.xz
+          # 双变体工厂镜像（重命名消歧——发布物名不可冲突）：通配符匹配
+          # build 产物名（含变体后缀），publish 统一归一为发布固定名
+          cp artifacts/no-docker/*.img.xz release/basalt.img.xz
+          cp artifacts/docker/*.img.xz    release/basalt-docker.img.xz
           # 版本化 OTA 资产（设备侧 MatchPattern 同名：basalt_<v>.tar.xz/.efi，
           # tar.xz 由构建直接产出，无二次压缩）
           cp artifacts/ota/basalt_${IMAGE_VERSION}.tar.xz release/
