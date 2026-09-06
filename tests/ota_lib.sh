@@ -57,7 +57,7 @@ ota_serial_expect() {
     local t0=${SECONDS}
     while (( SECONDS - t0 < timeout )); do
         if [[ -f "${LANDSCAPE_ROUTER_SERIAL_LOG}" ]] && \
-           tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -q "${pattern}"; then
+           tail -c +$((offset + 1)) "${LANDSCAPE_ROUTER_SERIAL_LOG}" 2>/dev/null | grep -Eq "${pattern}"; then
             return 0
         fi
         sleep 5
