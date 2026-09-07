@@ -168,13 +168,12 @@ MKOSI_ARGS=(
     -C "${SCRIPT_DIR}/mkosi"
     --output-dir       "${WORK_DIR}"
     --package-cache-dir "${WORK_DIR}/aptcache"
-    --root-password    "${ROOT_PASSWORD}"
     --image-id         "${IMAGE_ID}"
     --image-version    "${VER}"
     --timezone         "${TIMEZONE}"
     --locale           "${LOCALE}"
-    # v26 脚本 sandbox 清洗宿主环境，需显式注入（postinst 的 ld 用户密码用 +
-    # os-release 注入：IMAGE_ID/IMAGE_VERSION 是 ProtectVersion=%A 契约源）
+    # postinst 的 root 密码 + os-release 注入；mkosi sandbox 清洗宿主环境，
+    # 需显式注入
     --environment      "ROOT_PASSWORD=${ROOT_PASSWORD}"
     --environment      "IMAGE_ID=${IMAGE_ID}"
     --environment      "IMAGE_VERSION=${VER}"

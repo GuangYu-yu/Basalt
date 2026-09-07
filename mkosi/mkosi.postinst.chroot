@@ -1,14 +1,12 @@
 #!/bin/sh
 # =============================================================================
 # mkosi.postinst — chroot 内后置安装（零网络：发布物由 build.sh 宿主侧下载）
-#
-# btrfs 部署子卷路径契约（/usr-etc-var 三分）：
-#   /usr /etc  随版本原子更新的部署内容（root-basalt-<v> 子卷，全根可写）
-#   /var       运行期挂载 @data（用户/应用数据 + 设备身份 state 目录）
-#   landscape 载荷三件套（webserver/static/toml）不在根树——由 pass2 灌装
-#   @landscape 子卷（/var/lib/basalt/landscape 挂载点），与 root OTA 解耦
 # =============================================================================
 set -eu
+
+# chpasswd 同时设置密码并解锁账户（debootstrap 默认 root 锁定，
+# shadow 以 ! 开头；mkosi run_firstboot 只写哈希不解锁）
+echo "root:${ROOT_PASSWORD}" | chpasswd
 
 # 状态目录 → btrfs /var（运行期可写）。兼容层：/root/.landscape-router
 # 是上游硬编码 HOME 路径，做成指向 /var 的 symlink 承接运行时写入
