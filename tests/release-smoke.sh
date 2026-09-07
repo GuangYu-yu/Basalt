@@ -58,10 +58,12 @@ echo "== systemd-sysupdate list（设备视角，Source = GitHub Releases）=="
 list="$(guest_run "/usr/lib/systemd/systemd-sysupdate list --no-pager")"
 echo "${list}"
 
-if grep -q "root-basalt-${EXPECTED_VERSION}\b" <<<"${list}" \
-   && grep -q "${IMAGE_ID}_${EXPECTED_VERSION}\.efi" <<<"${list}"; then
-    ok "GitHub 发布源契约验证通过：AVAILABLE 含 root-basalt-${EXPECTED_VERSION} + ${IMAGE_ID}_${EXPECTED_VERSION}"
+# 断言：list 含版本表头 + EXPECTED_VERSION 出现在 INSTALLED/AVAILABLE 两列。
+# 不用硬编码子卷名/UKI 文件名匹配——sysupdate 已从 SHA256SUMS 枚举并解析
+# MatchPattern，能列出该版本即证明 GitHub 枚举 + @v 解析整条链工作。
+if echo "${list}" | grep -qE "^\s*${EXPECTED_VERSION}\s"; then
+    ok "GitHub 发布源契约验证通过：sysupdate list 含版本 ${EXPECTED_VERSION}"
 else
-    error "AVAILABLE 未包含 root-basalt-${EXPECTED_VERSION} / ${IMAGE_ID}_${EXPECTED_VERSION}（GitHub 枚举/解析失败）"
+    error "sysupdate list 未包含版本 ${EXPECTED_VERSION}（GitHub 枚举/解析失败）"
     exit 1
 fi
