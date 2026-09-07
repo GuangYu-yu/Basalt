@@ -13,6 +13,7 @@
 # 运行版本 UKI 同受 ProtectVersion=%A 保护（与 70-root 一致）：vacuum 不删
 # 当前启动的 UKI——缺此字段时当前版本会被当旧实例清掉（实测教训）。
 ProtectVersion=%A
+Verify=no
 
 [Source]
 Type=url-file

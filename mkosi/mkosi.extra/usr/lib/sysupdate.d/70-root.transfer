@@ -28,6 +28,9 @@
 #     仅识别 xz/gzip/bzip2 魔数，zstd 载荷会被原样喂给 GNU tar 致安装失败
 [Transfer]
 ProtectVersion=%A
+# TLS + SHA256SUMS payload hash 已双重保障传输完整性；签名链条无密钥管理，
+# 留空 Verify=yes 会强拉 SHA256SUMS.gpg 导致 404（sysupdate exit 1）
+Verify=no
 
 [Source]
 Type=url-tar
