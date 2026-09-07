@@ -32,7 +32,8 @@
 #     two resources install/vacuum as a matched pair by version number)
 #   - Payload compressed as xz: systemd 257 pull-stream compression probe
 #     (import-compress.c) only identifies xz/gzip/bzip2 magic; zstd payload
-#     gets fed raw to GNU tar → install failure
+#     fed raw to GNU tar fails install (unverified claim — kept as-is because
+#     build pipeline always produces xz)
 [Transfer]
 ProtectVersion=%A
 # TLS + SHA256SUMS payload hash already double-guarantees transport integrity;

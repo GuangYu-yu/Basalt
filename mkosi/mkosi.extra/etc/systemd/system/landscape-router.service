@@ -13,8 +13,9 @@ Type=exec
 #   Runtime state = @data: WorkingDirectory=/var/lib/landscape holds relative-path
 #     writes; /root/.landscape-router is a build-time symlink → /var/lib/landscape
 #     (upstream hardcoded HOME compat layer)
-# StateDirectory auto-creates the working directory (independent /var partition,
-# not guaranteed present at build time).
+# StateDirectory=landscape auto-creates /var/lib/landscape at runtime (the /var
+# partition is independent, so the directory isn't guaranteed to exist at build
+# time; StateDirectory runs after var.mount and mkdirs it if missing).
 StateDirectory=landscape
 WorkingDirectory=/var/lib/landscape
 # Factory-default topology → home (/var lives on independent partition, no business
