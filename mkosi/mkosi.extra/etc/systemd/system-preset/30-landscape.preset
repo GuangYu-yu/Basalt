@@ -1,18 +1,20 @@
-# 服务启用策略 —— mkosi 构建末尾原生执行 `systemctl preset-all` 应用本文件
-# （mkosi.1 构建序：sysusers → tmpfiles → preset-all）。/etc/system-preset 优先
-# 于发行版 /usr/lib/system-preset，是镜像内服务启用的唯一事实来源
+# Service enable strategy — mkosi runs `systemctl preset-all` at build end
+# (mkosi.1 build order: sysusers → tmpfiles → preset-all). /etc/system-preset
+# takes precedence over distro /usr/lib/system-preset; sole source of truth for
+# which services are enabled in the image.
 enable landscape-router.service
 enable basalt-state-init.service
 enable basalt-deployments-readonly.service
-# OTA 前置不变量：pool btrfs quota（见 unit 内注释）
+# OTA prerequisite invariant: pool btrfs quota (see unit comment).
 enable basalt-pool-quota.service
 enable ssh.service
 enable networking.service
 enable chrony.service
 enable systemd-sysupdate.timer
-# var 分区首启增长（/etc/repart.d/92-var-grow.conf + dropin 显式设备）
+# First-boot var partition growth (/etc/repart.d/92-var-grow.conf + dropin).
 enable systemd-repart.service
-# 双网络栈/双 NTP 防护：即使上游包默认启用也强制关闭
+# Dual network-stack / dual-NTP hardening: force off even if upstream default
+# has them enabled.
 disable systemd-resolved.service
 disable NetworkManager.service
 disable systemd-timesyncd.service

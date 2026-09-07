@@ -1,12 +1,15 @@
-# 启动健康门（Automatic Boot Assessment 业务成功判据）
-# API 监听器就绪（readiness 契约的第一跳）→ boot-complete.target 达成 →
-# systemd-bless-boot.service 去计数锁定新版本；超时失败 → boot-complete
-# 不达成 → bless 不触发 → 重启烧 tries → systemd-boot 自动回落旧版本。
-# 仅监听器探测（不内嵌 API 凭据）：landscape-router 为 Type=exec +
-# Restart=always，进程存活与监听器就绪强耦合，监听器超时即业务级故障。
-# 无 [Install]：由 boot-complete.target 的 Requires drop-in 拉起，仅当
-# 当前启动条目带 tries 计数（OTA 版本）时 systemd-bless-boot-generator
-# 拉起 bless → boot-complete → 本单元才进入启动事务（工厂首启不运行）。
+# Boot health gate (Automatic Boot Assessment business success criterion).
+# API listener ready (first hop of readiness contract) → boot-complete.target
+# reached → systemd-bless-boot.service decrements tries and locks new version;
+# timeout failure → boot-complete not reached → bless not triggered → reboot
+# burns tries → systemd-boot auto-falls back to old version.
+# Listener probe only (no embedded API credentials): landscape-router is
+# Type=exec + Restart=always, process liveness strongly couples to listener
+# ready; listener timeout = business-level fault.
+# No [Install]: pulled in by boot-complete.target Requires drop-in. Only when
+# the current boot entry carries tries counter (OTA version) does
+# systemd-bless-boot-generator pull bless → boot-complete → this unit into the
+# boot transaction (factory first boot doesn't run it).
 [Unit]
 Description=Basalt boot health gate (API listener) for bless
 After=landscape-router.service
@@ -14,11 +17,12 @@ Before=boot-complete.target
 
 [Service]
 Type=oneshot
-# 失败可见性：探测超时消息同步到 console（串口）——boot 级业务故障的唯一
-# 观察面（OTA 测试硬复位承载、无 SSH 的失败形态须靠串口日志定位）
+# Failure visibility: probe-timeout messages sync to console (serial) — the
+# only observation surface for boot-level business faults (OTA tests hard-reset,
+# failure mode without SSH must be diagnosed via serial log).
 StandardOutput=journal+console
 StandardError=journal+console
-# 每轮 curl(≤3s)+sleep 3s，循环上界 40 轮（≈240s，与 TimeoutStartSec 对齐）；
-# TimeoutStartSec=240 兜底防 curl 挂死
+# Each round curl(≤3s) + sleep 3s, upper bound 40 rounds (≈240s, matches
+# TimeoutStartSec); TimeoutStartSec=240 guards curl hang.
 ExecStart=/bin/sh -ec 'i=0; while [ $i -lt 40 ]; do curl -skI --max-time 3 https://localhost:6443/ -o /dev/null && exit 0; i=$((i+1)); sleep 3; done; echo "API listener not ready after ${i} probes" >&2; exit 1'
 TimeoutStartSec=240

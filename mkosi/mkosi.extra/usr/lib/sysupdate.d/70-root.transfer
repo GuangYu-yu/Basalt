@@ -1,41 +1,50 @@
-# 设备侧 sysupdate transfer —— 根部署子卷（btrfs subvolume 目标）
-# systemd-sysupdate.timer（postinst preset enable）定时消费；
-# `systemd-sysupdate list/update` 手动触发同用此定义。
+# Device-side sysupdate transfer — root deployment subvolume (btrfs target)
+# Consumed by systemd-sysupdate.timer (preset enable in postinst);
+# `systemd-sysupdate list/update` manual trigger uses the same definition.
 #
-# 语义（sysupdate.d(5) 官方核对，v257 可用）：
-#   - url-tar 源 → subvolume 目标为受支持组合（资源类型矩阵：url-tar 的
-#     Compatible Targets = directory, subvolume）
-#   - 版本枚举走 SHA256SUMS 清单（GET <Path>/SHA256SUMS），下载 payload
-#     无条件对清单校验；Verify= 只控制清单的 GPG 签名验证
-#   - 解包走 systemd-import tar --direct --btrfs-subvol=yes（内部 GNU tar
-#     --xattrs --xattrs-include=*——capabilities/xattr 全保留，与构建侧
-#     mkosi make_tar 的 GNU tar --acls --xattrs PAX 同构）
-#   - Target MatchPattern 命名新子卷：root-basalt-@v（连字符前缀固定，
-#     不随 IMAGE_ID 渲染；UKI cmdline 的 subvol= 同源）
-#   - InstancesMax=2：更新发起时保证不超过 1 个旧版本存在，超出即删
-#     （即用即弃 A/B：当前 rw + 一个旧 ro，需求上限）
-#   - RemoveTemporary=（默认 yes）：更新前清理上次不完整残留（临时子卷）
-#   - 刻意不设 ReadOnly=：它只对新写入的子卷生效（写时标记），而新部署
-#     是下次启动的运行根，必须 rw。旧部署转 ro 由收尾单元
-#     deployments-readonly.service 承载（保护性优化，非正确性前提）
-#   - Path=/var/lib/basalt/pool = fstab 池顶层挂载点（subvolid=5）：
-#     sysupdate 在此创建 root-basalt-<v> 子卷。Path=/ 会让子卷落在调用
-#     进程根（运行部署内部）→ 嵌套子卷静默事故，见 fstab 注释
-#   - 幂等：目标已是该版本时 update 为 no-op
-#   - InstancesMax 与 80-uki.transfer 保持一致（sysupdate.d(5) 明示建议各
-#     transfer 一致，否则残留不完整组合；两资源同版本号成对安装、成对 vacuum）
-#   - 载荷压缩为 xz：systemd 257 的 pull 流压缩探测（import-compress.c）
-#     仅识别 xz/gzip/bzip2 魔数，zstd 载荷会被原样喂给 GNU tar 致安装失败
+# Semantics (verified against sysupdate.d(5), v257 works):
+#   - url-tar source → subvolume target is a supported combination (resource
+#     type matrix: url-tar Compatible Targets = directory, subvolume)
+#   - Version enumeration walks SHA256SUMS manifest (GET <Path>/SHA256SUMS),
+#     downloads payload and unconditionally verifies manifest; Verify= only
+#     controls GPG signature validation of the manifest itself
+#   - Extract via systemd-import tar --direct --btrfs-subvol=yes (internal GNU
+#     tar --xattrs --xattrs-include=* — capabilities/xattrs fully preserved,
+#     same shape as build-side mkosi make_tar GNU tar --acls --xattrs PAX)
+#   - Target MatchPattern names new subvolume: root-basalt-@v (hyphen prefix
+#     fixed, not rendered from IMAGE_ID; UKI cmdline subvol= is the source
+#     of truth)
+#   - InstancesMax=2: at most 1 old version kept when update starts, excess
+#     deleted (use-and-discard A/B: current rw + one old ro, sufficient)
+#   - RemoveTemporary= (default yes): clean up previous incomplete residue
+#     (temporary subvol) before update
+#   - Deliberately not setting ReadOnly=: it only affects newly written
+#     subvolumes (write-time mark), but a new deployment is the next boot's
+#     running root and must be rw. Old→ro is handled by the post-update unit
+#     deployments-readonly.service (protective optimization, not correctness)
+#   - Path=/var/lib/basalt/pool = fstab pool top-level mount (subvolid=5):
+#     sysupdate creates root-basalt-<v> here. Path=/ would land subvolumes
+#     inside the running deployment → silent nested-subvolume accident, see
+#     fstab comment
+#   - Idempotent: update is a no-op when target is already this version
+#   - InstancesMax kept in sync with 80-uki.transfer (sysupdate.d(5) explicitly
+#     recommends matching across transfers, else incomplete pairs remain; the
+#     two resources install/vacuum as a matched pair by version number)
+#   - Payload compressed as xz: systemd 257 pull-stream compression probe
+#     (import-compress.c) only identifies xz/gzip/bzip2 magic; zstd payload
+#     gets fed raw to GNU tar → install failure
 [Transfer]
 ProtectVersion=%A
-# TLS + SHA256SUMS payload hash 已双重保障传输完整性；签名链条无密钥管理，
-# 留空 Verify=yes 会强拉 SHA256SUMS.gpg 导致 404（sysupdate exit 1）
+# TLS + SHA256SUMS payload hash already double-guarantees transport integrity;
+# signature chain has no key management, leaving Verify=yes forces SHA256SUMS.gpg
+# fetch → 404 → sysupdate exit 1.
 Verify=no
 
 [Source]
 Type=url-tar
-# Path 不带 scheme：占位域经 build.sh sed 渲染为含 scheme 的完整 URL
-#（模板带 https:// 前缀会渲染出双重 scheme——实测 "Could not resolve hostname"）
+# Path carries no scheme: placeholder domain rendered by build.sh sed into a
+# full URL with scheme (template with https:// prefix double-renders — empiric
+# "Could not resolve hostname").
 Path=updates.example.com/basalt/
 MatchPattern=basalt_@v.tar.xz
 

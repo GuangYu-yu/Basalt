@@ -1,39 +1,42 @@
 #!/bin/sh
-# basalt-landscape-backup — landscape 运行态手动备份（最小工具）
-# 目标：/var/lib/landscape（@data 内 WorkingDirectory）承载 landscape 全部
-# 运行态——sqlite DB（权威配置源）+ landscape.toml（运行期文件配置）+
-# landscape_init.toml（导入/导出快照）+ logs/。备份 = 整个目录 tar，天然配套，
-# 规避"只备 toml 漏 DB"与 WAL 未合并的坑。
-# 为什么整个目录 tar 而非拆子卷/快照：运行态是单目录多文件 + 二进制 sqlite，
-# 无需子卷级快照；tar 保留文件属性，覆盖时整目录一致性恢复。设计为手动调用
-# （不进 systemd/不 enable），对 boot/OTA 测试零影响。
-# 一致性：sqlite 为 WAL 模式（sea-orm SqliteJournalMode::Wal），运行中 copy 的
-# DB 不含 WAL 未合并提交 → 备份前必须停服务（restore 同理，见 restore 脚本）。
-# 用法：basalt-landscape-backup [目标目录]（默认 /var/lib/basalt/landscape-backups）
+# basalt-landscape-backup — manual landscape runtime backup
+# Target: /var/lib/landscape (WorkingDirectory in @data) holds all landscape
+# runtime state — sqlite DB (authoritative config source) + landscape.toml
+# (runtime file config) + landscape_init.toml (import/export snapshot) + logs/.
+# Backup = entire directory tar, which keeps toml/DB naturally coupled.
+# Why whole directory tar, not per-subvolume snapshot: runtime is a single
+# directory tree + binary sqlite; no subvolume-level snapshot needed. tar
+# preserves file attributes and restores consistent directory state on cover.
+# Designed for manual invocation only (not enabled as a systemd unit) — zero
+# impact on boot/OTA test paths.
+# Consistency: sqlite uses WAL mode; running copy omits uncommitted WAL
+# segments → stop the service before backup (restore does the same).
+# Usage: basalt-landscape-backup [target dir] (default /var/lib/basalt/landscape-backups)
 set -eu
 
 SRC=/var/lib/landscape
 DEST_DEFAULT=/var/lib/basalt/landscape-backups
 DEST="${1:-${DEST_DEFAULT}}"
 
-[ -d "${SRC}" ] || { echo "basalt-landscape-backup: ${SRC} 不存在（landscape 未初始化？）" >&2; exit 1; }
+[ -d "${SRC}" ] || { echo "basalt-landscape-backup: ${SRC} not found (landscape not initialized?)" >&2; exit 1; }
 
 mkdir -p "${DEST}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${DEST}/landscape-backup-${STAMP}.tar"
 
-echo "备份前停止 landscape-router（WAL 一致性）..."
-systemctl stop landscape-router.service || echo "basalt-landscape-backup: 停止 landscape-router 失败（继续，可能捕获不完整 WAL）" >&2
+echo "Stopping landscape-router for WAL-consistent backup..."
+systemctl stop landscape-router.service || echo "basalt-landscape-backup: landscape-router stop failed (continuing; WAL may be incomplete)" >&2
 
-# tar 整个运行态目录；不含 /var/lib/landscape 外路径。失败不残留半档。
+# tar the entire runtime directory; nothing outside /var/lib/landscape.
+# Remove partial output on failure.
 if ! tar -C /var/lib -cf "${OUT}" landscape; then
     rm -f "${OUT}"
-    echo "basalt-landscape-backup: tar 失败" >&2
+    echo "basalt-landscape-backup: tar failed" >&2
     systemctl start landscape-router.service || true
     exit 1
 fi
 
-systemctl start landscape-router.service || echo "basalt-landscape-backup: 恢复 landscape-router 启动失败（手动检查）" >&2
+systemctl start landscape-router.service || echo "basalt-landscape-backup: landscape-router start failed after restore (manual check)" >&2
 
-echo "basalt-landscape-backup: 完成 → ${OUT}"
-echo "basalt-landscape-backup: 恢复用 basalt-landscape-restore ${OUT}"
+echo "basalt-landscape-backup: done → ${OUT}"
+echo "basalt-landscape-backup: restore with basalt-landscape-restore ${OUT}"

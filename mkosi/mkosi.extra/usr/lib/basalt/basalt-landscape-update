@@ -1,21 +1,23 @@
 #!/bin/sh
-# basalt-landscape-update — @landscape 载荷独立更新（最小下载单元）
-# 载荷 = landscape-webserver + static/（landscape_init.toml 为构建期 CI 注入
-# 的工厂种子，不随上游 release 分发，不在此更新；设备 home 内已初始化配置
-# 更不受影响）。与 root OTA 解耦：不引入额外的 sysupdate transfer/版本状态机。
+# basalt-landscape-update — @landscape payload independent update (minimal unit).
+# Payload = landscape-webserver + static/ (landscape_init.toml is a build-time CI
+# injected factory seed; not distributed with upstream release, won't be updated
+# here; device home initialized config stays untouched). Decoupled from root OTA:
+# no extra sysupdate transfer / version state machine introduced.
 #
-# 源与校验：复用上游 Landscape GitHub Releases（build.sh 同一获取方式），
-# 源 URL 经 /etc/basalt/landscape-update.conf 的 LANDSCAPE_RELEASE_URL 覆盖
-# （缺省上游 latest/download）。SHASUM256sum.txt（上游资产名）若存在则强校验
-# 本次下载项；清单缺失时退化为 curl -f 传输级校验并显式告警。
-# 原子落盘：全部资源先落临时目录并校验，staging 完整成形后逐项 rename
-# 到位（同子卷内 rename 原子），最后按需重启 landscape-router 换新进程。
+# Source & verification: reuses upstream Landscape GitHub Releases (same fetch path
+# as build.sh). Source URL overridable via /etc/basalt/landscape-update.conf
+# LANDSCAPE_RELEASE_URL. SHASUM256sum.txt (upstream asset) strong-verifies items
+# if present; falls back to curl -f transport-level check + explicit warn on miss.
+# Atomic landing: all resources stage in temp dir and verify, then rename into
+# place item-by-item (atomic within same subvolume), finally restart landscape-router
+# for new binary process.
 set -eu
 
 DEST=/var/lib/basalt/landscape
 CONF=/etc/basalt/landscape-update.conf
 RELEASE_URL="https://github.com/ThisSeanZhang/landscape/releases/latest/download/"
-[ -f "${CONF}" ] && . "${CONF}"   # LANDSCAPE_RELEASE_URL=... 可覆盖
+[ -f "${CONF}" ] && . "${CONF}"   # LANDSCAPE_RELEASE_URL=... can override
 
 TMP="$(mktemp -d /run/basalt-landscape-update.XXXXXX)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -26,22 +28,24 @@ fetch landscape-webserver-x86_64 "${TMP}/landscape-webserver"
 chmod 0755 "${TMP}/landscape-webserver"
 fetch static.zip "${TMP}/static.zip"
 unzip -oq "${TMP}/static.zip" -d "${TMP}/"
-[ -d "${TMP}/static" ] || { echo "static.zip 解压后无 static/ 目录" >&2; exit 1; }
+[ -d "${TMP}/static" ] || { echo "static.zip produced no static/ dir after extract" >&2; exit 1; }
 
-# 可选完整性校验：源目录存在 SHASUM256sum.txt 即强校验（仅校验本次下载项）。
-# 清单条目用上游资产名（landscape-webserver-x86_64），本地落盘名为
-# landscape-webserver（服务引用名），校验前经 sed 把清单文件名改写为本地名
+# Optional integrity check: strong-verify via SHASUM256sum.txt if source has it
+# (only verifies this run's downloaded items). Manifest uses upstream asset names
+# (landscape-webserver-x86_64), local landing name is landscape-webserver; sed
+# rewrites manifest names to local names before checking.
 if fetch SHASUM256sum.txt "${TMP}/SHASUM256sum.txt" 2>/dev/null; then
     ( cd "${TMP}" && grep -E 'landscape-webserver-x86_64$|static\.zip$' SHASUM256sum.txt \
         | sed 's/  landscape-webserver-x86_64$/  landscape-webserver/' \
-        | sha256sum -c - ) || { echo "SHASUM256sum.txt 校验失败" >&2; exit 1; }
+        | sha256sum -c - ) || { echo "SHASUM256sum.txt verification failed" >&2; exit 1; }
 else
-    echo "basalt-landscape-update: 源无 SHASUM256sum.txt，跳过逐文件校验（传输级校验已过）" >&2
+    echo "basalt-landscape-update: source has no SHASUM256sum.txt, skipping per-file check (transport-level check passed)" >&2
 fi
 
-# 逐项原子替换：每个 rename 原子，整体替换非原子——短暂窗口内旧二进制与
-# 新 static 并存（webserver Restart=always + 末尾重启收敛，接受）；失败中止
-# 保留旧载荷（.old 回滚残留在下次成功更新时清理）
+# Atomic per-item replace: each rename is atomic; whole replace is NOT — brief
+# window old binary + new static coexist (webserver Restart=always + final restart
+# converge, accepted); failure aborts leaving old payload intact (.old rollback
+# residue cleaned on next successful update).
 for item in landscape-webserver static; do
     rm -rf "${DEST}.${item}.old"
     [ -e "${DEST}/${item}" ] && mv "${DEST}/${item}" "${DEST}.${item}.old"
@@ -49,7 +53,8 @@ for item in landscape-webserver static; do
 done
 rm -rf "${DEST}".*.old
 
-# 新载荷就位：重启服务进程（ExecStart shell 包装 exec 二进制，restart 即换新）
+# New payload landed: restart service process (ExecStart shell wrapper execs binary,
+# restart picks up new one).
 systemctl try-restart landscape-router.service
 
-echo "landscape 载荷更新完成：${DEST}"
+echo "basalt-landscape-update: payload updated → ${DEST}"

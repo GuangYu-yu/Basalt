@@ -1,11 +1,13 @@
 [Unit]
 Description=Basalt pool btrfs quota enable (filesystem invariant)
-# OTA 前置不变量：sysupdate url-tar → subvolume 目标会为临时部署子卷建立
-# 默认 qgroup 层级，内核 6.12+ 对 quota 关闭的 btrfs 的 qgroup ioctl 返回
-# -ENOTCONN，而 systemd-pull 仅容忍 -ENOTTY → 更新硬失败。quota 是
-# per-filesystem 持久元数据，属文件系统初始化不变量（machinectl 对
-# /var/lib/machines 池同款，machine-pool.c）；mkfs.btrfs/systemd-repart
-# 均无启用选项，故首启收敛。已启用时内核直接返回 0（幂等 no-op，兼自愈）
+# OTA prerequisite invariant: sysupdate url-tar → subvolume target creates
+# default qgroup hierarchy for temporary deployments; kernel 6.12+ btrfs
+# returns -ENOTCONN on qgroup ioctl when quota is off, but systemd-pull only
+# tolerates -ENOTTY → update hard-fails. Quota is per-filesystem persistent
+# metadata, a filesystem-init invariant (machinectl does the same for
+# /var/lib/machines pool, machine-pool.c); neither mkfs.btrfs nor systemd-
+# repart have an enable option, so converged at first boot. When already
+# enabled kernel returns 0 directly (idempotent no-op, self-healing too).
 After=var.mount
 Before=systemd-sysupdate.service
 

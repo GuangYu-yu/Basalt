@@ -1,7 +1,8 @@
 #!/bin/sh
-# OTA 前置空间就绪（由 systemd-sysupdate.service wrapper 调用）：
-# btrfs resize 扩展文件系统（x-systemd.growfs 只在挂载窗口运行一次，
-# 首启增长错过该窗口时由此兜底）。已增长时为幂等 no-op。
-# 分区级增长由 initrd 内 systemd-repart（92-var-grow.conf Weight=100）每次
-# boot 承载，不再于此重复调用。
+# OTA pre-flight space readiness (called by systemd-sysupdate.service wrapper):
+# btrfs resize extends filesystem (x-systemd.growfs only runs once during the
+# mount window; this catches the case where first-boot growth missed that
+# window). Idempotent no-op when already grown. Partition-level growth handled
+# every boot by initrd systemd-repart (92-var-grow.conf Weight=100), no repeat
+# call here.
 btrfs filesystem resize max /var

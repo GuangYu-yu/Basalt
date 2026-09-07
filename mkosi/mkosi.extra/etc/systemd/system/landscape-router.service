@@ -1,30 +1,33 @@
 [Unit]
 Description=Landscape Router
-# 分区/文件系统扩容由 initrd 内 systemd-repart 完成（先于 switch_root），
-# 无需在应用单元上再挂顺序依赖；@landscape 载荷挂载先于本单元（local-fs 段）
+# Partition/filesystem growth done by initrd systemd-repart (before switch_root);
+# no extra order dep on application unit; @landscape payload mounts before this
+# unit (local-fs target).
 After=local-fs.target
 
 [Service]
 Type=exec
-# /usr-etc-var 三分契约：
-#   载荷（webserver/static/toml）= @landscape 子卷（/var/lib/basalt/landscape，
-#     与 root OTA 解耦）；-w 显式指定 webroot，消除二进制默认路径歧义
-#   运行期状态 = @data：WorkingDirectory=/var/lib/landscape 承接进程的相对
-#     路径写入；/root/.landscape-router 是构建期预留的 symlink → /var/lib/landscape
-#     （上游 HOME 硬编码路径兼容层）
-# StateDirectory 首启自动创建工作目录（/var 独立分区，构建期不保证存在）
+# /usr-etc-var three-layer contract:
+#   Payload (webserver/static/toml) = @landscape subvolume (/var/lib/basalt/landscape,
+#     decoupled from root OTA); -w explicit webroot removes binary default-path ambiguity
+#   Runtime state = @data: WorkingDirectory=/var/lib/landscape holds relative-path
+#     writes; /root/.landscape-router is a build-time symlink → /var/lib/landscape
+#     (upstream hardcoded HOME compat layer)
+# StateDirectory auto-creates the working directory (independent /var partition,
+# not guaranteed present at build time).
 StateDirectory=landscape
 WorkingDirectory=/var/lib/landscape
-# 工厂默认拓扑 → home（var 独立分区构建期不带业务文件；工厂默认 toml 随
-# @landscape 载荷分发，home 已有配置/已初始化则不动，工厂重置=清 /var）。
-# 工厂种子（copy-if-missing）与启动判定（有 toml 则导入，否则 Web 引导）
-# 在同一次 shell 内完成——业务规则单一事实源，运行期按实际文件判定，无需
-# 构建期预渲染开关文件
+# Factory-default topology → home (/var lives on independent partition, no business
+# files at build time; factory-default toml ships with @landscape payload; if home
+# already has config, leave it alone. Factory reset = rm -rf /var).
+# Factory seed (copy-if-missing) and boot decision (start toml → import, else Web
+# bootstrap) are done in one shell — single source of truth for business rules;
+# runtime decides by actual file state, no build-time pre-rendered flag files.
 ExecStart=/bin/sh -ec 'if [ ! -e /var/lib/landscape/landscape_init.toml ] && [ -e /var/lib/basalt/landscape/landscape_init.toml ]; then cp /var/lib/basalt/landscape/landscape_init.toml /var/lib/landscape/; fi; if [ -f /var/lib/landscape/landscape_init.toml ]; then exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static; else exec /var/lib/basalt/landscape/landscape-webserver -w /var/lib/basalt/landscape/static --auto; fi'
 Restart=always
 RestartSec=2
 LimitMEMLOCK=infinity
-# eBPF map pin（/sys/fs/bpf 为 tmpfs 语义，天然可写）
+# eBPF map pin (/sys/fs/bpf is tmpfs semantics, writable by nature).
 ExecStartPre=/bin/sh -c 'mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf'
 
 [Install]

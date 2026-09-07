@@ -1,17 +1,21 @@
-# 设备侧 sysupdate transfer —— UKI（入口点资源）
-# transfer 文件名字母序决定写入顺序：入口点（UKI）最后写（80 > 70-root），
-# 异常中断只会留下「有部署无入口」的无害半状态（sysupdate.d(5) 两阶段
-# 语义：先全部下载解包到临时目标，再按 transfer 文件名字母序 rename 定稿
-# + 磁盘同步）。
-# 版本化 UKI 文件保留多份：旧 UKI 条目仍可启动 = 回滚路径。
-# InstancesMax=2 与 70-root.transfer 一致（部署保留深度 = 架构常量）；
-# rescue UKI（basalt-rescue.efi）不匹配 MatchPattern，vacuum 不动。
-# ESP 挂载点由 fstab PARTLABEL=ESP 条目固定（/efi）。
-# 资源模型 = 版本化单个文件（regular-file）：Path= 为容纳多版本文件的目录，
-# MatchPattern= 定目录内文件命名（boot counting 文件名，@l/@d 三段式）。
+# Device-side sysupdate transfer — UKI (entry-point resource)
+# Transfer file name alphabetical order determines write order: entry point
+# (UKI) written last (80 > 70-root). Aborted interrupts leave only a harmless
+# half-state of "deployment without entry point" (sysupdate.d(5) two-phase
+# semantics: download+extract all to temp first, then rename finalize + fsync
+# alphabetically by transfer file name).
+# Versioned UKI files kept: old UKI entries remain bootable = rollback path.
+# InstancesMax=2 matches 70-root.transfer (deployment retention depth =
+# architecture constant); rescue UKI (basalt-rescue.efi) doesn't match
+# MatchPattern, vacuum leaves it untouched.
+# ESP mount point fixed by fstab PARTLABEL=ESP entry (/efi).
+# Resource model = versioned single file (regular-file): Path= holds multi-
+# version directory, MatchPattern= names files within (boot counting file name,
+# @l/@d three-section form).
 [Transfer]
-# 运行版本 UKI 同受 ProtectVersion=%A 保护（与 70-root 一致）：vacuum 不删
-# 当前启动的 UKI——缺此字段时当前版本会被当旧实例清掉（实测教训）。
+# Running-version UKI also protected by ProtectVersion=%A (matches 70-root):
+# vacuum must not delete the currently booted UKI — without this the current
+# version is treated as an old instance and cleaned up (empiric lesson).
 ProtectVersion=%A
 Verify=no
 
@@ -23,10 +27,12 @@ MatchPattern=basalt_@v.efi
 [Target]
 Type=regular-file
 Path=/efi/EFI/Linux
-# @l/@d 通配（sysupdate.d(5)）：安装时展开为 TriesLeft/TriesDone；枚举时匹配
-# 任意计数状态（+3-0 全新 / +2-1 / +0-3 bad）。字面量 +3-0/+3 形态是实测过的
-# 严重错误——中间态/bad 态实例对 sysupdate 不可见 → 版本集合账目错乱 →
-# "腾位置"裁掉正在运行的 bless 版本（实测 basalt_2.efi 被裁 → 回退落 v1）
+# @l/@d glob (sysupdate.d(5)): expands to TriesLeft/TriesDone on install;
+# matches any counting state on enumeration (+3-0 fresh / +2-1 / +0-3 bad).
+# Literal +3-0/+3 forms tested as a serious bug — intermediate/bad state
+# instances invisible to sysupdate → version inventory corruption → "make
+# room" vacuum deletes the running bless version (empiric basalt_2.efi deleted
+# → rollback fell to v1).
 MatchPattern=basalt_@v+@l-@d.efi \
              basalt_@v.efi
 TriesLeft=3

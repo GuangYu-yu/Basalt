@@ -1,12 +1,13 @@
 #!/bin/sh
-# OTA 候选条目选择：sysupdate 成功落盘后调用。
-# 运行时至多存在一个带 '+' 的 boot-counting 条目 = 本次安装的 candidate
-# （bless 自动去后缀、vacuum 清旧版本、同版本成对安装均为既有契约）。
-# bootctl set-oneshot 的参数是 boot entry ID：sd-boot 自动发现的 Type 2 UKI
-# 条目 ID = 完整文件名（含 .efi，bootctl list 的 id 列同源）；缺后缀会写入
-# 无人匹配的变量而静默失效。OneShot 优先于一切默认选择，首启确定性不依赖
-# .osrel 排序；OneShot 被读取后由固件自动清除，后续重试/回退交由 boot
-# counting + 排序承载。
+# OTA candidate entry selection: called after sysupdate successfully writes to
+# disk. At most one boot-counting entry with '+' exists = candidate installed
+# this run (bless strips suffix, vacuum cleans old versions, same-version paired
+# install are all established contracts).
+# bootctl set-oneshot takes boot entry ID: sd-boot discovers Type 2 UKI entry IDs
+# = full file name (incl .efi, matches bootctl list id column); missing suffix
+# writes an unmatchable variable and silently fails. OneShot takes priority over
+# all defaults; firmware auto-clears after read, subsequent retry/rollback left
+# to boot counting + sort.
 set -e
 
 new="$(ls /efi/EFI/Linux/*+*.efi 2>/dev/null | sort -V | tail -1 || true)"

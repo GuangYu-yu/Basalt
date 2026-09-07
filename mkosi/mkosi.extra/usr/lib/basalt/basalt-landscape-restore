@@ -1,38 +1,39 @@
 #!/bin/sh
-# basalt-landscape-restore — landscape 运行态手动恢复（最小工具）
-# 用 basalt-landscape-backup 生成的 tar 覆盖恢复 /var/lib/landscape。
-# 安全前提：sqlite WAL 模式 → 必须停止 landscape-router 后整体替换目录内容，
-# 避免运行中覆盖（DB 锁 / WAL -wal/-shm 与主文件不一致）。覆盖即整目录
-# 一致性恢复（与 backup 同粒度，规避"只还原 toml 漏 DB"）。
-# 用法：basalt-landscape-restore <备份 tar 路径>
+# basalt-landscape-restore — manual landscape runtime restore
+# Overwrites /var/lib/landscape with a tar produced by basalt-landscape-backup.
+# Safety premise: sqlite WAL mode → landscape-router must be stopped before
+# replacing directory contents (avoids DB lock / stale WAL segments). Full
+# directory replacement guarantees consistency, same granularity as backup.
+# Usage: basalt-landscape-restore <backup.tar>
 set -eu
 
 SRC=/var/lib/landscape
-[ $# -ge 1 ] || { echo "用法: basalt-landscape-restore <backup.tar>" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "Usage: basalt-landscape-restore <backup.tar>" >&2; exit 2; }
 TAR="$1"
-[ -f "${TAR}" ] || { echo "basalt-landscape-restore: 备份文件不存在: ${TAR}" >&2; exit 1; }
+[ -f "${TAR}" ] || { echo "basalt-landscape-restore: backup file not found: ${TAR}" >&2; exit 1; }
 
-echo "恢复前停止 landscape-router（WAL 一致性 + 避免 DB 锁）..."
+echo "Stopping landscape-router for WAL-consistent restore..."
 systemctl stop landscape-router.service
 
-# 预校验：备份 tar 须含顶层 landscape/ 条目，避免错误 tar 在清空后解出错误内容
+# Pre-check: backup tar must contain a top-level landscape/ entry to avoid
+# extracting wrong contents after we empty the directory.
 if ! tar -tf "${TAR}" | grep -q '^landscape/'; then
-    echo "basalt-landscape-restore: ${TAR} 不含顶层 landscape/ 条目，拒绝恢复" >&2
+    echo "basalt-landscape-restore: ${TAR} has no top-level landscape/ entry, refusing to restore" >&2
     exit 1
 fi
 
-# 整目录清空后解回：保留目录本身（fstab 挂载点 / WorkingDirectory 依赖），
-# 清空其内容。含 -wal/-shm 一并移除（旧 WAL 与旧主文件配套，恢复时用 tar
-# 内的完整一致状态覆盖）。find -mindepth 1 避免 rm -rf 与 shell 通配 .*
-# （匹配 . / ..）的边界风险，且对 set -u 更稳。
+# Empty directory contents but keep the directory itself (fstab mount point /
+# WorkingDirectory depend on it). Removes -wal/-shm alongside (old WAL pairs
+# with old DB; restore from tar provides the complete consistent state).
+# find -mindepth 1 avoids rm -rf matching . / .. and plays safer with set -u.
 find "${SRC:?}" -mindepth 1 -delete 2>/dev/null || true
 
 if ! tar -C /var/lib -xf "${TAR}" landscape; then
-    echo "basalt-landscape-restore: 解档失败（/var/lib/landscape 已清空，需重新备份恢复）" >&2
+    echo "basalt-landscape-restore: extract failed (/var/lib/landscape emptied; backup again)" >&2
     systemctl start landscape-router.service || true
     exit 1
 fi
 
-systemctl start landscape-router.service || echo "basalt-landscape-restore: 启动 landscape-router 失败（手动检查）" >&2
+systemctl start landscape-router.service || echo "basalt-landscape-restore: landscape-router start failed (manual check)" >&2
 
-echo "basalt-landscape-restore: 已从 ${TAR} 恢复 /var/lib/landscape"
+echo "basalt-landscape-restore: restored /var/lib/landscape from ${TAR}"

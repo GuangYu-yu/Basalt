@@ -1,7 +1,8 @@
-# 旧部署子卷只读收敛（更新收尾，幂等 oneshot）
-# 每次 boot 运行（比绑死 bless 链更稳：bless 一次性触发时序难以挂靠，
-# boot 期收敛同时覆盖手动删除/重装等任意状态轨迹）。
-# After=var-lib-basalt-pool.mount：属性操作须池顶层挂载就绪（fstab 生成的单元名）
+# Old deployment subvolumes → read-only (post-update cleanup, idempotent oneshot).
+# Runs every boot (more robust than tying to bless chain: bless one-shot timing is
+# hard to hook; boot-time cleanup covers manual deletes/reinstalls and arbitrary
+# state trajectories). After=var-lib-basalt-pool.mount: property ops require pool
+# top-level mount ready (fstab-generated unit name).
 [Unit]
 Description=Mark non-running basalt deployments read-only
 After=var-lib-basalt-pool.mount
